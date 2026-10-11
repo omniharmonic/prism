@@ -60,6 +60,7 @@ struct ConversationVoiceControl: View {
             .onChange(of: model?.timeline, consume)
             .onChange(of: model?.isRunning, consume)
             .onChange(of: voice.state, voiceStateChanged)
+            .onChange(of: expanded, voicePanelOpened)
             .onChange(of: currentDraft, draftChanged)
             .onChange(of: session.pendingVoiceActivationID, consumeShortcutActivation)
             .onChange(of: device.turnPreferences.mode, endpointPreferencesChanged)
@@ -67,6 +68,9 @@ struct ConversationVoiceControl: View {
             .onChange(of: device.turnPreferences.acousticInterruption, endpointPreferencesChanged)
     }
     private var currentDraft: String { model?.draft ?? draft?.wrappedValue ?? "" }
+    private func voicePanelOpened() {
+        if expanded && voice.state == .off { start() }
+    }
     private func voiceStateChanged() {
         if voice.state != .off { expanded = true; showingVoiceSettings = false; device.stopPreview() }
         consume()
@@ -173,6 +177,7 @@ struct ConversationVoiceControl: View {
         endpointPreferencesChanged()
         voice.setPrivacyLocked(PrivacyLock.shared.locked)
         consume(); consumeShortcutActivation()
+        voicePanelOpened()
         #if DEBUG
         if model != nil { Task { await UITestLaunch.prepareVoiceLayoutFixture(voice) } }
         #endif
@@ -192,7 +197,8 @@ struct ConversationVoiceControl: View {
 
     private var running: Bool { model?.isRunning ?? false }
     private var stateTitle: String {
-        switch voice.state {
+        if voice.isMicrophoneMuted && voice.state == .paused { return "Microphone muted" }
+        return switch voice.state {
         case .off: voice.endpointMode == .thinkAloud ? "Ready to think aloud" : "Ready to talk"
         case .paused: "Session paused"
         case .speaking: "Omni is speaking"
@@ -203,7 +209,10 @@ struct ConversationVoiceControl: View {
         }
     }
     private var status: String {
-        switch voice.state {
+        if voice.isMicrophoneMuted {
+            return "Mic input muted · unmute to speak. Replies can still play."
+        }
+        return switch voice.state {
         case .off: voice.endpointMode == .thinkAloud ? "Think aloud · manual send" : "Automatic · \(Int(voice.endpointPause))s pause"
         case .paused:
             if !currentDraft.isEmpty { "Resume to keep adding to your unsent draft." }
@@ -242,10 +251,21 @@ struct ConversationVoiceControl: View {
             } else {
                 Button { start() } label: {
                     Label(voice.state == .paused ? "Resume" : voice.isSessionActive ? "Interrupt and speak" : "Start session", systemImage: "mic.fill")
-                        .frame(maxWidth: .infinity, minHeight: 32)
+                        .frame(minHeight: 32)
                 }
-                .buttonStyle(.borderedProminent).disabled(!canSpeak)
+                .buttonStyle(.bordered).disabled(!canSpeak)
                 .accessibilityIdentifier("voice.start")
+            }
+            if voice.isSessionActive {
+                Button { toggleMicrophoneMute() } label: {
+                    Image(systemName: voice.isMicrophoneMuted ? "mic.slash.fill" : "mic.fill").frame(minWidth: 32, minHeight: 32)
+                }
+                .buttonStyle(.bordered)
+                .disabled(voice.state == .preparing || voice.state == .transcribing)
+                .accessibilityLabel(voice.isMicrophoneMuted ? "Unmute microphone" : "Mute microphone")
+                .accessibilityValue(voice.isMicrophoneMuted ? "Muted" : "Unmuted")
+                .accessibilityHint("Stops microphone input and speech interruption while replies continue. Captured words stay as an unsent draft. The audio engine may remain active for echo cancellation.")
+                .accessibilityIdentifier("voice.mute")
             }
             if voice.endpointCountdown != nil {
                 Button("Keep listening") { voice.keepListening() }
@@ -352,6 +372,15 @@ struct ConversationVoiceControl: View {
             model?.turnEnded == nil && model?.streamProblem == nil &&
             !session.approvals.pending.contains(where: { $0.approval.threadId == model?.threadID }) &&
             (model?.draft ?? draft?.wrappedValue ?? "").isEmpty && !session.threads.isCreating
+        }
+    }
+    private func toggleMicrophoneMute() {
+        let muted = !voice.isMicrophoneMuted
+        voice.setMicrophoneMuted(muted)
+        if muted && voice.state == .listening {
+            finish(submit: false, draftReason: .microphoneMute)
+        } else if !muted && voice.state == .paused {
+            start()
         }
     }
     private func pause() {
