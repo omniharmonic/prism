@@ -58,6 +58,7 @@ import OmniVoiceKit
     }
     private var edgeProvider: VoiceProvider? { replyProviders.first { $0.id == "hermes-edge" && $0.available } }
     private var monitoringPlayback = false
+    private var playbackMonitorReady = false
     private var nearEndDuration = 0.0
     private var activityEnabled = false
     func configureInterruption(enabled: Bool, receive: @escaping @MainActor (VoiceInterruptionEvent) -> Void) {
@@ -100,7 +101,7 @@ import OmniVoiceKit
         file = url
         do {
             let callback: (@Sendable (SpeechActivityEvent) -> Void)? = activityEnabled ? Self.activityCallback(for: self, request: request) : nil
-            try await audio.start(url: url, chunkSeconds: 60, chunkClosed: Self.chunkCallback(for: self, request: request), activity: callback, firstTap: Self.firstTapCallback(for: self, request: request))
+            try await audio.start(url: url, chunkSeconds: 60, chunkClosed: Self.chunkCallback(for: self, request: request), activity: callback, firstTap: Self.firstTapCallback(for: self, request: request), configurationChanged: Self.configurationCallback(for: self, request: request))
             captureDeadline = Task { [weak self] in
                 do { try await Task.sleep(for: .seconds(900)) } catch { return }
                 guard let self, self.generation == request else { return }
@@ -173,9 +174,17 @@ import OmniVoiceKit
             }
         }
     }
+    nonisolated private static func configurationCallback(for device: ConversationDevice, request: Int) -> @Sendable (Bool) -> Void {
+        { [weak device] running in
+            Task { @MainActor in
+                guard let device, device.generation == request else { return }
+                device.diagnostic(running ? .audioEngineConfigurationChanged : .audioEngineStoppedByConfiguration)
+            }
+        }
+    }
     private func receivePlaybackActivity(_ event: SpeechActivityEvent) {
         let requestGeneration = generation
-        guard monitoringPlayback else { return }
+        guard monitoringPlayback, playbackMonitorReady else { return }
         switch event {
         case .unavailable:
             receiveInterruption?(.unavailable("Acoustic interruption is unavailable. Use Interrupt and speak."))
@@ -190,7 +199,7 @@ import OmniVoiceKit
                 speech.configureDuplex(nil, owner: recordingOwner)
                 speech.beginRecording(owner: recordingOwner)
                 let detectedDuration = nearEndDuration
-                monitoringPlayback = false; nearEndDuration = 0
+                monitoringPlayback = false; playbackMonitorReady = false; nearEndDuration = 0
                 completedText = ""; hypothesis = ""; enqueuedChunks = []
                 captureDeadline = Task { [weak self] in
                     do { try await Task.sleep(for: .seconds(900)) } catch { return }
@@ -205,16 +214,19 @@ import OmniVoiceKit
     }
     private func beginPlaybackMonitor(request: Int) async -> Bool {
         let url = FileManager.default.temporaryDirectory.appending(path: "omni-interruption-\(UUID().uuidString).caf")
-        file = url; monitoringPlayback = true
+        file = url; monitoringPlayback = true; playbackMonitorReady = false
         do {
-            try await audio.start(url: url, chunkSeconds: 60, chunkClosed: Self.chunkCallback(for: self, request: request), activity: Self.activityCallback(for: self, request: request), firstTap: Self.firstTapCallback(for: self, request: request))
-            guard generation == request, !Task.isCancelled else { throw CancellationError() }
-            monitoringPlayback = true; nearEndDuration = 0
+            try await audio.start(url: url, chunkSeconds: 60, chunkClosed: Self.chunkCallback(for: self, request: request), activity: Self.activityCallback(for: self, request: request), firstTap: Self.firstTapCallback(for: self, request: request), configurationChanged: Self.configurationCallback(for: self, request: request))
+            try await audio.waitForFirstTap()
+            guard generation == request, file == url, monitoringPlayback, !Task.isCancelled else { throw CancellationError() }
+            monitoringPlayback = true; playbackMonitorReady = true; nearEndDuration = 0
             speech.configureDuplex(audio, owner: recordingOwner)
+            diagnostic(.playbackMonitorReady)
             return true
         } catch {
-            guard generation == request else { return false }
-            monitoringPlayback = false
+            guard generation == request, file == url else { return false }
+            diagnostic(SpeechPlaybackDiagnostic.event(for: error))
+            monitoringPlayback = false; playbackMonitorReady = false
             try? audio.stop(); audio.recordings().forEach { try? FileManager.default.removeItem(at: $0) }; file = nil
             speech.configureDuplex(nil, owner: recordingOwner)
             receiveInterruption?(.unavailable("Acoustic interruption could not start. Use Interrupt and speak."))
@@ -272,7 +284,7 @@ import OmniVoiceKit
     }
     func cancel() {
         narrationWork.cancel()
-        monitoringPlayback = false; nearEndDuration = 0
+        monitoringPlayback = false; playbackMonitorReady = false; nearEndDuration = 0
         speech.configureDuplex(nil, owner: recordingOwner)
         captureDeadline?.cancel(); captureDeadline = nil
         chunkWork.cancel()
@@ -348,7 +360,7 @@ import OmniVoiceKit
         // Normal drain releases monitor audio; acoustic interruption promotes it
         // into capture and must keep the retained lead-in and microphone running.
         if monitoringPlayback && !Task.isCancelled {
-            monitoringPlayback = false; speech.configureDuplex(nil, owner: recordingOwner)
+            monitoringPlayback = false; playbackMonitorReady = false; speech.configureDuplex(nil, owner: recordingOwner)
             try? audio.stop(); audio.recordings().forEach { try? FileManager.default.removeItem(at: $0) }; file = nil
         }
     }

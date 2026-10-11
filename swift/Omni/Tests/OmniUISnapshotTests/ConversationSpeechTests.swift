@@ -9,6 +9,8 @@ import OmniVoiceKit
     func testPlaybackFailureCategoriesNeverInspectPrivateErrorDetails() {
         XCTAssertEqual(SpeechPlaybackDiagnostic.event(for: SpeechPlaybackFailure.routeLost), .playbackRouteLost)
         XCTAssertEqual(SpeechPlaybackDiagnostic.event(for: SpeechPlaybackFailure.engineInactive), .playbackEngineInactive)
+        XCTAssertEqual(SpeechPlaybackDiagnostic.event(for: SpeechPlaybackFailure.engineInactiveAfterReconnect), .playbackEngineInactiveAfterReconnect)
+        XCTAssertEqual(SpeechPlaybackDiagnostic.event(for: SpeechPlaybackFailure.engineInactiveWhileQueued), .playbackEngineInactiveWhileQueued)
         XCTAssertEqual(SpeechPlaybackDiagnostic.event(for: SpeechPlaybackFailure.captureMissing), .playbackCaptureMissing)
         XCTAssertEqual(SpeechPlaybackDiagnostic.event(for: SpeechPlaybackFailure.bufferBudget), .playbackBufferBudget)
         XCTAssertEqual(SpeechPlaybackDiagnostic.event(for: NSError(domain: "private fixture", code: 99, userInfo: [NSLocalizedDescriptionKey: "private text"])), .playbackOtherFailure)

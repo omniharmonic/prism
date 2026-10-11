@@ -98,12 +98,14 @@ final class CaptureFile: @unchecked Sendable {
     private var file: CaptureFile?
     private var speechActivity: LocalSpeechActivity?
     private var vadManager: VadManager?
+    private var captureReadiness: AudioCaptureReadiness?
+    private var configurationObserver: NSObjectProtocol?
     private var starting = false
     private var generation: UInt64 = 0
     private let permission: (@MainActor () async -> Bool)?
     public init() { permission = nil; engine.attach(player) }
     init(permission: @escaping @MainActor () async -> Bool) { self.permission = permission; engine.attach(player) }
-    public func start(url: URL, chunkSeconds: Double? = nil, chunkClosed: (@Sendable (URL) -> Void)? = nil, activity: (@Sendable (SpeechActivityEvent) -> Void)? = nil, firstTap: (@Sendable () -> Void)? = nil) async throws {
+    public func start(url: URL, chunkSeconds: Double? = nil, chunkClosed: (@Sendable (URL) -> Void)? = nil, activity: (@Sendable (SpeechActivityEvent) -> Void)? = nil, firstTap: (@Sendable () -> Void)? = nil, configurationChanged: (@Sendable (Bool) -> Void)? = nil) async throws {
         guard file == nil, !starting else { throw VoiceFailure.unavailable("A recording is already starting or running.") }
         starting = true
         let requestGeneration = generation
@@ -144,10 +146,28 @@ final class CaptureFile: @unchecked Sendable {
             guard format.sampleRate > 0 else { throw VoiceFailure.unavailable("No microphone input is available.") }
             let writer = try CaptureFile(url: url, format: format, chunkSeconds: chunkSeconds, chunkClosed: chunkClosed)
             capture = writer
-            input.installTap(onBus: 0, bufferSize: 1024, format: format, block: CaptureFile.tap(for: writer, activity: monitor, firstTap: firstTap))
+            let readiness = AudioCaptureReadiness()
+            captureReadiness = readiness
+            let receivedTap: @Sendable () -> Void = { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self, self.generation == requestGeneration, self.file != nil else { return }
+                    readiness.receivedFirstTap()
+                    firstTap?()
+                }
+            }
+            input.installTap(onBus: 0, bufferSize: 1024, format: format, block: CaptureFile.tap(for: writer, activity: monitor, firstTap: receivedTap))
             tapInstalled = true
             engine.prepare(); try engine.start(); completedRecordings = []; file = writer; speechActivity = monitor
+            if let configurationChanged {
+                configurationObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.generation == requestGeneration, self.file != nil else { return }
+                        configurationChanged(self.engine.isRunning)
+                    }
+                }
+            }
         } catch {
+            captureReadiness?.invalidate(); captureReadiness = nil
             monitor?.stop()
             engine.stop()
             if tapInstalled { engine.inputNode.removeTap(onBus: 0) }
@@ -157,6 +177,11 @@ final class CaptureFile: @unchecked Sendable {
             #endif
             throw error
         }
+    }
+    /// Optional duplex playback must observe input delivery before scheduling output.
+    public func waitForFirstTap(timeout: Duration = .seconds(1)) async throws {
+        guard let captureReadiness else { throw SpeechPlaybackFailure.captureMissing }
+        try await captureReadiness.wait(timeout: timeout) { self.engine.isRunning && self.file != nil }
     }
     /// Synthesized PCM shares the voice-processing engine's output reference.
     /// This is only valid while explicitly opted-in microphone capture is active.
@@ -168,9 +193,10 @@ final class CaptureFile: @unchecked Sendable {
             engine.disconnectNodeOutput(player)
             engine.connect(player, to: engine.mainMixerNode, format: buffer.format)
             playbackFormat = buffer.format
+            guard engine.isRunning else { throw SpeechPlaybackFailure.engineInactiveAfterReconnect }
         }
         try await playbackQueue.schedule(buffer) { [self] pcm, release in
-            guard engine.isRunning else { throw SpeechPlaybackFailure.engineInactive }
+            guard engine.isRunning else { throw SpeechPlaybackFailure.engineInactiveWhileQueued }
             guard file != nil else { throw SpeechPlaybackFailure.captureMissing }
             player.scheduleBuffer(pcm, completionCallbackType: .dataPlayedBack, completionHandler: Self.playbackCallback(release: release, completion: completion))
             if !player.isPlaying { player.play() }
@@ -186,6 +212,8 @@ final class CaptureFile: @unchecked Sendable {
     private var completedRecordings: [URL] = []
     public func stop() throws {
         // Also cancels a pending permission prompt, even before a file/tap exists.
+        if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver); self.configurationObserver = nil }
+        captureReadiness?.invalidate(); captureReadiness = nil
         generation &+= 1
         speechActivity?.stop(); speechActivity = nil
         guard let capture = file else { return }

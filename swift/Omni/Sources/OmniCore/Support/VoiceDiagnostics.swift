@@ -10,6 +10,8 @@ public enum VoiceDiagnosticEvent: String, Codable, Sendable {
     case appleFallback, playbackDrain, listeningAgain
     case activityFirstFrame, activityUnavailable, activityWatchdog, microphoneFirstTap
     case replyCompletionReceived, replyTextQueued, pauseRequested
+    case audioEngineConfigurationChanged, audioEngineStoppedByConfiguration
+    case playbackMonitorNotReady, playbackMonitorReady, playbackEngineInactiveAfterReconnect, playbackEngineInactiveWhileQueued
     case playbackRouteLost, playbackEngineInactive, playbackCaptureMissing, playbackBufferBudget
     case playbackDecodeFailed, playbackOtherFailure
 
