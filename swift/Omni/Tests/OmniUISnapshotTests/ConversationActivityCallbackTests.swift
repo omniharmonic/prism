@@ -35,4 +35,23 @@ final class ConversationActivityCallbackTests: XCTestCase {
         }.value
         await fulfillment(of: [stale], timeout: 0.1)
     }
+    func testFirstTapCallbackIsOffMainSafeAndRejectsCancelledCaptureGeneration() async {
+        let delivered = expectation(description: "First microphone tap reaches owning device")
+        delivered.assertForOverFulfill = true
+        let (device, callback) = await MainActor.run {
+            let device = ConversationDevice(diagnostic: { event in
+                MainActor.assertIsolated()
+                if event == .microphoneFirstTap { delivered.fulfill() }
+            })
+            return (device, ConversationDevice.firstTapCallback(for: device, request: 0))
+        }
+        await Task.detached { callback() }.value
+        await fulfillment(of: [delivered], timeout: 2)
+        await MainActor.run { device.cancel() }
+        let stale = ConversationDevice.firstTapCallback(for: device, request: 0)
+        // Reusing the same expectation would over-fulfil if a stale tap crossed the guard.
+        await Task.detached { stale() }.value
+        for _ in 0..<10 { await Task.yield() }
+    }
+
 }

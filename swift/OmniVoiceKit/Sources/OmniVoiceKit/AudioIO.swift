@@ -6,6 +6,7 @@ final class CaptureFile: @unchecked Sendable {
     private let lock = NSLock()
     private var file: AVAudioFile?
     private var failure: Error?
+    private var reportedFirstTap = false
     private let url: URL
     private let format: AVAudioFormat
     private let chunkFrames: AVAudioFramePosition?
@@ -28,13 +29,24 @@ final class CaptureFile: @unchecked Sendable {
     func recordings() -> [URL] { lock.lock(); defer { lock.unlock() }; return urls }
     /// Build outside AudioIO's main-actor context. The AVAudioEngine callback runs on
     /// its realtime thread; do not capture an actor executor or escape its PCM buffer.
-    nonisolated static func tap(for writer: CaptureFile, activity: LocalSpeechActivity? = nil) -> @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void {
+    nonisolated static func tap(for writer: CaptureFile, activity: LocalSpeechActivity? = nil, firstTap: (@Sendable () -> Void)? = nil) -> @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void {
         { buffer, time in
+            if buffer.frameLength > 0 { writer.reportFirstTap(firstTap) }
             writer.append(buffer)
             // Convert host-time evidence to a scalar before leaving this callback.
             let capturedEnd = time.isHostTimeValid ? AVAudioTime.seconds(forHostTime: time.hostTime) + Double(buffer.frameLength) / buffer.format.sampleRate : nil
             activity?.append(buffer, capturedEnd: capturedEnd)
         }
+    }
+    private func reportFirstTap(_ receive: (@Sendable () -> Void)?) {
+        guard let receive else { return }
+        lock.lock()
+        let report = file != nil && !reportedFirstTap
+        if report { reportedFirstTap = true }
+        lock.unlock()
+        // The callback cannot receive PCM, paths or timing metadata. It runs once
+        // per installed capture tap and never while holding the file lock.
+        if report { receive() }
     }
     func append(_ buffer: AVAudioPCMBuffer) {
         lock.lock(); defer { lock.unlock() }
@@ -91,7 +103,7 @@ final class CaptureFile: @unchecked Sendable {
     private let permission: (@MainActor () async -> Bool)?
     public init() { permission = nil; engine.attach(player) }
     init(permission: @escaping @MainActor () async -> Bool) { self.permission = permission; engine.attach(player) }
-    public func start(url: URL, chunkSeconds: Double? = nil, chunkClosed: (@Sendable (URL) -> Void)? = nil, activity: (@Sendable (SpeechActivityEvent) -> Void)? = nil) async throws {
+    public func start(url: URL, chunkSeconds: Double? = nil, chunkClosed: (@Sendable (URL) -> Void)? = nil, activity: (@Sendable (SpeechActivityEvent) -> Void)? = nil, firstTap: (@Sendable () -> Void)? = nil) async throws {
         guard file == nil, !starting else { throw VoiceFailure.unavailable("A recording is already starting or running.") }
         starting = true
         let requestGeneration = generation
@@ -132,7 +144,7 @@ final class CaptureFile: @unchecked Sendable {
             guard format.sampleRate > 0 else { throw VoiceFailure.unavailable("No microphone input is available.") }
             let writer = try CaptureFile(url: url, format: format, chunkSeconds: chunkSeconds, chunkClosed: chunkClosed)
             capture = writer
-            input.installTap(onBus: 0, bufferSize: 1024, format: format, block: CaptureFile.tap(for: writer, activity: monitor))
+            input.installTap(onBus: 0, bufferSize: 1024, format: format, block: CaptureFile.tap(for: writer, activity: monitor, firstTap: firstTap))
             tapInstalled = true
             engine.prepare(); try engine.start(); completedRecordings = []; file = writer; speechActivity = monitor
         } catch {
