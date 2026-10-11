@@ -2,6 +2,8 @@
 
 Updated 2026-10-10. Canonical checklist for Benjamin’s 11:04 a.m. feedback and subsequent device reports. This is the entry point for the current product pass; release logs provide evidence, not the backlog. Earlier architectural roadmaps remain historical context.
 
+Latest voice checkpoint: **Omni 17 installed on iPhone and iPad; physical acceptance pending.** Immediate voice entry, compact input mute and bounded capture startup recovery are bundled. Build 16 EOF repair has successful multi-turn owner/trace evidence. Mac 17 is signed and verified; Apple notarization is pending before laptop installation and wake-word verification. Local TTS evaluation remains modular and separate from release providers. See the [v17 ledger](../../qa/omni-voice-v17-tracker.md) and [voice roadmap](omni-conversational-voice-plan.md) for exact gates; other product backlog items below remain in scope.
+
 ## Product vision
 
 Prism is a polished, native-feeling personal and collaborative knowledge environment across iPhone, iPad, Mac and web. Omni is a fully capable Hermes executive assistant connected to that knowledge, replacing the previous Telegram/Claude workflow without losing capabilities. Owner internal work should run freely; outbound communications require approval. Collaboration must keep people and vaults isolated correctly. A new user should install, choose a server host, pair devices and optionally add Omni without our current developer setup process.
