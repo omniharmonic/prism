@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 import OmniCore
 import OmniClient
 import OmniVoiceKit
@@ -27,6 +28,65 @@ import OmniVoiceKit
         var empty: Int64 = 0
         XCTAssertThrowsError(try EncodedSpeechRead.continueReading(0, total: &empty, maximum: 4800))
         XCTAssertThrowsError(try EncodedSpeechRead.continueReading(4096, total: &total, maximum: 4800))
+    }
+    private func temporaryEncodedFixture() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("encoded-cleanup-\(UUID().uuidString).mp3")
+        try Data([1, 2, 3]).write(to: url)
+        return url
+    }
+    func testTemporaryEncodedFileRemovedAfterEOFAndMalformedDecode() async throws {
+        let normal = try temporaryEncodedFixture()
+        try await EncodedSpeechRead.withTemporaryFile(normal) {
+            var total: Int64 = 0
+            XCTAssertTrue(try EncodedSpeechRead.read(total: &total, maximum: 4096) { 128 })
+            XCTAssertFalse(try EncodedSpeechRead.read(total: &total, maximum: 4096) { 0 })
+            XCTAssertTrue(FileManager.default.fileExists(atPath: normal.path))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: normal.path))
+        let malformed = try temporaryEncodedFixture()
+        enum DecodeError: Error { case malformed }
+        do {
+            try await EncodedSpeechRead.withTemporaryFile(malformed) {
+                var total: Int64 = 0
+                _ = try EncodedSpeechRead.read(total: &total, maximum: 4096) { throw DecodeError.malformed }
+            }
+            XCTFail("Malformed decode must fail")
+        } catch { XCTAssertTrue(error is DecodeError) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: malformed.path))
+    }
+    func testTemporaryEncodedFileRemovedWhenCancelledBeforeRead() async throws {
+        let url = try temporaryEncodedFixture()
+        var reads = 0
+        let task = Task { @MainActor in
+            try await EncodedSpeechRead.withTemporaryFile(url) {
+                try Task.checkCancellation()
+                reads += 1
+            }
+        }
+        task.cancel()
+        do { try await task.value; XCTFail("Expected cancellation") } catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertEqual(reads, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+    func testTemporaryEncodedFileRemovedWhenCancelledDuringHardwareBackpressure() async throws {
+        let url = try temporaryEncodedFixture()
+        let queue = SpeechPlaybackQueue(maximumSeconds: 1)
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1))
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 16000))
+        buffer.frameLength = 16000
+        try await queue.schedule(buffer) { _, _ in } // hardware has not drained
+        let waiting = expectation(description: "decoder reaches backpressure")
+        let task = Task { @MainActor in
+            try await EncodedSpeechRead.withTemporaryFile(url) {
+                waiting.fulfill()
+                try await queue.schedule(buffer) { _, _ in XCTFail("Full hardware queue must not schedule") }
+            }
+        }
+        await fulfillment(of: [waiting], timeout: 1)
+        task.cancel()
+        do { try await task.value; XCTFail("Expected cancellation") } catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        queue.cancel()
     }
     final class Output: ConversationSpeechOutput {
         var texts: [String] = []

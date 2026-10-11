@@ -246,31 +246,32 @@ import OmniVoiceKit
             let id = ObjectIdentifier(token)
             completions[id] = completion
             encodedTask = Task { [weak self, token] in
-                defer { try? FileManager.default.removeItem(at: url) }
-                guard let self else { return }
-                do {
-                    var decodedFrames: Int64 = 0
-                    while true {
-                        try Task.checkCancellation()
-                        guard self.encodedGeneration == request, self.completions[id] != nil else { return }
-                        let count: AVAudioFrameCount = 4096
-                        guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: count) else { throw VoiceFailure.unavailable("Speech audio could not be decoded.") }
-                        let hasFrames = try EncodedSpeechRead.read(total: &decodedFrames, maximum: Int64(file.processingFormat.sampleRate * 600)) {
-                            try file.read(into: buffer, frameCount: count)
-                            return buffer.frameLength
+                await EncodedSpeechRead.withTemporaryFile(url) {
+                    guard let self else { return }
+                    do {
+                        var decodedFrames: Int64 = 0
+                        while true {
+                            try Task.checkCancellation()
+                            guard self.encodedGeneration == request, self.completions[id] != nil else { return }
+                            let count: AVAudioFrameCount = 4096
+                            guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: count) else { throw VoiceFailure.unavailable("Speech audio could not be decoded.") }
+                            let hasFrames = try EncodedSpeechRead.read(total: &decodedFrames, maximum: Int64(file.processingFormat.sampleRate * 600)) {
+                                try file.read(into: buffer, frameCount: count)
+                                return buffer.frameLength
+                            }
+                            // Compressed length is an estimate. A successful zero-frame
+                            // read is EOF, not a buffer to charge to the hardware queue.
+                            guard hasFrames else { break }
+                            await self.accept(buffer, id: id)
                         }
-                        // Compressed length is an estimate. A successful zero-frame
-                        // read is EOF, not a buffer to charge to the hardware queue.
-                        guard hasFrames else { break }
-                        await self.accept(buffer, id: id)
+                        guard !Task.isCancelled, self.encodedGeneration == request else { return }
+                        self.pcmEnded.insert(ObjectIdentifier(token)); self.completePCM(id)
+                        self.encodedTask = nil
+                    } catch {
+                        guard !Task.isCancelled, self.encodedGeneration == request else { return }
+                        self.diagnostic(.playbackDecodeFailed)
+                        self.receiveFailure?("The generated reply could not be played.")
                     }
-                    guard !Task.isCancelled, self.encodedGeneration == request else { return }
-                    self.pcmEnded.insert(ObjectIdentifier(token)); self.completePCM(id)
-                    self.encodedTask = nil
-                } catch {
-                    guard !Task.isCancelled, self.encodedGeneration == request else { return }
-                    self.diagnostic(.playbackDecodeFailed)
-                    self.receiveFailure?("The generated reply could not be played.")
                 }
             }
         } else {

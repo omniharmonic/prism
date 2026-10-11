@@ -1,3 +1,4 @@
+import Foundation
 import OmniCore
 import OmniVoiceKit
 
@@ -16,6 +17,10 @@ enum SpeechPlaybackDiagnostic {
 
 /// A successful empty decode read signals EOF; thrown decode errors still fail.
 enum EncodedSpeechRead {
+    @MainActor static func withTemporaryFile(_ url: URL, decode: () async throws -> Void) async rethrows {
+        defer { try? FileManager.default.removeItem(at: url) }
+        try await decode()
+    }
     static func read(total: inout Int64, maximum: Int64, decode: () throws -> UInt32) throws -> Bool {
         try continueReading(decode(), total: &total, maximum: maximum)
     }
