@@ -16,6 +16,7 @@ public enum VoiceDiagnosticEvent: String, Codable, Sendable {
     case playbackMonitorNotReady, playbackMonitorReady, playbackEngineInactiveAfterReconnect, playbackEngineInactiveWhileQueued
     case playbackRouteLost, playbackEngineInactive, playbackCaptureMissing, playbackBufferBudget
     case playbackDecodeFailed, playbackOtherFailure
+    case wakeStarted, wakeDetected, wakeRetry, wakeCooldown, wakePaused, wakeRollover, wakePermissionDenied
 
 }
 public enum VoiceDiagnostics {

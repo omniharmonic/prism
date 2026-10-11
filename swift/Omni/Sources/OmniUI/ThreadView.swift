@@ -51,7 +51,9 @@ struct ThreadView: View {
                 VStack(spacing: 0) {
                     Text(barTitle).font(.headline).lineLimit(1)
                     if let state = model.thread.map({ $0.gone ? "No longer available" : ThreadGrouping.title(for: $0.state) }) {
-                        Text(state).font(.caption).foregroundStyle(Color.quietText).lineLimit(1)
+                        Text(state).font(.caption).foregroundStyle(Color.quietText)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                     }
                 }
                 // A bar does not grow with the text size (the system shows its items large
@@ -69,6 +71,11 @@ struct ThreadView: View {
                         .labelStyle(.titleAndIcon)
                         .font(.callout)
                         .foregroundStyle(Color.quietText)
+                        // The glass toolbar also contains Voice. Keep the state's
+                        // short label whole while the navigation title can truncate.
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .layoutPriority(1)
                         .accessibilityLabel("State: \(ThreadGrouping.title(for: thread.state))")
                 }
             }
@@ -78,7 +85,10 @@ struct ThreadView: View {
             ToolbarItem {
                 Button("Voice", systemImage: "waveform") {
                     session.showVoice(in: model.threadID); voiceExpanded = true
-                }.accessibilityIdentifier("voice.open")
+                }
+                .labelStyle(.iconOnly)
+                .accessibilityLabel("Voice")
+                .accessibilityIdentifier("voice.open")
                 .disabled(model.isUnavailable)
             }
         }

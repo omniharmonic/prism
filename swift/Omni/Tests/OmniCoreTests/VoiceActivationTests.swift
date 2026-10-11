@@ -51,6 +51,28 @@ import XCTest
         XCTAssertTrue(coordinator.consume(session: session, sceneID: id, threadID: nil))
         session.stop()
     }
+    func testClosedWindowActivationWaitsForReopenedForegroundScene() async {
+        let app = await app(); let session = app.session!
+        let coordinator = VoiceActivationCoordinator()
+        let closed = ready(coordinator, app: app)
+        coordinator.navigationDisappeared(session, sceneID: closed)
+        coordinator.removeScene(closed)
+
+        coordinator.request()
+        let request = coordinator.pendingID
+        XCTAssertNotNil(request)
+        XCTAssertNil(session.pendingVoiceActivationID)
+        XCTAssertFalse(session.newThreadUsesVoice)
+
+        let reopened = ready(coordinator, app: app, active: false)
+        XCTAssertEqual(coordinator.pendingID, request)
+        XCTAssertNil(session.pendingVoiceActivationID)
+        coordinator.updateScene(reopened, app: app, active: true, locked: false)
+        XCTAssertEqual(session.pendingVoiceActivationID, request)
+        XCTAssertTrue(coordinator.consume(session: session, sceneID: reopened, threadID: nil))
+        XCTAssertFalse(coordinator.consume(session: session, sceneID: reopened, threadID: nil))
+        session.stop()
+    }
     func testPressBeforeStartTaskRunsDoesNotReplaceItsReservedSession() async {
         let app = await app(); let session = app.session!
         let coordinator = VoiceActivationCoordinator(); let id = ready(coordinator, app: app)

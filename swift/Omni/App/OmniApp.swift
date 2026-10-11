@@ -11,7 +11,19 @@ struct OmniApp: App {
     #else
     @UIApplicationDelegateAdaptor(OmniNotificationDelegate.self) private var notificationDelegate
     #endif
+    #if os(macOS)
+    @State private var app: AppModel
+
+    init() {
+        let model = OmniAppFactory.liveModel(developmentBuild: OmniApp.isDevelopmentBuild)
+        _app = State(initialValue: model)
+        // Wake readiness belongs to the running app, independent of window and
+        // synthesized menu-label lifecycle callbacks. Bind the same State model.
+        MacWakeListener.shared.bind(app: model)
+    }
+    #else
     @State private var app = OmniAppFactory.liveModel(developmentBuild: OmniApp.isDevelopmentBuild)
+    #endif
 
     /// DEBUG builds default to the laptop dev gateway and use the login keychain on macOS.
     private static var isDevelopmentBuild: Bool {
@@ -28,13 +40,16 @@ struct OmniApp: App {
             RootView(app: app)
                 .frame(minWidth: 760, minHeight: 500)
                 .modifier(MacVoiceShortcutSetup())
-                .modifier(MacWakeReadiness(app: app))
         }
         .defaultSize(width: 1040, height: 700)
         .commands { OmniCommands(app: app) }
 
-        MenuBarExtra("Omni Voice", systemImage: "waveform") {
+        MenuBarExtra {
             MacVoiceMenu()
+        } label: {
+            Image(systemName: "waveform")
+                .accessibilityLabel("Omni Voice")
+                .modifier(MacVoiceShortcutSetup())
         }
 
         Settings {
