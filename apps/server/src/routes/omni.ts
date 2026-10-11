@@ -18,7 +18,7 @@
  *    `X-Prism-Action-Origin: agent` downgrade is honoured), the digest the person saw and
  *    an `Idempotency-Key`; execution goes only through Prism's live-action routes.
  */
-import { apnsApplicationForDevice, apnsEnabled, isApnsToken, isApnsEnvironment, saveApnsToken, removeApnsTokenForDevice } from "../apns";
+import { apnsApplicationForDevice, apnsEnabled, isApnsToken, isApnsEnvironment, isNotificationPreview, saveApnsToken, removeApnsTokenForDevice } from "../apns";
 import { Hono, type Context } from "hono";
 import { omniVoiceApi } from "./omni-voice";
 import { streamSSE } from "hono/streaming";
@@ -202,7 +202,8 @@ omniApi.post("/push", async c => {
   const b = await jsonBody(c);
   if (!b) return c.json({ error: "bad_request", detail: "bounded JSON body required" }, 400);
   if (!isApnsToken(b.token) || !isApnsEnvironment(b.environment)) return c.json({ error: "bad_request", detail: "token (hex) and environment (sandbox|production) required" }, 400);
-  saveApnsToken({ deviceId: actor.deviceId, email: actor.email, vaultId: actor.vaultId, token: b.token, environment: b.environment, application: "omni" });
+  if (b.preview !== undefined && !isNotificationPreview(b.preview)) return c.json({ error: "bad_request", detail: "preview must be generic, title or title_preview" }, 400);
+  saveApnsToken({ deviceId: actor.deviceId, email: actor.email, vaultId: actor.vaultId, token: b.token, environment: b.environment, application: "omni", ...(isNotificationPreview(b.preview) ? { preview: b.preview } : {}) });
   return c.json({ ok: true, apnsEnabled: apnsEnabled() });
 });
 omniApi.delete("/push", c => {

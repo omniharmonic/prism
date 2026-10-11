@@ -73,6 +73,17 @@ final class OmniClientTests: XCTestCase {
 
     // MARK: version / threads / turns
 
+    func testPerDevicePushPreviewRegistration() async throws {
+        let (omni, server) = try make { _ in .json(200, #"{"ok":true,"apnsEnabled":true}"#) }
+        _ = try await omni.registerPush(token: String(repeating: "a", count: 64), environment: "sandbox")
+        _ = try await omni.registerPush(token: String(repeating: "a", count: 64), environment: "sandbox", preview: "title_preview")
+        let bodies = try server.requests.map { try JSONDecoder().decode(JSONValue.self, from: $0.body) }
+        XCTAssertEqual(server.requests[0].path, "/api/omni/push")
+        XCTAssertEqual(bodies[0]["preview"]?.stringValue, "generic")
+        XCTAssertEqual(bodies[1]["preview"]?.stringValue, "title_preview")
+        XCTAssertNil(bodies[1]["deviceId"])
+    }
+
     func testVersion() async throws {
         let (omni, server) = try make { _ in .json(200, #"{"api":1,"minClient":"1.0"}"#) }
         let v = try await omni.version()

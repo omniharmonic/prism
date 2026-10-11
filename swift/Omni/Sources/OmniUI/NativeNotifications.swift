@@ -14,10 +14,23 @@ import AppKit
 public final class NativeNotifications: NSObject, UNUserNotificationCenterDelegate {
     public static let shared = NativeNotifications()
     public private(set) var status = "Notifications are off."
+    public enum Preview: String, CaseIterable, Identifiable {
+        case generic, title, titlePreview = "title_preview"
+        public var id: String { rawValue }
+        public var label: String {
+            switch self {
+            case .generic: "Generic update"
+            case .title: "Thread title"
+            case .titlePreview: "Thread title and short reply preview"
+            }
+        }
+    }
+    public private(set) var preview = Preview(rawValue: UserDefaults.standard.string(forKey: "omni.notifications.preview") ?? "generic") ?? .generic
     public private(set) var busy = false
     public private(set) var enabled = UserDefaults.standard.bool(forKey: "omni.notifications.enabled")
     @ObservationIgnored private weak var app: AppModel?
     @ObservationIgnored private var token: String?
+    @ObservationIgnored private let registrationQueue = PushRegistrationQueue()
     @ObservationIgnored private var navigation = ExternalNavigationQueue()
     @ObservationIgnored private weak var readySession: SessionModel?
 
@@ -53,10 +66,13 @@ public final class NativeNotifications: NSObject, UNUserNotificationCenterDelega
         busy = true
         defer { busy = false }
         do {
-            try await app?.unregisterPush()
-            enabled = false
-            UserDefaults.standard.set(false, forKey: "omni.notifications.enabled")
-            token = nil
+            _ = try await registrationQueue.run { [self] in
+                try await app?.unregisterPush()
+                enabled = false
+                UserDefaults.standard.set(false, forKey: "omni.notifications.enabled")
+                token = nil
+                return true
+            }
             #if os(iOS)
             UIApplication.shared.unregisterForRemoteNotifications()
             #elseif os(macOS)
@@ -94,9 +110,44 @@ public final class NativeNotifications: NSObject, UNUserNotificationCenterDelega
     private func register(_ token: String) async {
         guard enabled, let app, app.phase == .signedIn, let environment = PushEnvironment.signed() else { return }
         do {
-            let deliveryEnabled = try await app.registerPush(token: token, environment: environment)
-            status = deliveryEnabled ? "Notifications are on." : "Registration saved. Server notifications are off."
+            let deliveryEnabled = try await registrationQueue.run { [self] in
+                // Read preference when this write reaches the front of the queue,
+                // after any earlier explicit save has committed locally.
+                guard enabled, app.phase == .signedIn else { return false }
+                return try await app.registerPush(token: token, environment: environment, preview: preview.rawValue)
+            }
+            if enabled { status = deliveryEnabled ? "Notifications are on." : "Registration saved. Server notifications are off." }
         } catch { status = "Could not connect notifications. Try again while connected." }
+    }
+
+    public func setPreview(_ value: Preview) async {
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
+        if enabled {
+            guard let token, let app, app.phase == .signedIn, let environment = PushEnvironment.signed() else {
+                status = "Reconnect notifications before changing the preview."
+                return
+            }
+            do {
+                let deliveryEnabled = try await registrationQueue.run { [self] in
+                    let result = try await app.registerPush(token: token, environment: environment, preview: value.rawValue)
+                    // Commit before the queue releases the next reconnect write.
+                    preview = value
+                    UserDefaults.standard.set(value.rawValue, forKey: "omni.notifications.preview")
+                    return result
+                }
+                status = deliveryEnabled ? "Notifications are on." : "Preview saved. Server notifications are off."
+            } catch {
+                status = "Could not save the preview. Try again while connected."
+                return
+            }
+        }
+        if !enabled {
+            preview = value
+            UserDefaults.standard.set(value.rawValue, forKey: "omni.notifications.preview")
+            status = "Preview saved. Notifications are off."
+        }
     }
 
     public func open(_ url: URL) {

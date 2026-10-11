@@ -76,9 +76,9 @@ public final class AppModel {
     }
 
     /// Requires a live native session; registration is triggered only after Settings opt-in.
-    public func registerPush(token: String, environment: String) async throws -> Bool {
+    public func registerPush(token: String, environment: String, preview: String = "generic") async throws -> Bool {
         guard phase == .signedIn, let service = self.environment?.service as? any NativePushService else { throw CancellationError() }
-        return try await service.registerPush(token: token, environment: environment)
+        return try await service.registerPush(token: token, environment: environment, preview: preview)
     }
 
     public func unregisterPush() async throws {

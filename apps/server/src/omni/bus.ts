@@ -1,10 +1,11 @@
 /**
  * In-process fan-out for the Omni module: per-thread stream subscribers (the
  * `/threads/:id/stream` SSE) and the owner-wide change channel (`/api/omni/events`,
- * ids only). Plus the push seam: an ids-only, content-free notification through the
+ * ids only). Plus the push seam: an per-device opt-in notification through the
  * existing APNs sender (injectable for tests).
  */
-import { apnsEnabled, sendApnsToOwner } from "../apns";
+import { apnsEnabled, sendApnsToOwner, type NotificationPreview, type ApnsNotification } from "../apns";
+import { getThread } from "./store";
 import { omniConfig } from "./config";
 import type { OmniEvent } from "./stream";
 
@@ -61,36 +62,60 @@ export function publishNotice(n: OmniNotice): void {
 
 /** Push categories (integration-contract.md § 4 Push). */
 export type OmniPushKind = "OMNI_THREAD" | "OMNI_APPROVAL";
-export type OmniPusher = (owner: string, kind: OmniPushKind, id: string) => Promise<void>;
+export type OmniPusher = (owner: string, kind: OmniPushKind, id: string, completedReply?: string) => Promise<void>;
 
-/**
- * Default: the existing APNs sender, content-free (`{type:"omni", category, id}` +
- * generic alert text; the app fetches everything else), only to Omni registrations.
- */
-const defaultPusher: OmniPusher = async (owner, kind, id) => {
-  if (!apnsEnabled()) return;
+/** Plain, bounded Unicode text. Code, links and local/media paths are not previews. */
+export function notificationText(value: string, max: number): string {
+  const plain = value.slice(0, 32_768)
+    .replace(/```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)/g, " ")
+    .replace(/`[^`]*(?:`|$)/g, " ")
+    .replace(/!\[[^\]]*\]\([^)]*\)|\[[^\]]*\]\([^)]*\.(?:wav|mp3|m4a|aac|ogg|flac|aiff|caf)[^)]*\)/gi, " ")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/(?:https?:\/\/|file:\/\/|\/|~\/)[^\s]+|\b[^\s]+\.(?:wav|mp3|m4a|aac|ogg|flac|aiff|caf)\b/gi, " ")
+    .replace(/[\p{Cc}\p{Cf}]/gu, " ")
+    .replace(/(?:^|\n)\s*(?:#{1,6}|>|[-*+] |\d+\. )/g, " ")
+    .replace(/[*_~]/g, "")
+    .replace(/\s+/g, " ").trim();
+  const chars = Array.from(plain);
+  return chars.length > max ? chars.slice(0, max - 1).join("") + "…" : plain;
+}
+
+/** Private payload construction: content never enters the owner-wide notice bus. */
+export function omniNotification(kind: OmniPushKind, id: string, preference: NotificationPreview = "generic", title?: string, completedReply?: string): ApnsNotification {
   const approval = kind === "OMNI_APPROVAL";
   const path = approval ? `approval/${encodeURIComponent(id)}` : `thread/${encodeURIComponent(id)}`;
-  await sendApnsToOwner(owner, {
+  let alertTitle = "Omni";
+  let body = approval ? "A draft is waiting for your review" : "Omni has an update";
+  // Without a completed visible answer (errors, external hooks, code/audio-only), stay generic.
+  const preview = completedReply ? notificationText(completedReply, 180) : "";
+  const threadTitle = title ? notificationText(title, 80) : "";
+  if (!approval && preference !== "generic" && preview && threadTitle) {
+    alertTitle = threadTitle;
+    if (preference === "title_preview") body = preview;
+  }
+  return {
     payload: {
-      aps: { alert: { title: "Omni", body: approval ? "A draft is waiting for your review" : "Omni has an update" }, sound: "default", category: kind, "thread-id": approval ? "omni-approvals" : `omni-${id}` },
-      type: "omni",
-      category: kind,
-      id,
-      url: `omni://${path}`,
+      aps: { alert: { title: alertTitle, body }, sound: "default", category: kind, "thread-id": approval ? "omni-approvals" : `omni-${id}` },
+      type: "omni", category: kind, id, url: `omni://${path}`,
     },
     collapseId: `omni-${kind}-${id}`.slice(0, 64),
-  }, "omni");
+  };
+}
+const defaultPusher: OmniPusher = async (owner, kind, id, completedReply) => {
+  if (!apnsEnabled()) return;
+  const title = kind === "OMNI_THREAD" ? getThread(id)?.title ?? undefined : undefined;
+  await sendApnsToOwner(owner, row => omniNotification(kind, id, row.preview, title, completedReply), "omni");
 };
 let pusher: OmniPusher = defaultPusher;
 export function setOmniPusherForTests(p: OmniPusher | null): void {
   pusher = p ?? defaultPusher;
 }
 /** Fire-and-forget; never throws. */
-export function pushOmni(kind: OmniPushKind, id: string): void {
+export function pushOmni(kind: OmniPushKind, id: string, completedReply?: string): void {
   try {
-    void pusher(omniConfig.ownerEmail(), kind, id).catch((e) => console.error(`[omni] push failed: ${(e as Error).message}`));
+    void pusher(omniConfig.ownerEmail(), kind, id, completedReply).catch(() => console.error("[omni] push failed"));
   } catch (e) {
-    console.error(`[omni] push failed: ${(e as Error).message}`);
+    console.error("[omni] push failed");
   }
 }

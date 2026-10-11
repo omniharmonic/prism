@@ -149,6 +149,7 @@ async function run(threadId: string, turnId: string, message: string, entry: Liv
   cap.unref?.();
   let errorCode: string | null = null;
   let timedOut = false;
+  let completedReply: string | undefined;
   let drain: NodeJS.Timeout | undefined;
   const handle = (ev: OmniEvent) => {
     if (ev.t === "init" && norm.runId && !entry.runId) {
@@ -177,7 +178,15 @@ async function run(threadId: string, turnId: string, message: string, entry: Liv
   try {
     for await (const frame of hermes.chatStream(threadId, message, entry.ac.signal)) {
       if (norm.ended) continue; // draining to Hermes' own end of stream
-      for (const ev of norm.push(frame)) handle(ev);
+      const events = norm.push(frame);
+      // Only terminal normalized text, never commentary, deltas or tool summaries.
+      const terminalMessages = Array.isArray(frame.data.messages) ? frame.data.messages : [];
+      const finalMessage = terminalMessages.at(-1) as { role?: string; display_kind?: string } | undefined;
+      if (frame.event === "run.completed" && finalMessage?.role === "assistant" && finalMessage.display_kind !== "hidden" && events.some(ev => ev.t === "result" && ev.ok)) {
+        const finalText = events.filter((ev): ev is Extract<OmniEvent, { t: "text" }> => ev.t === "text").at(-1);
+        completedReply = finalText?.text;
+      }
+      for (const ev of events) handle(ev);
       if (!norm.ended && norm.needsVerification) await verifyFromTranscript();
       await flushWrites();
       // The terminal frame is read. Let Hermes finish the response itself (`done`, close)
@@ -233,6 +242,6 @@ async function run(threadId: string, turnId: string, message: string, entry: Liv
   emit(threadId, turnId, { t: "status", state, ...(errorCode ? { reason: errorCode } : {}) });
   publishNotice({ type: "thread", id: threadId, op: state });
   // A stream can survive backgrounding, and one device cannot speak for the others.
-  // Send a content-free completion to registered devices; the OS handles presentation.
-  if (!cancelled && getThread(threadId)) pushOmni("OMNI_THREAD", threadId);
+  // Send completion according to each device’s preview preference; the OS handles presentation.
+  if (!cancelled && getThread(threadId)) pushOmni("OMNI_THREAD", threadId, !errorCode ? completedReply : undefined);
 }

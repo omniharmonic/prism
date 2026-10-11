@@ -316,14 +316,24 @@ gateway stores what was proposed, and the app's decision must carry that digest.
 `created|working|done|needs-you|waiting|message`; approval
 `pending|sent|failed|unknown|cancelled|revised`; card = the card op.
 
-Push (APNs, content-free, through the existing sender): `{aps:{alert:{title:"Omni", body:
+Push (APNs, generic by default, through the existing sender): `{aps:{alert:{title:"Omni", body:
 <generic>}, category}, type:"omni", category:"OMNI_THREAD"|"OMNI_APPROVAL", id, url:
 "omni://thread/<id>"|"omni://approval/<id>"}` — on a proposal, on an agent-initiated
 message, and when any non-cancelled turn ends for an existing thread. Stream
 subscriptions do not prove foreground visibility, so they never suppress completion
 pushes. Foreground presentation remains controlled by the OS.
 
-`POST /api/omni/push` takes `{token, environment:"sandbox"|"production"}` from an
+Each registration stores its own preview preference; existing and new registrations default to
+`generic`. Omission during token refresh preserves that device’s saved preference. The owner’s
+Omni device can change only its own registration by posting its token and new preference.
+Settings offers Generic update, Thread title, and Thread title and short reply preview, with
+lock-screen and Apple delivery disclosure. Opt-in applies only to successful completed visible
+assistant replies: title is limited to 80 Unicode characters and reply to 180, with code,
+control characters, markup, URLs and audio/file paths stripped. Empty, failed, interrupted,
+external-hook and approval updates retain generic alerts. Content never enters global SSE;
+Prism registrations stay generic. No transport error logs include notification payloads.
+
+`POST /api/omni/push` takes `{token, environment:"sandbox"|"production", preview?:"generic"|"title"|"title_preview"}` from an
 owner's live `omni-native` device credential. `DELETE /api/omni/push` removes that
 credential's registration. Browser sessions and Prism device credentials are refused.
 The server binds the application to the authenticated device client id and fixes Omni's

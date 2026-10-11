@@ -34,7 +34,7 @@ public extension OmniService {
 
 /// Optional native registration capability; sample services do not register with Apple.
 public protocol NativePushService: Sendable {
-    func registerPush(token: String, environment: String) async throws -> Bool
+    func registerPush(token: String, environment: String, preview: String) async throws -> Bool
     func unregisterPush() async throws
 }
 
@@ -46,7 +46,7 @@ public struct LiveOmniService: OmniService, NativePushService {
         self.client = client
     }
 
-    public func registerPush(token: String, environment: String) async throws -> Bool { try await client.registerPush(token: token, environment: environment) }
+    public func registerPush(token: String, environment: String, preview: String) async throws -> Bool { try await client.registerPush(token: token, environment: environment, preview: preview) }
     public func unregisterPush() async throws { try await client.unregisterPush() }
 
     public func threads(states: [ThreadState], search: String?, includeArchived: Bool) async throws -> ThreadList {
