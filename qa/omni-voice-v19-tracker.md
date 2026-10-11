@@ -13,7 +13,7 @@ Owner accepts Kokoro speech quality and reports voice generally working perfectl
 
 ## Verification
 
-Four isolated vocabulary-store regressions passed. Thirty-nine focused thread/voice-entry/submission/handoff tests passed. Integrated iOS Release compilation and DEBUG-hook source safeguard passed. Independent Sol review found no concrete ownership, reconciliation or layout-feedback regression. Final version19 packaging/install is pending.
+Four isolated vocabulary-store regressions passed. Thirty-nine focused thread/voice-entry/submission/handoff tests passed. Integrated iOS Release compilation and DEBUG-hook source safeguard passed. Independent Sol review found no concrete ownership, reconciliation or layout-feedback regression. Final version19 packaging and both mobile installs succeeded; physical acceptance is pending. Three offscreen layout smoke tests also passed, but their desktop renderer does not establish actual iOS animation quality or Pause/Mute appearance.
 
 ## Content-free diagnostics
 
@@ -28,3 +28,11 @@ Bounded server outcome inspection found ten recent successful Kokoro deliveries0
 3. Start a new voice thread; confirm submitted transcript precedes the reply and remains visible when reopening history, without duplication.
 4. Check Pause/Mute pill balance and listening/transcribing/responding height transitions on phone and iPad, including larger text/Reduce Motion.
 5. Confirm a long Kokoro reply, interruption and return to Listening still work. Existing accepted lifecycle is a regression gate.
+
+## Release and installation receipts
+
+PR129 merged as `9763a45c9ed505c043c3f62feaa1120ff2327cef`, tagged `omni-client-v2026.10.10-19`. Final signed iOS Release succeeded. Verified version19/identity, strict signature, compiled icons, both device profile IDs, and absence of DEBUG fixture strings. ZIP SHA256 `63cac10381388d3006309961cb6ed74cc5534c21bbfc16ad259bf081f1d8288a`. Owner confirmed both devices clear; both devicectl installs succeeded. Receipts: `/private/tmp/omni-client-v2026.10.10-19/{iphone,ipad}-install.log`. No backend deployment is required for these native fixes.
+
+Mac19 universal Release also succeeded with identity/version and DEBUG-hook checks; unsigned ZIP SHA256 `87f4444210c8d1b41672e2dbbaf1e2f87e4470180b8950303f6ea6ebb69b1031` matched on Mini. Staged under `~/release-artifacts/omni-client-v2026.10.10-19/omni`, with existing18 public provisioning profile and exact release entitlements. Owner signing requested through `~/release-artifacts/sign-omni-v19.sh`; Mac19 signing/notarization/install remain pending.
+
+Separately, Apple accepted Mac18 submission `3db229f4-915b-4ca0-859e-26a020abac3e`. Stapling, validation, strict signature and Gatekeeper all passed. Stapled ZIP SHA256 `761608490e18d2435f3ded9ff4eca5fa3b563e3469c83ad13c0950c62ba194e9` matched after copying to laptop. `/Applications/Omni.app` did not exist; installed the exact verified18 artifact and revalidated signature/ticket. Launched app; native UI showed signed-in threads and a new voice window in Preparing voice state. This proves launch and account access, not microphone/wake acceptance. Mac18 does not contain19's new vocabulary/settings fixes.
