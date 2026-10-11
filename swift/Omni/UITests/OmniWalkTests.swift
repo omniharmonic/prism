@@ -4,6 +4,31 @@ import XCTest
 /// a screenshot of each. Runs against the laptop dev backend (stub Hermes; nothing can send).
 final class OmniWalkTests: OmniUITestCase {
     #if os(iOS)
+    /// Opening from the main Settings sheet must carry its device into the very first
+    /// presentation. A separate sheet Boolean used to present an empty sheet on iOS.
+    func testVoicePlaybackSettingsFirstOpeningAndReopeningShowsControls() {
+        continueAfterFailure = false
+        launch(faults: "sample-data")
+        openSettings()
+
+        for opening in 1...2 {
+            press("settings.voice")
+            XCTAssertTrue(app.navigationBars["Voice & Playback"].waitForExistence(timeout: 5),
+                          "Voice settings must render on opening \(opening)")
+            XCTAssertTrue(element("voice.vocabulary").waitForExistence(timeout: 5),
+                          "Recognition vocabulary must exist on opening \(opening)")
+            see("Speech provider", 5)
+            XCTAssertTrue(text("Speech provider").exists,
+                          "The provider control must render on opening \(opening)")
+            shot("voice-settings-opening-\(opening)")
+            let done = app.navigationBars["Voice & Playback"].buttons["Done"]
+            XCTAssertTrue(done.isHittable)
+            done.tap()
+            XCTAssertTrue(element("settings.voice").waitForExistence(timeout: 5),
+                          "Done must return to the main Settings sheet")
+        }
+    }
+
     func testIPhoneFirstVoiceTurnContinuesInMainChatWithoutSheet() throws {
         try XCTSkipUnless(Run.usesTabs, "This regression exercises iPhone main-chat navigation.")
         continueAfterFailure = false

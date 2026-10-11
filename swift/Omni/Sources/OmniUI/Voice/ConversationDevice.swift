@@ -32,6 +32,8 @@ import OmniVoiceKit
         self.speech = speech; self.replyPreferences = replyPreferences; self.diagnostic = diagnostic
     }
     private(set) var replyProviders: [VoiceProvider] = []
+    private(set) var replyProvidersLoading = false
+    private var replyCatalogLoadID = UUID()
     private(set) var replySpeechNotice: String?
     private var replySpeechSessionID = UUID().uuidString
     private let replyPreviewOwner = UUID()
@@ -46,13 +48,16 @@ import OmniVoiceKit
     }
     func refreshReplyProviders() async {
         let request = generation; let revision = replyServiceRevision
-        guard let service = replySpeechService else { replyProviders = []; return }
+        let loadID = UUID(); replyCatalogLoadID = loadID
+        guard let service = replySpeechService else { replyProviders = []; replyProvidersLoading = false; return }
+        replyProvidersLoading = true
+        defer { if replyCatalogLoadID == loadID { replyProvidersLoading = false } }
         do {
             let providers = try await service.voiceProviders().providers
-            guard !Task.isCancelled, generation == request, replyServiceRevision == revision else { return }
+            guard !Task.isCancelled, generation == request, replyServiceRevision == revision, replyCatalogLoadID == loadID else { return }
             replyProviders = providers; replyCatalogGeneration = request
         } catch {
-            guard !Task.isCancelled, generation == request, replyServiceRevision == revision else { return }
+            guard !Task.isCancelled, generation == request, replyServiceRevision == revision, replyCatalogLoadID == loadID else { return }
             replyProviders = []; replyCatalogGeneration = request
         }
     }
