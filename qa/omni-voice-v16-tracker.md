@@ -15,3 +15,5 @@ The 37 KB synthetic MP3 is a test-only resource. Tests decode every frame with b
 ## Remaining acceptance
 
 Both short and long replies must finish their last words and return to Listening on physical devices, including after interruption. The underlying audio configuration stop on a separate capture remains open; do not conflate it with this reproduced decoder bug. V03 routes/echo/soak, V04 activation, V05 wake lead-in/energy, and modular local-model quality gates remain in the canonical voice roadmap. No backend/vault changes.
+
+Integrated verification: 219 Core + 42 UI tests passed in `/private/tmp/omni-v16-native-tests.log`; focused speech log `/private/tmp/omni-v16-speech-tests.log`. Source release guard and diff checks passed. Physical acceptance remains pending.
