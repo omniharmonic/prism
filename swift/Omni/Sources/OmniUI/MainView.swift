@@ -385,7 +385,7 @@ struct TabMainView: View {
         .sheet(isPresented: $showingNewThread, onDismiss: newThreadSheetDismissed) {
             NavigationStack {
                 Group {
-                    if let id = voiceSheetHandoff.threadID {
+                    if let id = voiceSheetThreadID {
                         ThreadView(session: session, model: session.threadModel(for: id)).id(id)
                     } else {
                         NewThreadView(session: session)
@@ -393,7 +393,7 @@ struct TabMainView: View {
                 }
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
-                            Button(voiceSheetHandoff.threadID == nil ? "Cancel" : "Done") { showingNewThread = false }
+                            Button(voiceSheetThreadID == nil ? "Cancel" : "Done") { showingNewThread = false }
                                 .accessibilityIdentifier("voice.sheet.close")
                         }
                     }
@@ -444,6 +444,9 @@ struct TabMainView: View {
         .task { await session.approvals.refresh() }
     }
 
+    private var voiceSheetThreadID: String? {
+        voiceSheetHandoff.contentThreadID(session: session, destination: session.destination, isPresented: showingNewThread)
+    }
     private func newThreadSheetDismissed() {
         if let destination = voiceSheetHandoff.dismissed(destination: session.destination) { open(destination) }
     }

@@ -23,6 +23,8 @@ import XCTest
         await active.start()
         await active.finish { await session.startVoiceThread(prompt: $0, voice: active) }
         var handoff = VoiceSheetHandoff()
+        XCTAssertEqual(handoff.contentThreadID(session: session, destination: session.destination, isPresented: true), "sheet-voice", "The creation render must already show the thread before the destination observer stores its ID")
+        XCTAssertNil(handoff.threadID, "Resolving the first content frame does not mutate navigation")
         XCTAssertTrue(handoff.retain(session: session, destination: session.destination, isPresented: true))
         XCTAssertEqual(handoff.threadID, "sheet-voice")
         XCTAssertTrue(active.isSessionActive)
@@ -30,6 +32,7 @@ import XCTest
         XCTAssertNil(handoff.threadID)
         XCTAssertFalse(handoff.retain(session: session, destination: session.destination, isPresented: false))
         active.cancel()
+        XCTAssertNil(handoff.contentThreadID(session: session, destination: session.destination, isPresented: true))
         XCTAssertFalse(handoff.retain(session: session, destination: session.destination, isPresented: true), "Text creation or an ended voice session follows normal navigation")
         session.stop()
     }
