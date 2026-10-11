@@ -189,7 +189,7 @@ test("GET /acl/workers: owner gets sources; admin / anon are 403; no secret mate
 
 test('link-health exposes actual scan streak and last healthy time without waiting for three failures', async () => {
   const enabled = config.linkHealthEnabled;
-  config.linkHealthEnabled = true;
+  Object.assign(config, { linkHealthEnabled: true });
   try {
     const at = new Date().toISOString(), healthy = '2026-10-01T00:00:00.000Z';
     setWorkerCursor('primary', 'link-health', JSON.stringify({ at, lastSuccessAt: healthy, failureStreak: 1, taskCohortVersion: 2, status: 'failing', low: ['task.project'], truncated: [], measures: { 'task.project': { n: 30, hit: 10, share: .333, level: .9 } } }));
@@ -198,5 +198,5 @@ test('link-health exposes actual scan streak and last healthy time without waiti
     assert.equal(health.status, 'failing');
     assert.equal(health.lastSuccessAt, healthy);
     assert.equal(health.detail?.lastRunAt, at);
-  } finally { config.linkHealthEnabled = enabled; }
+  } finally { Object.assign(config, { linkHealthEnabled: enabled }); }
 });
