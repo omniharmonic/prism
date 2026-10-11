@@ -1,6 +1,6 @@
 # Omni voice v15 release candidate
 
-Checkpoint: 2026-10-10 local time. **Mobile build 14 is installed. Build 15 source repair and regression verification are complete; packaging and physical acceptance remain pending.** Server 15 remains live. Historical release receipts and prior investigation remain in the [v14 tracker](omni-voice-v14-tracker.md); scope remains [V01–V05](../docs/roadmap/omni-conversational-voice-plan.md).
+Checkpoint: 2026-10-10 local time. **Mobile build 14 is installed. Build 15 source repair and regression verification are complete; packaging and installation are complete; physical acceptance remains pending.** Server 15 remains live. Historical release receipts and prior investigation remain in the [v14 tracker](omni-voice-v14-tracker.md); scope remains [V01–V05](../docs/roadmap/omni-conversational-voice-plan.md).
 
 ## Latest owner report
 
@@ -43,11 +43,11 @@ Independent continuity review found no blocker: canceled old drain tasks cannot 
 
 Physical acceptance remains mandatory: intentionally interrupt one reply, then hear a complete subsequent long reply and return to Listening. A successful build does not close this gate.
 
-## Tagged artifacts — installation pending
+## Tagged artifacts and mobile installation
 
 PR #119 merged as `aee44ef3`, tagged `omni-client-v2026.10.10-15`. Both Release builds succeeded from that tag. iOS strict signature, bundle version/identifier and DEBUG-symbol exclusion passed; Mac version/identifier, universal arm64+x86_64 and exclusion checks passed. Artifacts are private at `/private/tmp/omni-client-v2026.10.10-15`:
 
 - `ios.zip`: SHA-256 `cef5ab815a2b83bb71b8ce3787d8df2781bb48c66476dd3496d9f8b328d6035e`.
 - `mac-unsigned.zip`: SHA-256 `444fbac6fa72bf2d802668cb03224136031e70a971658438003d31c9ad79e17f`. Local unsigned candidate only; not signed, notarized or installed.
 
-Build logs: `/private/tmp/omni-v15-ios-release.log`, `/private/tmp/omni-v15-mac-release.log`. The mobile readiness question is pending; no build 15 device installation is claimed. Mac 13's existing Apple submission was checked again and remains In Progress; no duplicate submission. GitHub cargo checks pass; wider e2e/typecheck jobs remain pending, separately from the passing relevant local native tests. No backend or vault change.
+Build logs: `/private/tmp/omni-v15-ios-release.log`, `/private/tmp/omni-v15-mac-release.log`. After owner readiness confirmation, build 15 installed successfully on iPhone and iPad. The initial iPhone connection reset; one retry succeeded. Receipts: `iphone-install-retry.log` and `ipad-install.log` in the private artifact directory. No launch or physical voice acceptance is inferred from installation. Mac 13's existing Apple submission was checked again and remains In Progress; no duplicate submission. GitHub cargo checks pass; wider e2e/typecheck jobs remain pending, separately from the passing relevant local native tests. No backend or vault change.
