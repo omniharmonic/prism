@@ -41,7 +41,7 @@ let package = Package(
         .testTarget(name: "OmniCoreTests", dependencies: ["OmniCore"]),
         // Renders the Mac screens off-screen from sample data and writes PNGs (TESTING.md).
         // No server, no window on screen.
-        .testTarget(name: "OmniUISnapshotTests", dependencies: ["OmniUI", "OmniCore"]),
+        .testTarget(name: "OmniUISnapshotTests", dependencies: ["OmniUI", "OmniCore"], resources: [.copy("Fixtures")]),
     ],
     swiftLanguageModes: [.v6]
 )

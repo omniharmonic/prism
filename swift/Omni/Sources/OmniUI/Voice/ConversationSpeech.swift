@@ -233,15 +233,9 @@ import OmniVoiceKit
             guard FileManager.default.createFile(atPath: url.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
                 throw VoiceFailure.unavailable("Speech audio could not be prepared.")
             }
-            let file: AVAudioFile
-            do { file = try AVAudioFile(forReading: url) }
+            let file: EncodedSpeechFile
+            do { file = try EncodedSpeechFile(url: url) }
             catch { try? FileManager.default.removeItem(at: url); throw error }
-            guard file.processingFormat.sampleRate >= 8_000, file.processingFormat.sampleRate <= 192_000,
-                  file.processingFormat.channelCount > 0, file.processingFormat.channelCount <= 8,
-                  Double(file.length) / file.processingFormat.sampleRate <= 600 else {
-                try? FileManager.default.removeItem(at: url)
-                throw VoiceFailure.unavailable("Speech audio exceeded its playback limits.")
-            }
             let token = NSObject()
             let id = ObjectIdentifier(token)
             completions[id] = completion
@@ -249,19 +243,10 @@ import OmniVoiceKit
                 await EncodedSpeechRead.withTemporaryFile(url) {
                     guard let self else { return }
                     do {
-                        var decodedFrames: Int64 = 0
                         while true {
                             try Task.checkCancellation()
                             guard self.encodedGeneration == request, self.completions[id] != nil else { return }
-                            let count: AVAudioFrameCount = 4096
-                            guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: count) else { throw VoiceFailure.unavailable("Speech audio could not be decoded.") }
-                            let hasFrames = try EncodedSpeechRead.read(total: &decodedFrames, maximum: Int64(file.processingFormat.sampleRate * 600)) {
-                                try file.read(into: buffer, frameCount: count)
-                                return buffer.frameLength
-                            }
-                            // Compressed length is an estimate. A successful zero-frame
-                            // read is EOF, not a buffer to charge to the hardware queue.
-                            guard hasFrames else { break }
+                            guard let buffer = try file.read() else { break }
                             await self.accept(buffer, id: id)
                         }
                         guard !Task.isCancelled, self.encodedGeneration == request else { return }
