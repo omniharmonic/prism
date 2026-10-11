@@ -7,8 +7,12 @@ public struct SettingsView: View {
     private let app: AppModel
     @State private var confirmingSignOut = false
     @State private var showingSpeechBench = false
-    @State private var showingVoiceSettings = false
-    @State private var voiceSettingsDevice: ConversationDevice?
+    @State private var voiceSettingsPresentation: VoiceSettingsPresentation?
+
+    private struct VoiceSettingsPresentation: Identifiable {
+        let id = UUID()
+        let device: ConversationDevice
+    }
 
     public init(app: AppModel) {
         self.app = app
@@ -52,8 +56,7 @@ public struct SettingsView: View {
                 Button("Voice & Playback Settings") {
                     let device = (app.session?.conversationAudio as? ConversationDevice) ?? ConversationDevice()
                     device.configureReplySpeech(service: app.session?.replySpeechService)
-                    voiceSettingsDevice = device
-                    showingVoiceSettings = true
+                    voiceSettingsPresentation = VoiceSettingsPresentation(device: device)
                 }
                     .accessibilityIdentifier("settings.voice")
             }
@@ -93,11 +96,9 @@ public struct SettingsView: View {
                     .foregroundStyle(Color.quietText)
             }
         }
-        .sheet(isPresented: $showingVoiceSettings) {
-            if let device = voiceSettingsDevice {
-                ConversationVoiceSettings(device: device)
-                    .modifier(PrivacyLockCover())
-            }
+        .sheet(item: $voiceSettingsPresentation) { presentation in
+            ConversationVoiceSettings(device: presentation.device)
+                .modifier(PrivacyLockCover())
         }
         .sheet(isPresented: $showingSpeechBench) {
             NavigationStack {
