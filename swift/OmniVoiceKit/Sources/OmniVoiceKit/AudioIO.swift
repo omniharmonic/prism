@@ -161,7 +161,8 @@ final class CaptureFile: @unchecked Sendable {
     /// Synthesized PCM shares the voice-processing engine's output reference.
     /// This is only valid while explicitly opted-in microphone capture is active.
     public func play(_ buffer: AVAudioPCMBuffer, completion: @escaping @Sendable () -> Void) async throws {
-        guard engine.isRunning, file != nil else { throw VoiceFailure.unavailable("The conversation microphone is not active.") }
+        guard engine.isRunning else { throw SpeechPlaybackFailure.engineInactive }
+        guard file != nil else { throw SpeechPlaybackFailure.captureMissing }
         if playbackFormat != buffer.format {
             player.stop()
             engine.disconnectNodeOutput(player)
@@ -169,7 +170,8 @@ final class CaptureFile: @unchecked Sendable {
             playbackFormat = buffer.format
         }
         try await playbackQueue.schedule(buffer) { [self] pcm, release in
-            guard engine.isRunning, file != nil else { throw VoiceFailure.unavailable("The conversation playback route ended.") }
+            guard engine.isRunning else { throw SpeechPlaybackFailure.engineInactive }
+            guard file != nil else { throw SpeechPlaybackFailure.captureMissing }
             player.scheduleBuffer(pcm, completionCallbackType: .dataPlayedBack, completionHandler: Self.playbackCallback(release: release, completion: completion))
             if !player.isPlaying { player.play() }
         }

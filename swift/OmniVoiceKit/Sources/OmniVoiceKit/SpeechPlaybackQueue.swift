@@ -20,7 +20,7 @@ import Foundation
         let bytes = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList).reduce(0) { $0 + Int($1.mDataByteSize) }
         let cost = Cost(seconds: Double(buffer.frameLength) / buffer.format.sampleRate, bytes: bytes)
         guard cost.seconds.isFinite, cost.seconds > 0, cost.seconds <= maximumSeconds, bytes <= maximumBytes else {
-            throw VoiceFailure.unavailable("A synthesized buffer exceeds the playback budget.")
+            throw SpeechPlaybackFailure.bufferBudget
         }
         let id = UUID()
         try await withTaskCancellationHandler {

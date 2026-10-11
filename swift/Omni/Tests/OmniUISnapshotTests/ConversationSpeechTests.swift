@@ -1,9 +1,33 @@
 import XCTest
 import OmniCore
 import OmniClient
+import OmniVoiceKit
 @testable import OmniUI
 
 @MainActor final class ConversationSpeechTests: XCTestCase {
+    func testPlaybackFailureCategoriesNeverInspectPrivateErrorDetails() {
+        XCTAssertEqual(SpeechPlaybackDiagnostic.event(for: SpeechPlaybackFailure.routeLost), .playbackRouteLost)
+        XCTAssertEqual(SpeechPlaybackDiagnostic.event(for: SpeechPlaybackFailure.engineInactive), .playbackEngineInactive)
+        XCTAssertEqual(SpeechPlaybackDiagnostic.event(for: SpeechPlaybackFailure.captureMissing), .playbackCaptureMissing)
+        XCTAssertEqual(SpeechPlaybackDiagnostic.event(for: SpeechPlaybackFailure.bufferBudget), .playbackBufferBudget)
+        XCTAssertEqual(SpeechPlaybackDiagnostic.event(for: NSError(domain: "private fixture", code: 99, userInfo: [NSLocalizedDescriptionKey: "private text"])), .playbackOtherFailure)
+    }
+    func testDecodedEOFDoesNotReachPlaybackQueue() throws {
+        var total: Int64 = 0
+        var queued: [UInt32] = []
+        for frames: UInt32 in [4096, 128, 0, 4096] {
+            guard try EncodedSpeechRead.read(total: &total, maximum: 4800, decode: { frames }) else { break }
+            queued.append(frames)
+        }
+        XCTAssertEqual(queued, [4096, 128])
+        XCTAssertEqual(total, 4224)
+        enum Malformed: Error { case fixture }
+        XCTAssertThrowsError(try EncodedSpeechRead.read(total: &total, maximum: 4800) { throw Malformed.fixture }) { XCTAssertTrue($0 is Malformed) }
+        XCTAssertEqual(total, 4224)
+        var empty: Int64 = 0
+        XCTAssertThrowsError(try EncodedSpeechRead.continueReading(0, total: &empty, maximum: 4800))
+        XCTAssertThrowsError(try EncodedSpeechRead.continueReading(4096, total: &total, maximum: 4800))
+    }
     final class Output: ConversationSpeechOutput {
         var texts: [String] = []
         var identifiers: [String?] = []
