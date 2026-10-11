@@ -1,0 +1,70 @@
+{
+  "date": "2026-10-10",
+  "status": "inventory_only_download_cap_exceeded",
+  "model": {
+    "repository": "KittenML/kitten-tts-nano-0.8-int8",
+    "revision": "84781d74e29ee25217551556398b42f80593a813",
+    "gated": false,
+    "card_license": "apache-2.0",
+    "assets": [
+      {
+        "path": "kitten_tts_nano_v0_8.onnx",
+        "bytes": 24369971,
+        "sha256": "f7b0afcbee92870b32b8e0276d855b954dc25470c9f051b376ac7eee537c76fc"
+      },
+      {
+        "path": "voices.npz",
+        "bytes": 3278902,
+        "sha256": "8aa7cee235abb0739cb51e6559685f65a4dacd95568833d05699b1633f519b3f"
+      },
+      {
+        "path": "config.json",
+        "bytes": 688,
+        "git_blob": "8c355969ab588312955926793828b5f5ca273fe1"
+      },
+      {
+        "path": "README.md",
+        "bytes": 741,
+        "git_blob": "cd9997a3bae316ef9be7b1a70632049e6ba6deee"
+      }
+    ],
+    "selected_asset_bytes": 27650302,
+    "license_file_in_model_repository": false
+  },
+  "runtime_wheel": {
+    "url": "https://github.com/KittenML/KittenTTS/releases/download/0.8/kittentts-0.8.0-py3-none-any.whl",
+    "bytes": 21601,
+    "sha256": "cba97464da2ec56384b9fc03004449dadbe6d9abd16aa89e98953027854fd7d9",
+    "internal_metadata_version": "0.1.0",
+    "internal_license": "Apache 2.0",
+    "inspected_in_memory": true
+  },
+  "dependency_lower_bound": {
+    "chain": [
+      "kittentts release0.8 wheel",
+      "misaki[en]>=0.9.4",
+      "spacy-curated-transformers",
+      "torch>=1.12.0"
+    ],
+    "candidate_torch": "torch-2.14.1-cp312-cp312-macosx_14_0_arm64.whl",
+    "torch_bytes": 127307099,
+    "torch_sha256": "420dbf314c180ee4b86e9bc00aee5746a7d6e5bacdd7df925af671ed393f0b2e",
+    "model_plus_torch_bytes": 154957401,
+    "cap_bytes": 150000000,
+    "complete_resolution": false
+  },
+  "execution": {
+    "weights_downloaded": false,
+    "dependencies_installed": false,
+    "inference": false,
+    "playback": false,
+    "global_environment_changes": false
+  },
+  "sources": [
+    "https://huggingface.co/api/models/KittenML/kitten-tts-nano-0.8-int8?blobs=true",
+    "https://api.github.com/repos/KittenML/KittenTTS/releases/tags/0.8",
+    "https://pypi.org/pypi/misaki/json",
+    "https://pypi.org/pypi/spacy-curated-transformers/json",
+    "https://pypi.org/pypi/torch/json"
+  ]
+}
