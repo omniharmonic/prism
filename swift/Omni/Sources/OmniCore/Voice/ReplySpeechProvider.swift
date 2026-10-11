@@ -26,7 +26,7 @@ public enum ReplySpeechRendering: Sendable {
     case encodedAudio(Data)
 }
 /// A new local model adapter can implement this seam without changing sessions or playback.
-/// Only the shipped Apple and authenticated Hermes adapters are exposed in settings.
+/// Local Apple and authenticated paired-server adapters share playback ownership.
 public protocol ReplySpeechProvider: Sendable {
     func render(_ text: String) async throws -> ReplySpeechRendering
 }
@@ -34,17 +34,18 @@ public struct AppleReplySpeechProvider: ReplySpeechProvider {
     public init() {}
     public func render(_ text: String) async throws -> ReplySpeechRendering { try Task.checkCancellation(); return .systemVoice(text) }
 }
-public struct HermesEdgeReplySpeechProvider: ReplySpeechProvider {
+public struct HermesReplySpeechProvider: ReplySpeechProvider {
+    private let providerID: String
     private let service: any HermesSpeechService
     private let sessionID: String
     private let voiceID: String
     private let diagnostic: @Sendable (VoiceDiagnosticEvent) -> Void
-    public init(service: any HermesSpeechService, sessionID: String, voiceID: String, diagnostic: @escaping @Sendable (VoiceDiagnosticEvent) -> Void = VoiceDiagnostics.record) {
-        self.service = service; self.sessionID = sessionID; self.voiceID = voiceID; self.diagnostic = diagnostic
+    public init(service: any HermesSpeechService, sessionID: String, voiceID: String, providerID: String = "hermes-edge", diagnostic: @escaping @Sendable (VoiceDiagnosticEvent) -> Void = VoiceDiagnostics.record) {
+        self.providerID = providerID; self.service = service; self.sessionID = sessionID; self.voiceID = voiceID; self.diagnostic = diagnostic
     }
     public func render(_ text: String) async throws -> ReplySpeechRendering {
         let requestID = UUID().uuidString
-        let request = VoiceSynthesisRequest(sessionID: sessionID, requestID: requestID, providerID: "hermes-edge", voiceID: voiceID, text: text)
+        let request = VoiceSynthesisRequest(sessionID: sessionID, requestID: requestID, providerID: providerID, voiceID: voiceID, text: text)
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
             diagnostic(.synthesisStarted)
@@ -62,17 +63,21 @@ public struct HermesEdgeReplySpeechProvider: ReplySpeechProvider {
         }
     }
 }
+public typealias HermesEdgeReplySpeechProvider = HermesReplySpeechProvider
+
 @MainActor @Observable public final class ReplySpeechPreferences {
-    public enum Provider: String, CaseIterable, Sendable { case apple, hermesEdge = "hermes-edge" }
+    public enum Provider: String, CaseIterable, Sendable { case apple, hermesEdge = "hermes-edge", kokoro = "kokoro-local" }
     public var provider: Provider { didSet { defaults.set(provider.rawValue, forKey: "omni.replySpeech.provider") } }
     public var edgeVoiceID: String? { didSet { defaults.set(edgeVoiceID, forKey: "omni.replySpeech.edgeVoice") } }
+    public var kokoroVoiceID: String { didSet { defaults.set(kokoroVoiceID, forKey: "omni.replySpeech.kokoroVoice") } }
     private let defaults: UserDefaults
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        // Owner chose Hermes for this rollout. Preserve every later explicit choice,
+        // Prefer Kokoro for new installations. Preserve every explicit choice,
         // including Apple and its independent downloaded-voice identifier.
-        provider = defaults.string(forKey: "omni.replySpeech.provider").flatMap(Provider.init(rawValue:)) ?? .hermesEdge
+        provider = defaults.string(forKey: "omni.replySpeech.provider").flatMap(Provider.init(rawValue:)) ?? .kokoro
         edgeVoiceID = defaults.string(forKey: "omni.replySpeech.edgeVoice")
+        kokoroVoiceID = defaults.string(forKey: "omni.replySpeech.kokoroVoice") ?? "af_heart"
     }
 }
 public enum ReplySpeechPassages {

@@ -124,7 +124,7 @@ test("hard deadline aborts worker and reports timeout", async context => {
   context.mock.timers.reset();
   setVoiceProviderForTests({ id: "hermes-edge", available: async () => true, synthesize: async () => audio });
 });
-test("named config helper dry-run preserves all values; apply backs up and updates paths only", async () => {
+for (const provider of ["edge", "kokoro"]) test(`named ${provider} config helper preserves unrelated values and backs up exact paths`, async () => {
   const { mkdtemp, mkdir, writeFile, readFile, rm, stat, readdir } = await import("node:fs/promises");
   const { join, resolve } = await import("node:path");
   const { tmpdir } = await import("node:os");
@@ -133,11 +133,11 @@ test("named config helper dry-run preserves all values; apply backs up and updat
   try {
     await mkdir(join(root, "tools"));
     await writeFile(join(root, "tools", "tts_tool.py"), "# fixture\n");
-    const original = "FIXTURE_TOKEN=@keychain:fixture\nOTHER_FLAG=unchanged\n";
+    const original = "FIXTURE_TOKEN=@keychain:fixture\nOTHER_FLAG=unchanged\n" + (provider === "kokoro" ? "OMNI_TTS_HERMES_ROOT=/existing/edge\n" : "");
     await writeFile(join(root, ".env.tmpl"), original);
     await writeFile(join(root, ".env"), "FIXTURE_TOKEN=synthetic-secret-never-print\n");
     const python = execFileSync("which", ["python3"], { encoding: "utf8" }).trim();
-    const args = [resolve("scripts/configure-omni-tts.py"), "--server-dir", root, "--hermes-root", root, "--python", python];
+    const args = [resolve("scripts/configure-omni-tts.py"), "--server-dir", root, ...(provider === "edge" ? ["--hermes-root", root, "--python", python] : ["--kokoro-executable", python, "--kokoro-cache", root])];
     const dry = execFileSync(python, args, { encoding: "utf8" });
     assert.doesNotMatch(dry, /synthetic-secret|@keychain/);
     assert.equal(await readFile(join(root, ".env.tmpl"), "utf8"), original);
@@ -146,7 +146,7 @@ test("named config helper dry-run preserves all values; apply backs up and updat
     assert.doesNotMatch(result, /synthetic-secret|@keychain/);
     const updated = await readFile(join(root, ".env.tmpl"), "utf8");
     assert.ok(updated.startsWith(original));
-    assert.ok(updated.includes(`OMNI_TTS_HERMES_ROOT=${root}\n`));
+    assert.ok(updated.includes(provider === "edge" ? `OMNI_TTS_HERMES_ROOT=${root}\n` : `OMNI_TTS_KOKORO_CACHE=${root}\n`));
     assert.equal(await readFile(join(root, ".env"), "utf8"), "FIXTURE_TOKEN=synthetic-secret-never-print\n");
     assert.equal((await stat(join(root, ".env.tmpl"))).mode & 0o777, 0o600);
     const [backup] = await readdir(join(root, "omni-tts-config-backups"));

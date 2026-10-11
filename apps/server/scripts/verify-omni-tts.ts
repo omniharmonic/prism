@@ -33,7 +33,9 @@ async function readBounded(response: Response, limit: number): Promise<Uint8Arra
   for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
   return body;
 }
-export async function verifyOmniTTS(deps: VoiceSmokeDependencies): Promise<void> {
+export async function verifyOmniTTS(deps: VoiceSmokeDependencies, providerID: "hermes-edge" | "kokoro-local" = "hermes-edge"): Promise<void> {
+  const voiceID = providerID === "kokoro-local" ? "af_heart" : "en-US-AriaNeural";
+  const expectedType = providerID === "kokoro-local" ? "audio/wav" : "audio/mpeg";
   if (!Number.isInteger(deps.port) || deps.port < 1 || deps.port > 65535 || !deps.ownerEmail || !/^https?:\/\//.test(deps.origin)) throw new Error("smoke_configuration");
   const base = `http://127.0.0.1:${deps.port}/api/omni/voice`;
   const credential = randomBytes(32).toString("base64url");
@@ -45,7 +47,7 @@ export async function verifyOmniTTS(deps: VoiceSmokeDependencies): Promise<void>
     const response = await deps.fetch(base + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), redirect: "error", signal });
     const type = (response.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
     const bytes = await readBounded(response, method === "POST" ? MAX_AUDIO : 64 * 1024);
-    deps.log({ status: response.status, type, bytes: bytes.byteLength, elapsedMs: Math.round(performance.now() - start), providerID: "hermes-edge" });
+    deps.log({ status: response.status, type, bytes: bytes.byteLength, elapsedMs: Math.round(performance.now() - start), providerID });
     return { response, type, bytes };
   };
   let created = false;
@@ -54,12 +56,14 @@ export async function verifyOmniTTS(deps: VoiceSmokeDependencies): Promise<void>
     const catalog = await measure("/providers", "GET");
     if (catalog.response.status !== 200 || catalog.type !== "application/json") throw new Error("smoke_catalog");
     const metadata = JSON.parse(new TextDecoder().decode(catalog.bytes));
-    const provider = Array.isArray(metadata.providers) ? metadata.providers.find((p: { id?: string }) => p.id === "hermes-edge") : null;
-    if (!provider?.available || provider.defaultVoiceID !== "en-US-AriaNeural") throw new Error("smoke_unavailable");
-    const payload = { sessionID, requestID, providerID: "hermes-edge", voiceID: "en-US-AriaNeural", text: SYNTHETIC_TEXT };
+    const provider = Array.isArray(metadata.providers) ? metadata.providers.find((p: { id?: string }) => p.id === providerID) : null;
+    if (!provider?.available || provider.defaultVoiceID !== voiceID) throw new Error("smoke_unavailable");
+    const payload = { sessionID, requestID, providerID, voiceID, text: SYNTHETIC_TEXT };
     const audio = await measure("/synthesis", "POST", payload);
-    if (audio.response.status !== 200 || audio.type !== "audio/mpeg" || audio.bytes.byteLength < 4 ||
-      !(new TextDecoder().decode(audio.bytes.subarray(0, 3)) === "ID3" || (audio.bytes[0] === 0xff && (audio.bytes[1]! & 0xe0) === 0xe0))) throw new Error("smoke_audio");
+    const validAudio = providerID === "kokoro-local"
+      ? audio.bytes.byteLength >= 46 && new TextDecoder().decode(audio.bytes.subarray(0, 4)) === "RIFF" && new TextDecoder().decode(audio.bytes.subarray(8, 12)) === "WAVE"
+      : new TextDecoder().decode(audio.bytes.subarray(0, 3)) === "ID3" || (audio.bytes[0] === 0xff && (audio.bytes[1]! & 0xe0) === 0xe0);
+    if (audio.response.status !== 200 || audio.type !== expectedType || !validAudio) throw new Error("smoke_audio");
     const cancelled = await measure(`/synthesis/${cancelledID}`, "DELETE", { sessionID });
     if (cancelled.response.status !== 200) throw new Error("smoke_cancel");
     const suppressed = await measure("/synthesis", "POST", { ...payload, requestID: cancelledID });
@@ -72,11 +76,11 @@ export async function verifyOmniTTS(deps: VoiceSmokeDependencies): Promise<void>
   }
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  if (process.argv.length !== 2) { process.exitCode = 2; }
+  if (process.argv.length > 3 || (process.argv[2] && process.argv[2] !== "kokoro-local" && process.argv[2] !== "hermes-edge")) { process.exitCode = 2; }
   else {
     const { config } = await import("../src/config");
     const { createSession, destroySession } = await import("../src/db");
-    try { await verifyOmniTTS({ port: config.port, ownerEmail: config.ownerEmail, origin: config.appOrigin, createSession, destroySession, fetch, log: value => console.log(JSON.stringify(value)) }); }
+    try { await verifyOmniTTS({ port: config.port, ownerEmail: config.ownerEmail, origin: config.appOrigin, createSession, destroySession, fetch, log: value => console.log(JSON.stringify(value)) }, process.argv[2] as "kokoro-local" | "hermes-edge" | undefined); }
     catch { process.exitCode = 1; }
   }
 }

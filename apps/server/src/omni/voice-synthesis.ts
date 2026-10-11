@@ -1,4 +1,5 @@
 /** Bounded swappable synthesis providers. No retained text/audio, public cache or agent dispatch. */
+import { KokoroWorker, KokoroWorkerError } from "./kokoro-worker";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, lstat, mkdtemp, readFile, rm } from "node:fs/promises";
@@ -18,7 +19,7 @@ export interface VoiceProviderDescriptor {
   readonly voices: readonly { readonly id: string; readonly name: string; readonly language: string }[];
   readonly maxCharacters: number;
   readonly maxAudioBytes: number;
-  readonly contentType: "audio/mpeg";
+  readonly contentType: "audio/mpeg" | "audio/wav";
 }
 export interface VoiceProvider {
   readonly descriptor: VoiceProviderDescriptor;
@@ -123,7 +124,27 @@ const edge: VoiceProvider = {
 };
 // Fixed code registrations only: a vetted local adapter is added here, not by
 // accepting a module/command/path from HTTP or configuration.
-const shippedProviders: readonly VoiceProvider[] = [edge];
+const kokoroWorker = new KokoroWorker();
+const kokoro: VoiceProvider = {
+  descriptor: Object.freeze({
+    id: "kokoro-local", name: "Kokoro · your server", cloud: false,
+    disclosure: "Response text is synthesized on your paired server. Apple speech is used when unavailable.",
+    defaultVoiceID: "af_heart", voices: Object.freeze([{ id: "af_heart", name: "Heart", language: "en-US" }]),
+    maxCharacters: 160, maxAudioBytes: 1_440_044, contentType: "audio/wav",
+  }),
+  available: () => kokoroWorker.available(),
+  async synthesize(request, signal) {
+    try { return await kokoroWorker.synthesize(request.text, signal); }
+    catch (error) {
+      if (error instanceof KokoroWorkerError) throw new VoiceError(error.code === "busy" ? "voice_busy" : error.code === "aborted" ? "voice_cancelled" : error.code === "unavailable" ? "voice_unavailable" : "voice_failed", error.code === "busy" ? 429 : error.code === "aborted" ? 409 : error.status);
+      throw new VoiceError("voice_failed", 502);
+    }
+  },
+};
+// Warm configured local models independently of the first user's reply. No model
+// fetching is allowed in this worker; unconfigured installs spawn nothing.
+void kokoroWorker.available().catch(() => {});
+const shippedProviders: readonly VoiceProvider[] = [edge, kokoro];
 let providers = providerRegistry(shippedProviders);
 /** Preserve the original single-Edge test injection without coupling routes to Edge. */
 export function setVoiceProviderForTests(value: (Omit<VoiceProvider, "descriptor"> & { id: string; descriptor?: VoiceProviderDescriptor }) | null): void {
