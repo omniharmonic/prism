@@ -14,7 +14,7 @@ Build24 wake is owner-accepted over headphones: closed-window activation and rep
 - Composer Return tests: 4 passed.
 - Actual SwiftUI off-screen renders: 320/600pt composer, single/multiline; 760/1040pt ThreadView toolbar. Text and controls fit. Native glass still needs installed-app inspection.
 - Server payload/privacy/device-scope checks: 75 targeted tests passed; server typecheck passed. OmniCore: 239 passed; OmniClient: 28 passed. Three serialized registration concurrency tests passed, including delayed response, failed save, and disable with late callback.
-- Release builds, merged/tagged source, signature/notarization, installations: pending.
+- Repository `npm run check` passed. Full isolated server suite: 3,025 passed, zero failures, one heavy-test skip. Universal Mac and signed iOS Release builds passed; DEBUG fixture exclusion and mobile strict signature passed. Merged/tagged rebuild, Mac signing/notarization, and installations remain pending.
 
 ## Acceptance remaining
 
