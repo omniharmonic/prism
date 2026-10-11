@@ -469,7 +469,9 @@ struct TabMainView: View {
             tab = .threads
             return
         }
+        let wasVoiceRoute = voiceChatHandoff.isPresented
         voiceChatHandoff.reset()
+        if wasVoiceRoute { path = [] }
         showingNewThread = false
         switch destination {
         case .today:
