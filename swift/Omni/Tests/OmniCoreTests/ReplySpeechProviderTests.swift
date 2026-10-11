@@ -1,5 +1,6 @@
 import XCTest
 import OmniClient
+import PrismTransport
 @testable import OmniCore
 
 @MainActor final class ReplySpeechProviderTests: XCTestCase {
@@ -8,9 +9,11 @@ import OmniClient
         var cancelled: [(String, String)] = []
         var gate: CheckedContinuation<Data, Error>?
         var hold = false
+        var failure: PrismError?
         func voiceProviders() async throws -> VoiceProviderCatalog { throw CancellationError() }
         func synthesizeVoice(_ request: VoiceSynthesisRequest) async throws -> Data {
             requests.append(request)
+            if let failure { throw failure }
             if hold { return try await withCheckedThrowingContinuation { gate = $0 } }
             return Data([1, 2, 3])
         }
@@ -18,6 +21,7 @@ import OmniClient
             cancelled.append((sessionID, requestID)); gate?.resume(throwing: CancellationError()); gate = nil
         }
         func setHold() { hold = true }
+        func setFailure(_ error: PrismError) { failure = error }
         func waiting() -> Bool { gate != nil }
     }
     func testProviderUsesExactTextAndSessionWithoutPrivateFilePaths() async throws {
@@ -120,6 +124,56 @@ import OmniClient
         let rows = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
         XCTAssertEqual(rows.compactMap { $0["event"] as? String }, ["synthesisStarted", "synthesisFinished"])
         XCTAssertTrue(rows.allSatisfy { Set($0.keys) == ["at", "event"] })
+    }
+
+    func testRemoteCancellationIsClassifiedWithoutSuppressingFallbackOrLoggingDetails() async throws {
+        let service = Service()
+        let failure = PrismError.conflict(ServerFailure(status: 409, code: "voice_cancelled", detail: "Private detail", body: Data("Private response".utf8)))
+        await service.setFailure(failure)
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appending(path: "events.json")
+        let log = VoiceEventLog(url: url)
+        let provider = HermesReplySpeechProvider(service: service, sessionID: "Private session", voiceID: "Private voice", diagnostic: log.record)
+        do { _ = try await provider.render("Private narration"); XCTFail("Remote failure must reach fallback caller") }
+        catch { XCTAssertEqual(error as? PrismError, failure) }
+        await log.flush()
+        let data = try Data(contentsOf: url)
+        let rows = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        XCTAssertEqual(rows.compactMap { $0["event"] as? String }, ["synthesisStarted", "synthesisFailed", "synthesisRemoteCancelled"])
+        XCTAssertTrue(rows.allSatisfy { Set($0.keys) == ["at", "event"] })
+        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("Private"))
+    }
+    func testCoarseFailureCategoriesDoNotTreatEveryConflictAsCancellation() {
+        let cases: [(Error, VoiceDiagnosticEvent)] = [
+            (PrismError.conflict(ServerFailure(status: 409, code: "another_conflict", detail: nil, body: Data())), .synthesisOtherFailure),
+            (PrismError.outcomeUnknown(OutcomeUnknown(status: 504, code: nil, reason: "private")), .synthesisTimeout),
+            (PrismError.rejected(ServerFailure(status: 429, code: nil, detail: nil, body: Data())), .synthesisUnavailable),
+            (PrismError.outcomeUnknown(OutcomeUnknown(status: 503, code: nil, reason: "private")), .synthesisUnavailable),
+            (PrismError.unauthorized, .synthesisUnauthorized),
+            (PrismError.decoding("private"), .synthesisInvalidAudio),
+            (PrismError.invalidRequest("private"), .synthesisInvalidRequest),
+            (PrismError.unreachable("private"), .synthesisTransportFailed),
+            (URLError(.timedOut), .synthesisTimeout),
+            (URLError(.networkConnectionLost), .synthesisTransportFailed)
+        ]
+        for (error, expected) in cases { XCTAssertEqual(SynthesisFailureDiagnostic.event(for: error), expected) }
+    }
+    func testLocalCancellationDoesNotEmitFailureDiagnostics() async throws {
+        let service = Service(); await service.setHold()
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appending(path: "events.json")
+        let log = VoiceEventLog(url: url)
+        let provider = HermesReplySpeechProvider(service: service, sessionID: UUID().uuidString, voiceID: "aria", diagnostic: log.record)
+        let task = Task { try await provider.render("Private pending narration") }
+        for _ in 0..<1000 { if await service.waiting() { break }; await Task.yield() }
+        let waiting = await service.waiting(); XCTAssertTrue(waiting)
+        task.cancel()
+        do { _ = try await task.value; XCTFail("Cancellation must not return audio") } catch {}
+        await log.flush()
+        let rows = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
+        XCTAssertEqual(rows.compactMap { $0["event"] as? String }, ["synthesisStarted"])
     }
 
 }

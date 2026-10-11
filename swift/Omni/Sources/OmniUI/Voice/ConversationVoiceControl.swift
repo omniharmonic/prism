@@ -129,11 +129,13 @@ struct ConversationVoiceControl: View {
                         ForEach(ConversationDevice.Engine.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                     }
                     Button("Voice settings", systemImage: "speaker.wave.2") { showingVoiceSettings = true }
-                } label: { Image(systemName: "slider.horizontal.3").frame(width: 44, height: 44) }
+                } label: { Image(systemName: "slider.horizontal.3").frame(width: headerControlSize, height: headerControlSize) }
+                .modifier(VoiceHeaderButtonStyle(solid: reduceTransparency))
                 .accessibilityLabel("Voice options").disabled(voice.state != .off && voice.state != .paused)
                 Button { cancel(); expanded = false } label: {
-                    Image(systemName: "xmark").frame(width: 44, height: 44)
+                    Image(systemName: "xmark").frame(width: headerControlSize, height: headerControlSize)
                 }
+                .modifier(VoiceHeaderButtonStyle(solid: reduceTransparency))
                 .accessibilityLabel(voice.isSessionActive ? "End voice session" : "Close Voice")
                 .accessibilityIdentifier(voice.isSessionActive ? "voice.end" : "voice.close")
                 .accessibilityHint("Ends microphone capture and narration. Omni’s task continues in chat.")
@@ -170,7 +172,36 @@ struct ConversationVoiceControl: View {
                 }.font(.caption)
             }
         }
-        .padding(.horizontal, 12).padding(.vertical, 10)
+        .padding(.horizontal, panelHorizontalPadding).padding(.vertical, panelVerticalPadding)
+    }
+    // macOS button styles already provide their own insets; keep the label compact.
+    private var headerControlSize: CGFloat {
+        #if os(macOS)
+        32
+        #else
+        44
+        #endif
+    }
+    private var actionLabelHeight: CGFloat {
+        #if os(macOS)
+        24
+        #else
+        32
+        #endif
+    }
+    private var panelHorizontalPadding: CGFloat {
+        #if os(macOS)
+        16
+        #else
+        12
+        #endif
+    }
+    private var panelVerticalPadding: CGFloat {
+        #if os(macOS)
+        14
+        #else
+        10
+        #endif
     }
     private func appeared() {
         mounted = true
@@ -243,9 +274,9 @@ struct ConversationVoiceControl: View {
         layout {
             if voice.state == .listening {
                 Button { finish() } label: {
-                    Label("Send turn", systemImage: "arrow.up").frame(maxWidth: .infinity, minHeight: 32)
+                    Label("Send turn", systemImage: "arrow.up").frame(maxWidth: .infinity, minHeight: actionLabelHeight)
                 }
-                .buttonStyle(.borderedProminent)
+                .modifier(VoiceActionButtonStyle(prominent: true, solid: reduceTransparency))
                 .disabled(running)
                 .accessibilityIdentifier("voice.send")
                 .accessibilityHint("Silence never sends in Think aloud. Long recordings are kept as an unsent draft if recording reaches its limit.")
@@ -254,16 +285,19 @@ struct ConversationVoiceControl: View {
             } else {
                 Button { start() } label: {
                     Label(voice.state == .paused ? "Resume" : voice.isSessionActive ? "Interrupt and speak" : "Start session", systemImage: "mic.fill")
-                        .frame(minHeight: 32)
+                        .frame(minHeight: actionLabelHeight)
+                        #if os(macOS)
+                        .frame(maxWidth: .infinity)
+                        #endif
                 }
-                .buttonStyle(.bordered).disabled(!canSpeak)
+                .modifier(VoiceActionButtonStyle(prominent: false, solid: reduceTransparency)).disabled(!canSpeak)
                 .accessibilityIdentifier("voice.start")
             }
             if voice.isSessionActive {
                 Button { toggleMicrophoneMute() } label: {
-                    Image(systemName: voice.isMicrophoneMuted ? "mic.slash.fill" : "mic.fill").frame(minWidth: 32, minHeight: 32)
+                    Image(systemName: voice.isMicrophoneMuted ? "mic.slash.fill" : "mic.fill").frame(minWidth: actionLabelHeight, minHeight: actionLabelHeight)
                 }
-                .buttonStyle(.bordered)
+                .modifier(VoiceActionButtonStyle(prominent: false, solid: reduceTransparency))
                 .disabled(voice.state == .preparing || voice.state == .transcribing)
                 .accessibilityLabel(voice.isMicrophoneMuted ? "Unmute microphone" : "Mute microphone")
                 .accessibilityValue(voice.isMicrophoneMuted ? "Muted" : "Unmuted")
@@ -277,9 +311,9 @@ struct ConversationVoiceControl: View {
                     .accessibilityIdentifier("voice.keepListening")
             } else if voice.isSessionActive && voice.state != .paused {
                 Button { pause() } label: {
-                    Image(systemName: "pause.fill").frame(minWidth: 32, minHeight: 32)
+                    Image(systemName: "pause.fill").frame(minWidth: actionLabelHeight, minHeight: actionLabelHeight)
                 }
-                    .buttonStyle(.bordered)
+                    .modifier(VoiceActionButtonStyle(prominent: false, solid: reduceTransparency))
                     .accessibilityLabel("Pause voice session")
                     .accessibilityIdentifier("voice.pause")
                     .accessibilityHint(voice.state == .listening ? "Keeps your words as an unsent draft" : "Turns off the microphone and stops narration. Omni’s task continues in chat.")
@@ -444,5 +478,46 @@ private struct VoicePanelMaterial: ViewModifier {
         } else {
             content.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 24))
         }
+    }
+}
+
+/// Use native Liquid Glass for the desktop's floating controls, with opaque accessibility fallbacks.
+private struct VoiceHeaderButtonStyle: ViewModifier {
+    let solid: Bool
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        if solid {
+            content.buttonStyle(.plain).menuStyle(.borderlessButton).menuIndicator(.hidden)
+                .background(.background, in: Circle())
+                .overlay(Circle().stroke(.primary.opacity(0.15)))
+        } else {
+            content.buttonStyle(.plain).menuStyle(.borderlessButton).menuIndicator(.hidden)
+                .frame(width: 32, height: 32)
+                .background {
+                    Circle().fill(.clear).glassEffect(.regular.interactive(), in: Circle())
+                }
+        }
+        #else
+        content
+        #endif
+    }
+}
+
+private struct VoiceActionButtonStyle: ViewModifier {
+    let prominent: Bool
+    let solid: Bool
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        if solid {
+            if prominent { content.buttonStyle(.borderedProminent) }
+            else { content.buttonStyle(.bordered) }
+        } else {
+            if prominent { content.buttonStyle(.glassProminent) }
+            else { content.buttonStyle(.glass) }
+        }
+        #else
+        if prominent { content.buttonStyle(.borderedProminent) }
+        else { content.buttonStyle(.bordered) }
+        #endif
     }
 }
