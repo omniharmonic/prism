@@ -1,6 +1,6 @@
-# Interactive surfaces — local preview
+# Interactive surfaces — mobile test release
 
-This pass changes mobile drawers, search, shared bottom sheets, and row alignment. It is not deployed.
+This pass changes mobile drawers, search, shared bottom sheets, and row alignment. Web and iOS build 4 are deployed for physical-device testing; see `qa/liquid-workspace/MOTION-RELEASE.md`.
 
 - Sidebar opening updates its transform directly after mounting, avoiding a Shell render on every touchmove.
 - Drawer gestures take over an in-flight entrance animation. Navigation closes left; document panels close right. Slow deliberate navigation swipes are allowed.
