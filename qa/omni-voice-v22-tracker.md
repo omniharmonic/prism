@@ -17,3 +17,7 @@ Bounded production outcome metadata includes one synthesis-stage Kokoro409 cance
 ## Verification and remaining limits
 
 35 focused tests passed:21ConversationSpeech,3VoicePanelLayout,11ReplySpeechProvider. Includes catalog loading state and existing service/cancellation guards, plus new classified remote error, local cancellation and privacy boundary checks. Universal Release passed. Real composited synthetic desktop preview verified matching32pt header circles and inset action capsule; caught and repaired Menu-specific suppression of direct glassEffect before release. Preview was ready-state, not live microphone capture; active controls also covered by3layout tests. Real cough/ambient speech discrimination and exact prior synthesis failure root cause remain unresolved; improved diagnostics apply future events only.
+
+## Release staging
+
+PR137 merged as `ec4581536da7d6a372e12917a8cdc9387f202bbb`, tagged `omni-client-v2026.10.11-22`. Final tagged universal Release passed, version22/identity/architecture/DEBUG exclusion verified. Unsigned ZIP SHA256 `4a925b84295dccfb30f9d8f51b6d677e68db648c9ef954233b0ebba11b6bb758` matched on Mini. Stage `~/release-artifacts/omni-client-v2026.10.11-22/omni`; exact public profile/release entitlements carried from21. Signing helper `~/release-artifacts/sign-omni-v22.sh` syntax, app path, entitlement path and plist verified. Owner signing requested; notarization/install pending. Laptop remains21, mobile19.
