@@ -1,6 +1,6 @@
-# Omni voice v15 investigation — not released
+# Omni voice v15 release candidate
 
-Checkpoint: 2026-10-10 local time. **Mobile build 14 is installed; no build 15 fix, artifact, verification or installation is claimed.** Server 15 remains live. Historical release receipts and prior investigation remain in the [v14 tracker](omni-voice-v14-tracker.md); scope remains [V01–V05](../docs/roadmap/omni-conversational-voice-plan.md).
+Checkpoint: 2026-10-10 local time. **Mobile build 14 is installed. Build 15 source repair and regression verification are complete; packaging and physical acceptance remain pending.** Server 15 remains live. Historical release receipts and prior investigation remain in the [v14 tracker](omni-voice-v14-tracker.md); scope remains [V01–V05](../docs/roadmap/omni-conversational-voice-plan.md).
 
 ## Latest owner report
 
@@ -34,3 +34,11 @@ Mac 13 signature verification passed and notarization was submitted as `2cb6db1a
 Retest intentional interruption followed by a complete subsequent long reply and automatic capture, interruption off/on, hardware drain, Pause/Resume, bounded empty recovery, permission/privacy/background/End/logout and route/headset/call changes. Repeat on iPhone and older A12Z iPad, including narrow/large-text/VoiceOver controls. Preserve approval and outbound-action boundaries.
 
 V04 retains physical cold/warm Talk to Omni, Action Button/Shortcuts assignment, locked/authenticated/denied and duplicate activation tests. V05 retains opt-in experimental local Apple wake, visible menu/hotkey fallback, shared microphone yield, wake lead-in, false wakes, sleep/lock and idle energy gates. Modular providers remain explicit: Hermes/Edge and Apple are available choices; future local adapters must remain swappable without coupling session state to synthesis. Excellent local models remain on the roadmap. [Kokoro's retained Mac evaluation](../docs/roadmap/omni-tts-evaluation.md) is measured isolated file rendering, not an enabled production adapter or mobile/streaming quality claim. Subjective comparison, normalization, audible latency, cancellation/underruns, routes, soak and phone/A12Z resource measurements remain open.
+
+## Reviewed repair and verification
+
+Build 15 requires a first delivered microphone buffer and a running engine before enabling optional duplex playback. Startup is bounded to one second and scoped to the capture generation. Stop invalidates readiness; cancellation cannot enable a later capture. If optional acoustic monitoring cannot start, it is cleaned up and narration uses ordinary playback with manual interruption available. No blind engine restart or replay is introduced. The exact cause of the physical engine stop remains unproven. Fixed diagnostic categories now distinguish engine state at entry, after reconnect, while queued, and configuration changes.
+
+Independent continuity review found no blocker: canceled old drain tasks cannot stop the next monitor, and failed readiness clears duplex before ordinary playback. Parent reviewed first-tap and notification callback ownership and stop invalidation. Integrated verification: 219 Core tests and 39 UI tests passed; 7 focused VoiceKit readiness/queue tests passed. Logs: `/private/tmp/omni-v15-native-tests.log`, `/private/tmp/omni-v15-voicekit-tests.log`. Source release guard passed. The unrelated MacSnapshotTests full walkthrough remains excluded; host Contacts/CoreData XPC warnings did not fail the selected tests. No UI route changed in this repair; build 14's actual iPhone main-chat UI pass remains historical evidence.
+
+Physical acceptance remains mandatory: intentionally interrupt one reply, then hear a complete subsequent long reply and return to Listening. A successful build does not close this gate.
