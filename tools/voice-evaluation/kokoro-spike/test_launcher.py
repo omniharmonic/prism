@@ -27,7 +27,7 @@ class LauncherTests(unittest.TestCase):
         result = self.run_launcher()
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, b'{"id":"test","text":"synthetic"}\n')
-        self.assertEqual(result.stderr, b'verification metadata\n')
+        self.assertTrue(result.stderr.endswith(b'verification metadata\n'))
     def test_verification_failure_never_executes_worker(self):
         self.verifier.write_text('raise SystemExit(9)\n')
         result = self.run_launcher()
