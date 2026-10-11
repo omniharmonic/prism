@@ -1,0 +1,4 @@
+{"startupMs":7821}
+{"firstFrame":168,"maxFrameGap":62,"longTasks":[168,55],"rows":1206}
+{"firstFrame":189,"maxFrameGap":30,"longTasks":[178],"rows":1206}
+{"firstFrame":172,"maxFrameGap":19,"longTasks":[164],"rows":1206}
