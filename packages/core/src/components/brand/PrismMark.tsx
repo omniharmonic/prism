@@ -1,6 +1,19 @@
 import React from "react";
 
-/** Faceted outline from the approved Concept 02; optical weight for small sizes. */
+/** Approved broad prism silhouette with golden-ratio subdivisions inside.
+ * The reference informs the interior pattern, not the outer proportions. */
+const phi = (1 + Math.sqrt(5)) / 2;
+const apex = [16, 3] as const;
+const left = [2, 29] as const;
+const right = [30, 29] as const;
+type Point = readonly [number, number];
+const divide = (a: Point, b: Point): Point => [a[0] + (b[0] - a[0]) / phi, a[1] + (b[1] - a[1]) / phi];
+const point = (p: Point) => p.map(n => Number(n.toFixed(4))).join(" ");
+const d = divide(apex, right);
+const e = divide(left, d);
+const f = divide(right, e);
+const g = divide(d, f);
+const h = divide(e, g);
 export function PrismMark({ monochrome = false, decorative = false, compact: compactOverride, ...props }: React.SVGProps<SVGSVGElement> & { monochrome?: boolean; decorative?: boolean; compact?: boolean }) {
   const compact = compactOverride ?? (typeof props.width === "number" && props.width <= 32);
   const colors = monochrome ? ["currentColor", "currentColor", "currentColor"] : ["#92a9d6", "#7c96ce", "#b4a4ce"];
@@ -8,9 +21,9 @@ export function PrismMark({ monochrome = false, decorative = false, compact: com
     role={decorative ? undefined : "img"} aria-label={decorative ? undefined : "Prism — many sources, one workspace"}
     aria-hidden={decorative || undefined} fill="none" {...props}>
     <g strokeWidth={compact ? 1.6 : 1.15} strokeLinejoin="round" strokeLinecap="round">
-      <path d="M16 3 30 29H2Z" stroke={colors[0]} />
-      <path d="M8 18 28 26M6 22 24 14M12 10 20 29" stroke={colors[1]} />
-      <path d="m2 29 19-8 11 8" stroke={colors[2]} />
+      <path d={`M${point(apex)} ${point(right)} ${point(left)}Z`} stroke={colors[0]} />
+      <path d={`M${point(left)} ${point(d)}M${point(right)} ${point(e)}`} stroke={colors[1]} />
+      <path d={`M${point(d)} ${point(f)}M${point(e)} ${point(g)}M${point(f)} ${point(h)}`} stroke={colors[2]} />
     </g>
   </svg>;
 }

@@ -19,6 +19,26 @@ html.light {
   .prism-workspace-canvas { border-radius: var(--workspace-radius); border: 1px solid var(--material-edge); }
   /* No overflow/transform: fixed editor popovers keep their viewport anchor. */
   .prism-workspace-canvas > div { border-radius: inherit; }
+  /* Round the painted surfaces themselves: the toolbar's square background
+     otherwise covers the canvas corners. Keep ancestor overflow visible so
+     editor menus and fixed popovers remain free to extend beyond the canvas. */
+  .prism-workspace-canvas > div > :first-child {
+    border-top-left-radius: calc(var(--workspace-radius) - 1px);
+    border-top-right-radius: calc(var(--workspace-radius) - 1px);
+  }
+  .prism-workspace-canvas #workspace-document {
+    border-bottom-left-radius: calc(var(--workspace-radius) - 1px);
+    border-bottom-right-radius: calc(var(--workspace-radius) - 1px);
+  }
+  .prism-workspace-layout > .prism-workspace-companion {
+    border-radius: var(--workspace-radius);
+    background: var(--bg-document);
+  }
+  .prism-workspace-companion > .document-companion { border-radius: inherit; }
+  .prism-workspace-companion .document-companion-header {
+    border-top-left-radius: var(--workspace-radius);
+    border-top-right-radius: var(--workspace-radius);
+  }
   .prism-workspace-layout > .cursor-col-resize { background: transparent !important; }
   .workspace-navigation { padding: 2px 4px; }
   .workspace-navigation .workspace-nav-row { border-radius: 9px; }

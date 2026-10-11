@@ -176,7 +176,7 @@ function ShellLayout() {
         {!companionOverlay && contextPanelOpen && (
           <>
             <ResizeHandle onResize={setContextPanelWidth} initialSize={contextPanelWidth} side="right" />
-            <div style={{ width: contextPanelWidth, minWidth: 260, maxWidth: 480 }} className="flex-shrink-0">
+            <div style={{ width: contextPanelWidth, minWidth: 260, maxWidth: 480 }} className="prism-workspace-companion flex-shrink-0">
               <ContextPanel />
             </div>
           </>
