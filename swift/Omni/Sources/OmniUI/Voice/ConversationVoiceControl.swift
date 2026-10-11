@@ -21,6 +21,7 @@ struct ConversationVoiceControl: View {
     @State private var showingTranscript = false
     @State private var panelContentHeight: CGFloat = 280
     @State private var mounted = false
+    @State private var pendingStartID: UUID?
     @State private var action: Task<Void, Never>?
     init(session: SessionModel, model: ThreadModel? = nil, draft: Binding<String>? = nil, expanded: Binding<Bool>, maximumHeight: CGFloat = 280) {
         self.session = session; self.model = model; self.draft = draft; self.maximumHeight = maximumHeight; _expanded = expanded
@@ -314,7 +315,7 @@ struct ConversationVoiceControl: View {
         (running || model?.pendingText == nil) && !session.threads.isCreating
     }
     private func start() {
-        guard canSpeak, mounted, phase == .active, !PrivacyLock.shared.locked else { return }
+        guard pendingStartID == nil, canSpeak, mounted, phase == .active, !PrivacyLock.shared.locked else { return }
         let continuingDraft = voice.state == .paused && voice.isSessionActive ? currentDraft : ""
         cancel()
         _ = model?.takeCompletedVoiceTimeline()
@@ -322,8 +323,13 @@ struct ConversationVoiceControl: View {
         let lease = session.voiceLease
         installAutomaticListeningGuard()
         session.beginVoiceStart()
+        let requestID = UUID()
+        pendingStartID = requestID
         action = Task {
-            defer { session.endVoiceStart(lease: lease) }
+            defer {
+                if pendingStartID == requestID { pendingStartID = nil }
+                session.endVoiceStart(lease: lease)
+            }
             if let model, model.isRunning { await model.stop() }
             for _ in 0..<40 where running {
                 if Task.isCancelled || PrivacyLock.shared.locked || !mounted || phase != .active { return }
@@ -401,7 +407,7 @@ struct ConversationVoiceControl: View {
         guard controlsCurrentVoice else { VoiceDiagnostics.record(.staleCallback); return }
         if model == nil { session.cancelPendingVoiceActivation() }
         showingVoiceSettings = false; device.stopPreview()
-        action?.cancel(); action = nil
+        action?.cancel(); action = nil; pendingStartID = nil
         if session.conversationVoice !== voice { voice.cancel() }
         else { session.cancelVoice(voice, threadID: model?.threadID) }
     }
