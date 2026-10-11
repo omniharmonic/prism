@@ -43,7 +43,7 @@ test("production native bundle renders sign-in and invokes the real host hook", 
 
 test("an app import failure displays recovery instead of a blank window", async ({ page }) => {
   const html = readFileSync(new URL("../dist-native/index.html", import.meta.url), "utf8");
-  const entry = html.match(/<script[^>]+src="([^"]+)"/)![1];
+  const entry = html.match(/<script\b(?=[^>]*\btype="module")[^>]*\bsrc="([^"]+)"/)![1];
   await page.route("**/assets/*.js", (route) => new URL(route.request().url()).pathname === entry ? route.continue() : route.abort());
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Prism couldn’t start" })).toBeVisible();
