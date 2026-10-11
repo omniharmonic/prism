@@ -6,11 +6,11 @@ Checkpoint: 2026-10-10 local time. Canonical scope remains [V01–V05](../docs/r
 
 | Component | Current checkpoint |
 | --- | --- |
-| Mobile | Build 12 released; reported iPhone trace is from build 12. Installation is not complete Automatic-mode acceptance. Phone and older A12Z iPad need explicit current-build acceptance. |
+| Mobile | Build 13 installed on iPhone and iPad; reported failure trace remains from build 12. Installation is not complete Automatic-mode acceptance. Phone and older A12Z iPad need explicit current-build acceptance. |
 | Server | Server 15 live; authenticated Hermes/Edge synthesis is available. Server success does not prove client playback or microphone resumption. |
 | Mac 11 | Apple notarization Accepted; stapled, validated and Gatekeeper accepted. No new Mac installation this turn; interactive acceptance remains open. |
-| Mac 12 | Staged unsigned; signing, notarization, installation and physical acceptance remain pending. |
-| V13 | Repair, instrumentation and regression work in progress on `fix/omni-voice-rearm-v13`. **Not shipped, installed or owner-accepted at this checkpoint.** |
+| Mac 13 | Staged with verified hash and reviewed release entitlements; desktop signing, notarization, installation and physical acceptance pending. Older Mac 12 remains unsigned. |
+| V13 | PR115 merged as `52e9e43e`; tag `omni-client-v2026.10.10-13`. **Installed on both mobile devices; not yet owner-accepted.** |
 
 Release receipts belong in the chronological evidence logs. Do not silently convert staged artifacts, passing tests or an earlier notarization submission into installation or acceptance.
 
@@ -93,3 +93,7 @@ No voice milestone removes the broader product backlog: collaboration/multi-user
 ## Integrated verification receipt
 
 Final iPhone simulator handoff XCUITest passed (one test, 19.45 seconds), including the same-render content fix; retained-sheet screenshot inspected. Integrated Core suite passed 219 tests and UI logic/hosted suite passed 34 tests. The unrelated full `MacSnapshotTests` walk was stopped after repeated macOS Contacts XPC errors; the final integrated command explicitly excludes that walk. The actual iPhone UI test remains separate and passed. First-tap VoiceKit/callback focused tests passed 10 tests in the worker. Source release guard and whitespace checks pass. Physical detector recovery and long-reply acceptance remain open.
+
+## Release receipt
+
+Tagged iOS and universal Mac Release builds succeeded. Both binaries exclude DEBUG fixture names; iOS strict signature verification passed. Both approved physical device installations succeeded. Source commit `52e9e43e4cdc9594157488f73fa0afd48698e4cf`. iOS ZIP SHA256 `fd99de433bfc57d0bd6387e98ff3824580ed06d7c9b9dfd904af1971771f9cee`; unsigned Mac ZIP SHA256 `1f155bbced84913b3c6de121de045b66ce7e484e82617451dffc5815536357cb`. Mac13 is staged at `~/release-artifacts/omni-client-v2026.10.10-13/omni`, desktop helper `~/release-artifacts/sign-omni-v13.sh`; owner signing request pending. Server15 unchanged. Hosted CI still pending when tagged; local native results are recorded above.
