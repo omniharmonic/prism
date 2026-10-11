@@ -1,7 +1,11 @@
-import { NoteShortcutsProvider } from "../navigation/NoteShortcuts";
+import { createPortal } from "react-dom";
+import { useViewerIsGuest } from "../sharing/SharedWithMe";
+import { PrismMark } from "../brand/PrismMark";
+import { useVaultTree } from "../../app/hooks/useParachute";
+import { NoteShortcutsProvider, useNoteShortcuts } from "../navigation/NoteShortcuts";
 import { takeAutomaticTab, useWorkspaceSession } from "../../app/hooks/useWorkspaceSession";
 import { X } from "lucide-react";
-import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { useRegionPrefs } from "../../lib/datetime/useRegionPrefs";
 import { useUIStore, persistSidebar } from "../../app/stores/ui";
 import { useKeyboardShortcuts } from "../../app/hooks/useKeyboardShortcuts";
@@ -50,6 +54,9 @@ function ShellLayout() {
   } = useUIStore();
   const activeTabId = useUIStore((s) => s.activeTabId);
   const isMobile = useIsMobile();
+  const [navigationPrepared, setNavigationPrepared] = useState(false);
+  const navigationReady = useCallback(() => setNavigationPrepared(true), []);
+  const preparing = isMobile && !navigationPrepared;
   const focusMode = useUIStore(s => s.focusMode) && !isMobile;
   const sidebarOpen = requestedSidebarOpen && !focusMode;
   const contextPanelOpen = requestedContextOpen && !focusMode;
@@ -92,7 +99,7 @@ function ShellLayout() {
   }, [queryClient]);
   const peek = useSidebarPeek(!isMobile && !sidebarOpen && !focusMode);
   const navigationDrawer = useRef<HTMLDialogElement>(null);
-  const swipe = useEdgeSwipe(isMobile && !sidebarOpen, navigationDrawer);
+  const swipe = useEdgeSwipe(isMobile && !preparing && !sidebarOpen, navigationDrawer);
   useEffect(() => {
     const pointer = () => { document.documentElement.dataset.pointerFocus = "true"; };
     const keyboard = () => { delete document.documentElement.dataset.pointerFocus; };
@@ -148,7 +155,7 @@ function ShellLayout() {
   };
 
   return (
-    <div className="prism-workspace-shell flex flex-col overflow-hidden" style={rootStyle}>
+    <div className="prism-workspace-shell flex flex-col overflow-hidden" style={rootStyle} inert={preparing} aria-hidden={preparing || undefined} aria-busy={preparing}>
       {restoreNotice}
       <a className="workspace-skip-link" href="#workspace-document">Skip to document</a>
       <div ref={layoutRef} key="workspace" className="prism-workspace-layout relative flex flex-1 min-h-0">
@@ -193,7 +200,7 @@ function ShellLayout() {
             </div>
           </>
         )}
-        {isMobile && <MobileNavigation open={sidebarOpen} dragDistance={sidebarOpen ? undefined : swipe ?? undefined} drawerRef={navigationDrawer} />}
+        {isMobile && <MobileNavigation onReady={navigationReady} restoring={restore.state === "loading"} open={sidebarOpen} dragDistance={sidebarOpen ? undefined : swipe ?? undefined} drawerRef={navigationDrawer} />}
         {companionOverlay && contextPanelOpen && (
           <MobileDrawer key="mobile-panel" side="right" compact={!isMobile} onClose={() => useUIStore.setState({ contextPanelOpen: false })}>
             {close => <ContextPanel onClose={close} />}
@@ -228,25 +235,45 @@ function SettingsHost() {
 // App's audience-keyed provider discards this cache on account/vault changes.
 const RetainedNavigation = memo(Navigation);
 const closeNavigation = () => useUIStore.setState({ sidebarOpen: false });
-function MobileNavigation({ open, dragDistance, drawerRef }: {
+function MobileNavigation({ open, dragDistance, drawerRef, onReady, restoring }: {
   open: boolean; dragDistance?: number; drawerRef: RefObject<HTMLDialogElement | null>;
+  onReady: () => void; restoring: boolean;
 }) {
-  const [ready, setReady] = useState(false);
-  const active = open || dragDistance !== undefined;
-  const prepare = useCallback(() => startTransition(() => setReady(true)), []);
+  const guest = useViewerIsGuest();
+  const tree = useVaultTree(!guest);
+  const shortcuts = useNoteShortcuts();
+  const [prepared, setPrepared] = useState(false);
+  const [slow, setSlow] = useState(false);
+  const finish = useCallback(() => { setPrepared(true); onReady(); }, [onReady]);
   useEffect(() => {
-    if (ready || active) return;
-    // Warm the closed drawer during idle time, not in the tap/drag handler.
-    if (window.requestIdleCallback) {
-      const id = window.requestIdleCallback(prepare);
-      return () => window.cancelIdleCallback(id);
-    }
-    const id = window.setTimeout(prepare, 200);
-    return () => window.clearTimeout(id);
-  }, [ready, active, prepare]);
-  return <MobileDrawer active={active} externalRef={drawerRef} dragDistance={dragDistance} side="left" onClose={closeNavigation} onEntered={prepare}>
-    {ready ? <RetainedNavigation /> : <div role="status" className="p-4 text-sm" style={{ color: "var(--text-muted)" }}>Loading navigation…</div>}
-  </MobileDrawer>;
+    if (prepared) return;
+    const timer = window.setTimeout(() => setSlow(true), 12_000);
+    return () => window.clearTimeout(timer);
+  }, [prepared]);
+  useEffect(() => {
+    if (prepared || (!guest && !tree.isSuccess) || shortcuts.loading || restoring) return;
+    // Navigation mounts immediately. Let data-driven expansion commit and let
+    // the browser prepare the retained navigation viewport before releasing the shell.
+    let frame = requestAnimationFrame(() => {
+      void drawerRef.current?.getBoundingClientRect();
+      frame = requestAnimationFrame(finish);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [prepared, guest, tree.isSuccess, tree.data, shortcuts.loading, restoring, drawerRef, finish]);
+  return <>
+    <MobileDrawer active={prepared && (open || dragDistance !== undefined)} externalRef={drawerRef} dragDistance={prepared ? dragDistance : undefined} side="left" onClose={closeNavigation} retained>
+      <RetainedNavigation />
+    </MobileDrawer>
+    {!prepared && createPortal(<div className="workspace-startup" role="status" aria-label="Preparing workspace">
+      <PrismMark decorative />
+      <p>{tree.isError ? "Your workspace couldn’t be loaded." : "Opening your workspace…"}</p>
+      {(tree.isError || slow || tree.fetchStatus === "paused") && <div className="workspace-startup-actions">
+        <p>Check your connection, or continue while it reconnects.</p>
+        <button type="button" onClick={() => { void tree.refetch(); shortcuts.retry(); }}>Retry</button>
+        <button type="button" onClick={finish}>Continue to workspace</button>
+      </div>}
+    </div>, document.body)}
+  </>;
 }
 
 function MobileDrawer({
@@ -257,10 +284,10 @@ function MobileDrawer({
   dragDistance,
   externalRef,
   active = true,
-  onEntered,
+  retained = false,
 }: {
   active?: boolean;
-  onEntered?: () => void;
+  retained?: boolean;
   externalRef?: RefObject<HTMLDialogElement | null>;
   dragDistance?: number;
   compact?: boolean;
@@ -318,16 +345,15 @@ function MobileDrawer({
       dialog.style.transition = "none";
       dialog.showModal();
       dialog.focus({ preventScroll: true });
-      if (reduceMotion()) onEntered?.();
-      else {
+      if (!reduceMotion()) {
         const animation = dialog.animate([
           { transform: from === "none" ? `translateX(${side === "left" ? "-100%" : "100%"})` : from },
           { transform: "translateX(0)" },
         ], { duration: 320, easing: "cubic-bezier(.22,1,.36,1)" });
-        void animation.finished.then(() => onEntered?.()).catch(() => {});
+        void animation.finished.catch(() => {});
       }
     }
-  }, [active, dragging, side, onEntered]);
+  }, [active, dragging, side]);
   useLayoutEffect(() => {
     if (dragDistance === undefined || !dialogRef.current) return;
     const dialog = dialogRef.current;
@@ -390,7 +416,7 @@ function MobileDrawer({
     };
   }, [side, close, dragging, active]);
   return (
-    <dialog ref={dialogRef} tabIndex={-1} inert={!active} data-dragging={dragging || undefined} className="workspace-mobile-drawer" data-side={side} aria-label={side === "left" ? "Workspace navigation" : "Document panel"}
+    <dialog ref={dialogRef} tabIndex={-1} inert={!active} aria-hidden={!active || undefined} data-retained={retained || undefined} data-dragging={dragging || undefined} className="workspace-mobile-drawer" data-side={side} aria-label={side === "left" ? "Workspace navigation" : "Document panel"}
       onCancel={(event) => { event.preventDefault(); close(); }}
       onClick={(event) => { if (event.target === event.currentTarget) close(); }}
       style={{ left: side === "left" ? 0 : "auto", right: side === "right" ? 0 : "auto", width: side === "right" ? (compact ? "min(420px, 100vw)" : "100%") : "min(88vw, 360px)" }}>

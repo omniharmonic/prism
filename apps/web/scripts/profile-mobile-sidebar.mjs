@@ -4,11 +4,12 @@ const browser = await chromium.launch();
 try {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true });
   const origin = process.env.PRISM_PROFILE_ORIGIN || 'http://127.0.0.1:5198';
-  await page.goto(`${origin}/e2e-fixtures/workspace.html?navigation&large-navigation`);
-  await page.locator('.tiptap').waitFor();
-  await page.waitForTimeout(1500); // Allow startup/idle work; measure only the opening action.
   const cdp = await page.context().newCDPSession(page);
   await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 });
+  const startup = Date.now();
+  await page.goto(`${origin}/e2e-fixtures/workspace.html?navigation&large-navigation`);
+  await page.locator('.prism-workspace-shell[aria-busy="false"]').waitFor();
+  console.log(JSON.stringify({ startupMs: Date.now() - startup }));
   for (let trial = 0; trial < 3; trial++) {
     console.log(JSON.stringify(await page.evaluate(async () => {
       const longTasks = [];

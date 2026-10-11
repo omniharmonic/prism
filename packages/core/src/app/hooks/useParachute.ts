@@ -36,10 +36,11 @@ export function useNotes(filters?: NoteFilters) {
  * Auto-invalidates on any vault mutation since mutations invalidate
  * the `["vault"]` prefix.
  */
-export function useVaultTree() {
+export function useVaultTree(enabled = true) {
   const client = useVaultClient();
   const result = useQuery({
     queryKey: ["vault", "tree"] as const,
+    enabled,
     queryFn: () => client.listTree(),
     select: withoutTrashed,
   });

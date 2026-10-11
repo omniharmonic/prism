@@ -45,6 +45,7 @@ function legacy(): RecordValue {
   return { ...EMPTY, favorites: ids(Array.isArray(old.favorites) ? old.favorites.map(item => item?.id) : [], 30), recents: ids(Array.isArray(old.recents) ? old.recents.map(item => item?.id) : [], 12) };
 }
 interface Shortcuts {
+  loading: boolean;
   favorites: RecentItem[];
   recents: RecentItem[];
   favoriteIds: string[];
@@ -65,7 +66,7 @@ interface Shortcuts {
   collapsed: string[] | null;
   setCollapsed: (section: string, collapsed: boolean) => void;
 }
-const NO_SHORTCUTS: Shortcuts = { favorites: [], recents: [], favoriteIds: [], toggleFavorite: () => {}, unavailable: false, retry: () => {}, recoverable: false, recovering: false, recover: () => {}, dismissRecovery: () => {}, storageUnavailable: false, recoveryMessage: null, synced: false, collapsed: null, setCollapsed: () => {} };
+const NO_SHORTCUTS: Shortcuts = { loading: false, favorites: [], recents: [], favoriteIds: [], toggleFavorite: () => {}, unavailable: false, retry: () => {}, recoverable: false, recovering: false, recover: () => {}, dismissRecovery: () => {}, storageUnavailable: false, recoveryMessage: null, synced: false, collapsed: null, setCollapsed: () => {} };
 const Context = createContext<Shortcuts>(NO_SHORTCUTS);
 export function useNoteShortcuts() { return useContext(Context); }
 
@@ -187,6 +188,7 @@ function useSyncedShortcuts(scope: string, query: ReturnType<typeof useQuery<Pre
   return {
     ...NO_SHORTCUTS,
     synced: true,
+    loading: query.isPending,
     favorites: shownFavorites,
     // The order is synced like the list itself (revision CAS; re-applied once on a conflict).
     moveFavorite: (id, index) => { const visible = shownFavorites.map((f) => f.id); apply((p) => preferenceOps.moveFavorite(p, id, index, visible)); },
@@ -303,6 +305,7 @@ function useScopedShortcuts(scopeArg: string | null, enabled: boolean): Shortcut
   const old = legacy();
   return scope ? {
     ...NO_SHORTCUTS,
+    loading: queries.some(query => query.isPending),
     favorites: materialize(record.favorites), recents: materialize(record.recents), favoriteIds: record.favorites,
     toggleFavorite: item => {
       if (!isVaultNoteId(item.id)) return;
