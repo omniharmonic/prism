@@ -15,6 +15,12 @@ import OmniVoiceKit
     let speech: ConversationSpeech
     static let sharedTurnPreferences = VoiceTurnPreferences()
     let turnPreferences = ConversationDevice.sharedTurnPreferences
+    private var inputMuted = false
+    func setInputMuted(_ muted: Bool) {
+        inputMuted = muted
+        nearEndDuration = 0
+        audio.setInputMuted(muted)
+    }
     private var interruptionEnabled = false
     private var receiveInterruption: (@MainActor (VoiceInterruptionEvent) -> Void)?
     private let narrationWork = ReplyNarrationWork()
@@ -101,14 +107,17 @@ import OmniVoiceKit
         file = url
         do {
             let callback: (@Sendable (SpeechActivityEvent) -> Void)? = activityEnabled ? Self.activityCallback(for: self, request: request) : nil
-            try await audio.start(url: url, chunkSeconds: 60, chunkClosed: Self.chunkCallback(for: self, request: request), activity: callback, firstTap: Self.firstTapCallback(for: self, request: request), configurationChanged: Self.configurationCallback(for: self, request: request))
+            try await audio.startVerified(url: url, chunkSeconds: 60, chunkClosed: Self.chunkCallback(for: self, request: request), activity: callback, firstTap: Self.firstTapCallback(for: self, request: request), configurationChanged: Self.configurationCallback(for: self, request: request), retrying: { VoiceDiagnostics.record(.captureStartupRetry) })
             captureDeadline = Task { [weak self] in
                 do { try await Task.sleep(for: .seconds(900)) } catch { return }
                 guard let self, self.generation == request else { return }
                 self.receiveLimit?()
             }
             guard request == generation, !Task.isCancelled else { throw CancellationError() }
-        } catch { if request == generation { cancel() }; throw error }
+        } catch {
+            if request == generation, (Task.isCancelled || !audio.hasRecordedInput) { cancel() }
+            throw error
+        }
     }
     nonisolated static func firstTapCallback(for device: ConversationDevice, request: Int) -> @Sendable () -> Void {
         { [weak device] in
@@ -165,6 +174,7 @@ import OmniVoiceKit
         { [weak device] event in
             Task { @MainActor in
                 guard let device, device.generation == request else { return }
+                guard !device.inputMuted else { return }
                 if device.monitoringPlayback { device.receivePlaybackActivity(event); return }
                 switch event {
                 case .frame(let time, let captured, let duration, let speech):
@@ -184,7 +194,7 @@ import OmniVoiceKit
     }
     private func receivePlaybackActivity(_ event: SpeechActivityEvent) {
         let requestGeneration = generation
-        guard monitoringPlayback, playbackMonitorReady else { return }
+        guard !inputMuted, monitoringPlayback, playbackMonitorReady else { return }
         switch event {
         case .unavailable:
             receiveInterruption?(.unavailable("Acoustic interruption is unavailable. Use Interrupt and speak."))
@@ -232,6 +242,10 @@ import OmniVoiceKit
             receiveInterruption?(.unavailable("Acoustic interruption could not start. Use Interrupt and speak."))
             return false
         }
+    }
+    func recoverStartupDraft() async -> String? {
+        guard file != nil, audio.hasRecordedInput else { return nil }
+        return try? await finish()
     }
     func finish() async throws -> String {
         guard let file else { throw VoiceFailure.unavailable("No voice recording is active.") }

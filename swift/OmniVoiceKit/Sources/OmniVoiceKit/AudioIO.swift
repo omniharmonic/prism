@@ -2,11 +2,22 @@
 import Foundation
 import FluidAudio
 
+/// Software mute leaves the duplex engine running for output/echo cancellation,
+/// but discards input before it reaches recording or speech detection.
+final class CaptureInputGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var muted = false
+    func setMuted(_ value: Bool) { lock.lock(); defer { lock.unlock() }; muted = value }
+    func withInput(_ receive: () -> Void) { lock.lock(); defer { lock.unlock() }; if !muted { receive() } }
+}
+
 final class CaptureFile: @unchecked Sendable {
     private let lock = NSLock()
     private var file: AVAudioFile?
     private var failure: Error?
     private var reportedFirstTap = false
+    private var recordedInput = false
+    var hasRecordedInput: Bool { lock.lock(); defer { lock.unlock() }; return recordedInput }
     private let url: URL
     private let format: AVAudioFormat
     private let chunkFrames: AVAudioFramePosition?
@@ -29,13 +40,16 @@ final class CaptureFile: @unchecked Sendable {
     func recordings() -> [URL] { lock.lock(); defer { lock.unlock() }; return urls }
     /// Build outside AudioIO's main-actor context. The AVAudioEngine callback runs on
     /// its realtime thread; do not capture an actor executor or escape its PCM buffer.
-    nonisolated static func tap(for writer: CaptureFile, activity: LocalSpeechActivity? = nil, firstTap: (@Sendable () -> Void)? = nil) -> @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void {
+    nonisolated static func tap(for writer: CaptureFile, activity: LocalSpeechActivity? = nil, firstTap: (@Sendable () -> Void)? = nil, inputGate: CaptureInputGate? = nil) -> @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void {
         { buffer, time in
             if buffer.frameLength > 0 { writer.reportFirstTap(firstTap) }
+            let receive = {
             writer.append(buffer)
             // Convert host-time evidence to a scalar before leaving this callback.
             let capturedEnd = time.isHostTimeValid ? AVAudioTime.seconds(forHostTime: time.hostTime) + Double(buffer.frameLength) / buffer.format.sampleRate : nil
             activity?.append(buffer, capturedEnd: capturedEnd)
+            }
+            if let inputGate { inputGate.withInput(receive) } else { receive() }
         }
     }
     private func reportFirstTap(_ receive: (@Sendable () -> Void)?) {
@@ -61,6 +75,7 @@ final class CaptureFile: @unchecked Sendable {
                 for retained in tail { try file?.write(from: retained); frames += AVAudioFramePosition(retained.frameLength) }
             }
             try file?.write(from: buffer)
+            if buffer.frameLength > 0 { recordedInput = true }
             frames += AVAudioFramePosition(buffer.frameLength)
             if chunkFrames != nil, let retained = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength) {
                 retained.frameLength = buffer.frameLength
@@ -76,6 +91,7 @@ final class CaptureFile: @unchecked Sendable {
             }
         } catch { failure = error }
     }
+    func discardLeadIn() { lock.lock(); defer { lock.unlock() }; tail = []; tailFrames = 0 }
     func retainLeadIn() throws {
         lock.lock(); defer { lock.unlock() }
         guard file != nil else { throw VoiceFailure.unavailable("Interruption capture is no longer active.") }
@@ -100,6 +116,13 @@ final class CaptureFile: @unchecked Sendable {
     private var vadManager: VadManager?
     private var captureReadiness: AudioCaptureReadiness?
     private var configurationObserver: NSObjectProtocol?
+    private let inputGate = CaptureInputGate()
+    private var completedHadInput = false
+    public var hasRecordedInput: Bool { file?.hasRecordedInput ?? completedHadInput }
+    public func setInputMuted(_ muted: Bool) {
+        inputGate.setMuted(muted)
+        if muted { file?.discardLeadIn() }
+    }
     private var starting = false
     private var generation: UInt64 = 0
     private let permission: (@MainActor () async -> Bool)?
@@ -107,6 +130,7 @@ final class CaptureFile: @unchecked Sendable {
     init(permission: @escaping @MainActor () async -> Bool) { self.permission = permission; engine.attach(player) }
     public func start(url: URL, chunkSeconds: Double? = nil, chunkClosed: (@Sendable (URL) -> Void)? = nil, activity: (@Sendable (SpeechActivityEvent) -> Void)? = nil, firstTap: (@Sendable () -> Void)? = nil, configurationChanged: (@Sendable (Bool) -> Void)? = nil) async throws {
         guard file == nil, !starting else { throw VoiceFailure.unavailable("A recording is already starting or running.") }
+        completedRecordings = []; completedHadInput = false
         starting = true
         let requestGeneration = generation
         defer { starting = false }
@@ -155,9 +179,9 @@ final class CaptureFile: @unchecked Sendable {
                     firstTap?()
                 }
             }
-            input.installTap(onBus: 0, bufferSize: 1024, format: format, block: CaptureFile.tap(for: writer, activity: monitor, firstTap: receivedTap))
+            input.installTap(onBus: 0, bufferSize: 1024, format: format, block: CaptureFile.tap(for: writer, activity: monitor, firstTap: receivedTap, inputGate: inputGate))
             tapInstalled = true
-            engine.prepare(); try engine.start(); completedRecordings = []; file = writer; speechActivity = monitor
+            engine.prepare(); try engine.start(); completedRecordings = []; completedHadInput = false; file = writer; speechActivity = monitor
             if let configurationChanged {
                 configurationObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self] _ in
                     Task { @MainActor [weak self] in
@@ -172,11 +196,33 @@ final class CaptureFile: @unchecked Sendable {
             engine.stop()
             if tapInstalled { engine.inputNode.removeTap(onBus: 0) }
             try? capture?.close()
+            completedRecordings = capture?.recordings() ?? []
+            completedHadInput = capture?.hasRecordedInput ?? false
             #if os(iOS)
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
             #endif
             throw error
         }
+    }
+    /// Capture is not ready until input is delivered. Recover once from an empty
+    /// configuration-stop race; never restart over recorded speech.
+    public func startVerified(url: URL, chunkSeconds: Double? = nil, chunkClosed: (@Sendable (URL) -> Void)? = nil, activity: (@Sendable (SpeechActivityEvent) -> Void)? = nil, firstTap: (@Sendable () -> Void)? = nil, configurationChanged: (@Sendable (Bool) -> Void)? = nil, retrying: (@Sendable () -> Void)? = nil) async throws {
+        var expectedGeneration = generation
+        try await CaptureStartup.run(start: {
+            guard self.generation == expectedGeneration else { throw CancellationError() }
+            try await self.start(url: url, chunkSeconds: chunkSeconds, chunkClosed: chunkClosed, activity: activity, firstTap: firstTap, configurationChanged: configurationChanged)
+        }, wait: {
+            try await self.waitForFirstTap()
+        }, stopAndWasEmpty: {
+            guard self.generation == expectedGeneration else { throw CancellationError() }
+            try self.stop()
+            expectedGeneration = self.generation
+            return !self.hasRecordedInput
+        }, beforeRetry: {
+            retrying?()
+            try await Task.sleep(for: .milliseconds(150))
+            guard self.generation == expectedGeneration else { throw CancellationError() }
+        })
     }
     /// Optional duplex playback must observe input delivery before scheduling output.
     public func waitForFirstTap(timeout: Duration = .seconds(1)) async throws {
@@ -217,7 +263,7 @@ final class CaptureFile: @unchecked Sendable {
         generation &+= 1
         speechActivity?.stop(); speechActivity = nil
         guard let capture = file else { return }
-        playbackQueue.cancel(); player.stop(); engine.stop(); engine.inputNode.removeTap(onBus: 0); completedRecordings = capture.recordings(); file = nil
+        playbackQueue.cancel(); player.stop(); engine.stop(); engine.inputNode.removeTap(onBus: 0); completedRecordings = capture.recordings(); completedHadInput = capture.hasRecordedInput; file = nil
         #if os(iOS)
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         #endif

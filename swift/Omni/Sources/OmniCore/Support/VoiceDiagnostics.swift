@@ -5,7 +5,7 @@ import Foundation
 public enum VoiceDiagnosticEvent: String, Codable, Sendable {
     case sessionStart, captureReady, transcribing, emptyCapture, emptyRetry, sending
     case sendAccepted, sendFailed, paused, resumed, cancelled, staleCallback
-    case captureFailed, playbackStarted, playbackFinished, playbackFailed
+    case captureStartupRetry, captureFailed, playbackStarted, playbackFinished, playbackFailed
     case acousticInterruption, synthesisStarted, synthesisFinished, synthesisFailed
     case appleFallback, playbackDrain, listeningAgain
     case activityFirstFrame, activityUnavailable, activityWatchdog, microphoneFirstTap
