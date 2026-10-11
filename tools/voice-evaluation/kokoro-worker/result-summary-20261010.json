@@ -1,0 +1,79 @@
+{
+  "ready": {
+    "ready": true,
+    "id": "",
+    "status": "ready"
+  },
+  "coldReadyMilliseconds": 20569.041041999997,
+  "sampledPeakRSSBytes": 1119584256,
+  "rows": [
+    {
+      "id": "p01-0",
+      "millisecondsToWAV": 891.219207999999,
+      "frames": 47400,
+      "sampleRate": 24000
+    },
+    {
+      "id": "p02-0",
+      "millisecondsToWAV": 224.05570799999808,
+      "frames": 126000,
+      "sampleRate": 24000
+    },
+    {
+      "id": "p03-0",
+      "millisecondsToWAV": 99.18787499999837,
+      "frames": 111600,
+      "sampleRate": 24000
+    },
+    {
+      "id": "p04-0",
+      "millisecondsToWAV": 171.43875000000008,
+      "frames": 136800,
+      "sampleRate": 24000
+    },
+    {
+      "id": "p05-0",
+      "millisecondsToWAV": 221.42999999999802,
+      "frames": 188400,
+      "sampleRate": 24000
+    },
+    {
+      "id": "p06-0",
+      "millisecondsToWAV": 193.76895800000327,
+      "frames": 169200,
+      "sampleRate": 24000
+    },
+    {
+      "id": "p07-0",
+      "millisecondsToWAV": 293.2858329999988,
+      "frames": 218400,
+      "sampleRate": 24000
+    },
+    {
+      "id": "p08-0",
+      "millisecondsToWAV": 195.38145799999995,
+      "frames": 151200,
+      "sampleRate": 24000
+    },
+    {
+      "id": "p09-0",
+      "millisecondsToWAV": 208.5128329999968,
+      "frames": 180000,
+      "sampleRate": 24000
+    },
+    {
+      "id": "p10-0",
+      "millisecondsToWAV": 354.78287500000147,
+      "frames": 238800,
+      "sampleRate": 24000
+    },
+    {
+      "id": "p10-1",
+      "millisecondsToWAV": 199.59470799999934,
+      "frames": 150600,
+      "sampleRate": 24000
+    }
+  ],
+  "exitCode": 0,
+  "stderrBytes": 0
+}

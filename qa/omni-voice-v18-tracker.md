@@ -20,3 +20,19 @@ Owner accepted build17 iOS voice behavior and closed the reported session/playba
 ## Remaining gates
 
 Finish Mini soak and stop test worker before owner updates macOS; recheck host after update. Merge/tag, deploy through existing runbook, configure backed-up paths, activate/health/syntheticAPIcheck, then install matching mobile release with owner readiness. Physical Kokoro long reply/interruption and notification-icon test on both devices. Mac17notarization remainsInProgress at latestcheck; no false Mac installation/wake acceptance. [Host runbook](../docs/runbook/omni-kokoro-host.md).
+
+## Release receipts
+
+PR125 merged as `e98c1de8`, tagged `omni-client-v2026.10.10-18` and `prism-v2026.10.10-16`. Server16 is not yet deployed; read-only deployment preflight passed with live/vault health200 and no failing-source baseline.
+
+iOS18 Release succeeded; strict signature, identity/version, DEBUG-hook exclusions and compiled20pt phone/iPad icon renditions verified on the actual signed artifact. ZIP SHA256 `ee0a2573da84b9e5e6ccc1cab861b3c2bacf96d1f72f745dd35e3522615cb6a5`. Owner approved installation; both device installs succeeded. Existing speech choice is preserved.
+
+The owner initially still saw generic placeholders on fresh notifications from18; tapping opened the correct native app. After an iPhone restart, a fresh notification displayed the correct logo. **iPhone notification icon accepted; iPad restart/retest pending.** Additional icon sizes alone did not resolve the physical issue. Apple acknowledges delayed notification-icon refresh after updates and recommends restart as a diagnostic: https://developer.apple.com/forums/thread/775787 . Do not infer a guaranteed general cache fix or uninstall/reset devices.
+
+Mac18 universal Release passed identity, permissions and DEBUG-hook exclusions. Unsigned ZIP SHA256 `b245078c87a1c3445b39cd50fcd89cb4a8a7d65968a647ca8ca1399b874edaec`. The public Developer ID provisioning profile was restored from verified13 (17's artifact lacked it); it matches team/application, production APNs and expires2044-10-05. Owner signed18; strict signature/hardened runtime/secure timestamp and required entitlements/no get-task-allow verified. Signed ZIP SHA256 `0a7ba21ad00ef1d291dc55756575a42de608cb9d87332fc13638967938c393af`. Apple submission `3db229f4-915b-4ca0-859e-26a020abac3e` uploaded once; acceptance/stapling/installation remain pending. No duplicate upload.
+
+Mini Software Update offers Tahoe26.7.1 and major27.0.1; prefer the offered26.x update for this pass and recheck host reliability afterward. No OS update has been performed by the agent.
+
+## Mini soak completed; OS update pause
+
+The isolated Mini worker passed171 synthetic requests over919seconds, including a full15-minute active test, exited0, and is confirmed stopped. Cold readiness14,322ms; `getrusage` child peakRSS694,501,376bytes. All responses were bounded valid nonsilent24kHz PCM WAV. No private text/microphone/agent traffic, production activation or OS mutation occurred. Receipt preserved in `tools/voice-evaluation/kokoro-worker/mini-soak-summary-20261010.json`. Owner offered a macOS update and has been asked to install Tahoe26.7.1 at this clean pause point; await signed-in readiness before rechecking services and enabling server16/Kokoro.
