@@ -1,0 +1,3 @@
+{"firstFrame":153,"maxFrameGap":36,"longTasks":[155],"rows":1206}
+{"firstFrame":118,"maxFrameGap":35,"longTasks":[109],"rows":1206}
+{"firstFrame":120,"maxFrameGap":39,"longTasks":[109],"rows":1206}

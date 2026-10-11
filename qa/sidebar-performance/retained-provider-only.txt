@@ -1,0 +1,18 @@
+{
+  firstFrame: 41,
+  maxFrameGap: 984,
+  longTasks: [ { start: 3133, duration: 931 }, { start: 4064, duration: 94 } ],
+  rows: 1206
+}
+{
+  firstFrame: 909,
+  maxFrameGap: 117,
+  longTasks: [ { start: 7397, duration: 919 }, { start: 8317, duration: 114 } ],
+  rows: 1206
+}
+{
+  firstFrame: 878,
+  maxFrameGap: 92,
+  longTasks: [ { start: 10796, duration: 890 }, { start: 11687, duration: 88 } ],
+  rows: 1206
+}
