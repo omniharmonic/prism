@@ -1,6 +1,6 @@
 # Omni voice v14 investigation — not released
 
-Checkpoint: 2026-10-10 local time. Build 13 remains installed on iPhone and iPad; server 15 remains live. **No build 14 artifact, test result, installation or acceptance is claimed here.** Historical release and test receipts remain in the [v13 tracker](omni-voice-v13-tracker.md). Scope remains [V01–V05](../docs/roadmap/omni-conversational-voice-plan.md).
+Checkpoint: 2026-10-10 local time. Build 13 remains installed on iPhone and iPad; server 15 remains live. **Build 14 is built and verified; device installation and physical acceptance are pending.** Historical release and test receipts remain in the [v13 tracker](omni-voice-v13-tracker.md). Scope remains [V01–V05](../docs/roadmap/omni-conversational-voice-plan.md).
 
 ## Owner feedback and device evidence
 
@@ -49,3 +49,7 @@ New fixed diagnostic categories distinguish decode, route, engine, capture and b
 ## Final integration verification
 
 Integrated Core219 and UI39 tests passed, excluding only the unrelated full Mac screenshot walk. Final actual iPhone XCUITest passed1 in20.54seconds after all source changes; the main-chat screenshot was inspected. Independent review cleared same-thread link ownership, Back/unrelated-route cleanup, bounded decoder EOF, cancellation cleanup and enum-only diagnostic privacy. Release source exclusions and whitespace checks pass. Hosted CI and physical build14 acceptance remain pending; these results do not reproduce the original phone playback failure.
+
+## Release candidate receipt
+
+PR117 merged as `2d4a91146a30445c40e9c518bbbcd564e9c7a8c9`, tag `omni-client-v2026.10.10-14`. Tagged iOS and universal Mac Release builds passed. Both binaries exclude DEBUG test hooks; iOS strict signature verification passed. Private artifacts: `/private/tmp/omni-client-v2026.10.10-14`. Mobile ZIP SHA256 `422d46ad13faf9bcea920adc87ff201b2d025c8f70f736617e5dbcc40b7953c2`; unsigned Mac ZIP SHA256 `4c478719e21d388b0d428a86ec64b1e1371dc8143eb64738f1e92f1ec950a401`. Mobile installation awaits the owner’s confirmation that active turns/drafts are clear. Mac14 is packaged locally and unsigned; no new desktop signing request yet. Mac13 notarization remained In Progress at the latest check. Server15 is unchanged. Hosted CI remains separate from these local native results.
