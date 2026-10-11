@@ -372,6 +372,21 @@ final class ThreadModelTests: XCTestCase {
         XCTAssertEqual(model.phase, .loaded)
     }
 
+    func testAcceptedInitialVoicePromptSurvivesMissingHistoryAndReconcilesOnce() async {
+        service.details(
+            .success(Fixture.detail(messages: [answer])),
+            .success(Fixture.detail(messages: [hello, answer]))
+        )
+        let model = make()
+        model.rememberCreatedVoicePrompt("hello")
+        XCTAssertEqual(texts(model), ["user:hello"])
+        await model.open()
+        XCTAssertEqual(texts(model), ["user:hello", "assistant:Hi Benjamin."])
+        XCTAssertNil(model.pendingText, "An accepted creation is not an unsent retry")
+        await model.reload()
+        XCTAssertEqual(texts(model), ["user:hello", "assistant:Hi Benjamin."])
+    }
+
     func testSendStreamsDeltasThenTheFinalTextReplacesThem() async {
         service.details(
             .success(Fixture.detail(lastSeq: 4, messages: [hello, answer])),

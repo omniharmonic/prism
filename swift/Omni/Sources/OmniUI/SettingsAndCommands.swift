@@ -7,6 +7,12 @@ public struct SettingsView: View {
     private let app: AppModel
     @State private var confirmingSignOut = false
     @State private var showingSpeechBench = false
+    @State private var voiceSettingsPresentation: VoiceSettingsPresentation?
+
+    private struct VoiceSettingsPresentation: Identifiable {
+        let id = UUID()
+        let device: ConversationDevice
+    }
 
     public init(app: AppModel) {
         self.app = app
@@ -46,6 +52,14 @@ public struct SettingsView: View {
             if let skills = app.session?.skills {
                 Section("Agent") { NavigationLink("Skills") { SkillsView(model: skills) } }
             }
+            Section("Voice & Playback") {
+                Button("Voice & Playback Settings") {
+                    let device = (app.session?.conversationAudio as? ConversationDevice) ?? ConversationDevice()
+                    device.configureReplySpeech(service: app.session?.replySpeechService)
+                    voiceSettingsPresentation = VoiceSettingsPresentation(device: device)
+                }
+                    .accessibilityIdentifier("settings.voice")
+            }
             Section("Speech Benchmark") {
                 Button("Open Local Speech Benchmark") { showingSpeechBench = true }
                 Text("Record, correct and compare on-device engines. Nothing is sent to the agent.").font(.footnote)
@@ -77,10 +91,14 @@ public struct SettingsView: View {
                 DiagnosticsSection(log: log)
             }
             Section {
-                Text("Omni \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"). Models are chosen on the server, not here.")
+                Text("Omni \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev") (build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "dev")). Models are chosen on the server, not here.")
                     .font(.footnote)
                     .foregroundStyle(Color.quietText)
             }
+        }
+        .sheet(item: $voiceSettingsPresentation) { presentation in
+            ConversationVoiceSettings(device: presentation.device)
+                .modifier(PrivacyLockCover())
         }
         .sheet(isPresented: $showingSpeechBench) {
             NavigationStack {
@@ -88,6 +106,10 @@ public struct SettingsView: View {
                     ToolbarItem(placement: .confirmationAction) { Button("Done") { showingSpeechBench = false } }
                 }
             }
+            #if os(macOS)
+            // List has no intrinsic size; give the sheet room for its scrollable content.
+            .frame(minWidth: 560, idealWidth: 640, minHeight: 480, idealHeight: 640)
+            #endif
             .modifier(PrivacyLockCover())
         }
         .formStyle(.grouped)
