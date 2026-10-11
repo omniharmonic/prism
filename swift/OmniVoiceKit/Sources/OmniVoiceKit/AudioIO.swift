@@ -91,6 +91,7 @@ final class CaptureFile: @unchecked Sendable {
             }
         } catch { failure = error }
     }
+    func discardLeadIn() { lock.lock(); defer { lock.unlock() }; tail = []; tailFrames = 0 }
     func retainLeadIn() throws {
         lock.lock(); defer { lock.unlock() }
         guard file != nil else { throw VoiceFailure.unavailable("Interruption capture is no longer active.") }
@@ -118,7 +119,10 @@ final class CaptureFile: @unchecked Sendable {
     private let inputGate = CaptureInputGate()
     private var completedHadInput = false
     public var hasRecordedInput: Bool { file?.hasRecordedInput ?? completedHadInput }
-    public func setInputMuted(_ muted: Bool) { inputGate.setMuted(muted) }
+    public func setInputMuted(_ muted: Bool) {
+        inputGate.setMuted(muted)
+        if muted { file?.discardLeadIn() }
+    }
     private var starting = false
     private var generation: UInt64 = 0
     private let permission: (@MainActor () async -> Bool)?
@@ -126,6 +130,7 @@ final class CaptureFile: @unchecked Sendable {
     init(permission: @escaping @MainActor () async -> Bool) { self.permission = permission; engine.attach(player) }
     public func start(url: URL, chunkSeconds: Double? = nil, chunkClosed: (@Sendable (URL) -> Void)? = nil, activity: (@Sendable (SpeechActivityEvent) -> Void)? = nil, firstTap: (@Sendable () -> Void)? = nil, configurationChanged: (@Sendable (Bool) -> Void)? = nil) async throws {
         guard file == nil, !starting else { throw VoiceFailure.unavailable("A recording is already starting or running.") }
+        completedRecordings = []; completedHadInput = false
         starting = true
         let requestGeneration = generation
         defer { starting = false }
@@ -191,6 +196,8 @@ final class CaptureFile: @unchecked Sendable {
             engine.stop()
             if tapInstalled { engine.inputNode.removeTap(onBus: 0) }
             try? capture?.close()
+            completedRecordings = capture?.recordings() ?? []
+            completedHadInput = capture?.hasRecordedInput ?? false
             #if os(iOS)
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
             #endif

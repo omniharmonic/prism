@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 @testable import OmniVoiceKit
 
 @MainActor final class CaptureStartupTests: XCTestCase {
@@ -45,4 +46,26 @@ import XCTest
         gate.withInput { deliveries += 1 }
         XCTAssertEqual(deliveries, 2)
     }
+    func testMutedTapWritesNoFramesAndUnmutedTapResumesRecording() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".caf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1))
+        let writer = try CaptureFile(url: url, format: format)
+        let gate = CaptureInputGate()
+        let tap = CaptureFile.tap(for: writer, inputGate: gate)
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 64))
+        buffer.frameLength = 64
+        buffer.floatChannelData![0].initialize(repeating: 0, count: 64)
+        gate.setMuted(true)
+        tap(buffer, AVAudioTime(sampleTime: 0, atRate: 16000))
+        XCTAssertFalse(writer.hasRecordedInput)
+        gate.setMuted(false)
+        tap(buffer, AVAudioTime(sampleTime: 64, atRate: 16000))
+        XCTAssertTrue(writer.hasRecordedInput)
+        gate.setMuted(true)
+        tap(buffer, AVAudioTime(sampleTime: 128, atRate: 16000))
+        try writer.close()
+        XCTAssertEqual(try AVAudioFile(forReading: url).length, 64)
+    }
+
 }

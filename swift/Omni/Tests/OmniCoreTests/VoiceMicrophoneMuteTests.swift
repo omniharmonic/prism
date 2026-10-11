@@ -36,6 +36,8 @@ import XCTest
             draft = voice.draftAfterCapture(preserving: draft); return true
         }
         XCTAssertEqual(draft, "Existing prefix Captured words")
+        XCTAssertNil(voice.problem)
+        XCTAssertEqual(voice.captureNotice, "Your words are saved as an unsent draft.")
         XCTAssertEqual(voice.state, .paused)
         await voice.start(continuingDraft: draft)
         XCTAssertEqual(audio.starts, 1)

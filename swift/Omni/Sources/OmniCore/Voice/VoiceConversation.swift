@@ -276,7 +276,11 @@ public extension ConversationAudio {
                 VoiceDiagnostics.record(submit ? .sendAccepted : .paused)
                 state = submit ? .answering : .paused
                 if !submit {
-                    problem = draftReason != .recordingLimit ? "Your words are saved as an unsent draft." : "Recording limit reached. Your words are saved as a draft."
+                    if draftReason == .microphoneMute {
+                        problem = nil; captureNotice = "Your words are saved as an unsent draft."
+                    } else {
+                        problem = draftReason == .pause ? "Your words are saved as an unsent draft." : "Recording limit reached. Your words are saved as a draft."
+                    }
                 }
                 if submit, let completed = pendingCompletion {
                     pendingCompletion = nil
@@ -337,7 +341,7 @@ public extension ConversationAudio {
                 self.drainTask = nil
                 self.state = .paused
                 guard !self.isMicrophoneMuted, self.canAutomaticallyListen() else {
-                    self.problem = "Session paused. Review the conversation, then resume when ready."
+                    self.problem = self.isMicrophoneMuted ? nil : "Session paused. Review the conversation, then resume when ready."
                     return
                 }
                 VoiceDiagnostics.record(.listeningAgain)
