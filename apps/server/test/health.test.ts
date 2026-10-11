@@ -186,3 +186,17 @@ test("GET /acl/workers: owner gets sources; admin / anon are 403; no secret mate
   assert.equal((await acl.request("/workers", { headers: { cookie: adminCookie } })).status, 403);
   assert.equal((await acl.request("/workers")).status, 403);
 });
+
+test('link-health exposes actual scan streak and last healthy time without waiting for three failures', async () => {
+  const enabled = config.linkHealthEnabled;
+  Object.assign(config, { linkHealthEnabled: true });
+  try {
+    const at = new Date().toISOString(), healthy = '2026-10-01T00:00:00.000Z';
+    setWorkerCursor('primary', 'link-health', JSON.stringify({ at, lastSuccessAt: healthy, failureStreak: 1, taskCohortVersion: 2, status: 'failing', low: ['task.project'], truncated: [], measures: { 'task.project': { n: 30, hit: 10, share: .333, level: .9 } } }));
+    const health = (await getSourceHealth({ list: async () => [] })).find(h => h.name === 'link-health')!;
+    assert.equal(health.failureStreak, 1);
+    assert.equal(health.status, 'failing');
+    assert.equal(health.lastSuccessAt, healthy);
+    assert.equal(health.detail?.lastRunAt, at);
+  } finally { Object.assign(config, { linkHealthEnabled: enabled }); }
+});

@@ -100,3 +100,21 @@ test("real touch navigation consumes the horizontal edge drag but retains an ord
  await expect(drawer(page)).toHaveCount(0);
  await cdp.detach();
 });
+
+test("sidebar follows the finger before release and retracts without navigating on cancellation", async ({page}) => {
+ await start(page);
+ await page.emulateMedia({ reducedMotion: "no-preference" });
+ const cdp = await page.context().newCDPSession(page);
+ const touch = async(type: "touchStart" | "touchMove" | "touchCancel", x?: number) => cdp.send("Input.dispatchTouchEvent", {type, touchPoints: x === undefined ? [] : [{x, y: 150}]});
+ await touch("touchStart", 3); await touch("touchMove", 95);
+ await expect(drawer(page)).toBeVisible();
+ const first = await drawer(page).boundingBox();
+ expect(first!.x).toBeLessThan(-150);
+ expect(first!.x + first!.width).toBeGreaterThan(60);
+ await touch("touchMove", 175);
+ await expect.poll(async () => (await drawer(page).boundingBox())!.x).toBeGreaterThan(first!.x + 40);
+ await touch("touchCancel");
+ await expect(drawer(page)).toHaveCount(0);
+ await expect(page.locator('.tiptap')).toContainText('A shared place');
+ await cdp.detach();
+});

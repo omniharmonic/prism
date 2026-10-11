@@ -40,9 +40,9 @@
    in general just fade. */
 .prism-menu-enter { animation: prism-menu-in var(--motion-fast) var(--motion-ease); }
 [role="menu"]:not(.prism-menu-enter) { animation: prism-fade-in var(--motion-fast) ease-out; }
-.workspace-mobile-drawer[open] { animation: prism-fade-in var(--motion-fast) ease-out; }
-.workspace-mobile-drawer[open] > div { animation: drawer-in-left var(--motion-slow) var(--motion-ease); }
-.workspace-mobile-drawer[data-side="right"][open] > div { animation-name: drawer-in-right; }
+.workspace-mobile-drawer[open] { animation: none; z-index: var(--z-overlay); outline: none; }
+.workspace-mobile-drawer[open] > div { animation: none; }
+.workspace-mobile-drawer[data-dragging] { pointer-events: none; }
 @media (prefers-reduced-motion: reduce) {
   .prism-menu-enter, [role="menu"],
   .workspace-mobile-drawer[open], .workspace-mobile-drawer[open] > div { animation: none; }
@@ -221,3 +221,15 @@ html[data-page-width="wide"] #workspace-document:not([data-page-full="true"]) { 
 
 @media(prefers-reduced-motion:reduce) { .edge-swipe-hint { transition:none; } }
 :root.reduce-motion .edge-swipe-hint { transition:none; }
+
+/* Touch/pointer focus is retained for restoration without a keyboard-style box. */
+html[data-pointer-focus="true"] .prism-workspace-shell button:focus-visible {
+  outline: none; box-shadow: none;
+}
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  /* Paint a compact pill inside the full 44px native select hit area. */
+  html .prism-compact-select { display: inline-flex; position: relative; align-items: center; isolation: isolate; }
+  html .prism-compact-select::before { content: ""; position: absolute; inset: 6px 0; border: 1px solid var(--control-border); border-radius: 9px; background: var(--bg-surface); z-index: -1; pointer-events: none; }
+  html .prism-compact-select::after { content: ""; position: absolute; right: 10px; width: 5px; height: 5px; border-right: 1.5px solid var(--text-secondary); border-bottom: 1.5px solid var(--text-secondary); transform: translateY(-2px) rotate(45deg); pointer-events: none; }
+  html .prism-compact-select select { appearance: none; -webkit-appearance: none; min-height: 44px !important; height: 44px; padding: 0 26px 0 10px !important; background: transparent !important; border: 0 !important; margin: 0; line-height: normal; }
+}

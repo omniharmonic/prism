@@ -21,7 +21,6 @@ for (const width of [1440, 390, 320]) test(`agent history, permissions and compo
     await page.getByTestId("agent-session-row").click();
     await expect(input).toHaveValue("Keep this thoughtful follow-up while I review the page.");
   } else {
-    await page.getByRole("button", { name: "Conversation history", exact: true }).click();
     await page.getByRole("textbox", { name: "Filter recent conversations" }).fill("weekly");
     await expect(page.getByTestId("agent-session-row")).toHaveCount(1);
     await expect(page.getByRole("region", { name: "Earlier", exact: true })).toContainText("Review the weekly plan");
@@ -31,7 +30,6 @@ for (const width of [1440, 390, 320]) test(`agent history, permissions and compo
 
 test("session list errors offer recovery and a local filter cannot claim whole-history search", async ({ page }) => {
   await page.goto("/e2e-fixtures/agent.html?history&permissions&visual&list-error");
-  await page.getByRole("button", { name: "Conversation history", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("Couldn’t refresh conversations");
   await page.evaluate(() => { (window as any).prismAgentFixture.listFails = false; });
   await page.getByRole("button", { name: "Try again", exact: true }).click();

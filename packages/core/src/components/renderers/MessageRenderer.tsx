@@ -208,7 +208,7 @@ function ScopedMessageRenderer({
             )}
           </div>
         </div>
-        <label className="shrink-0">
+        <label className="shrink-0 prism-compact-select">
           <span className="sr-only">Thread status</span>
           <select
             aria-label="Thread status"

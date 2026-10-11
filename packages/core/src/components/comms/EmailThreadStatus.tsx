@@ -32,12 +32,12 @@ function ScopedStatus({ note, readOnly }: { note: Note; readOnly: boolean }) {
     finally { setPending(false); }
   };
   return <div className="prism-email-category">
-    <label><span>Status</span><select className="prism-thread-status focus-ring" aria-label="Thread status" value={status} disabled={!canEdit || pending}
+    <label><span>Status</span><span className="prism-compact-select"><select className="prism-thread-status focus-ring" aria-label="Thread status" value={status} disabled={!canEdit || pending}
       onChange={e => void change(e.target.value as typeof TRIAGE_TAGS[number])}>
       <option value="unclassified" disabled>{THREAD_STATUS_LABELS.unclassified}</option>
       {status === "triage-failed" && <option value="triage-failed" disabled>{THREAD_STATUS_LABELS["triage-failed"]}</option>}
       {TRIAGE_TAGS.map(tag => <option key={tag} value={tag}>{THREAD_STATUS_LABELS[tag]}</option>)}
-    </select></label>
+    </select></span></label>
     {error && <p role="status">{error}</p>}
   </div>;
 }

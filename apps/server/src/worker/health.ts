@@ -475,11 +475,13 @@ export async function getSourceHealth(opts: { now?: number; list?: Lister } = {}
   if (config.linkHealthEnabled) {
     const last = lastLinkHealthOutcome("primary");
     const at = last ? Date.parse(last.at) : NaN;
-    const okAt = last && last.status !== "error" && Number.isFinite(at) ? at : null;
-    const streak = last && last.status !== "ok" ? config.workerFailStreak : 0;
+    const healthyAt = last?.lastSuccessAt ?? (last?.status === "ok" ? last.at : null);
+    const okAt = healthyAt && Number.isFinite(Date.parse(healthyAt)) ? Date.parse(healthyAt) : null;
+    const streak = last?.failureStreak ?? 0;
     const staleAfterMs = config.linkHealthIntervalMs > 0 ? config.linkHealthIntervalMs * 2 : 0;
     const detail: Record<string, string | number | boolean | null> = {
       lastRunAt: last?.at ?? null,
+      taskCohortVersion: last?.taskCohortVersion ?? null,
       low: last?.low.join(",") || null,
       truncated: last?.truncated?.join(",") || null,
     };
@@ -501,7 +503,7 @@ export async function getSourceHealth(opts: { now?: number; list?: Lister } = {}
           : null,
       failureStreak: streak,
       staleAfterMs,
-      status: computeStatus({ configured: true, lastSuccessAt: okAt, streak, staleAfterMs, now, baselineAt: BOOT_AT }),
+      status: last && last.status !== "ok" ? "failing" : computeStatus({ configured: true, lastSuccessAt: Number.isFinite(at) ? at : null, streak: 0, staleAfterMs, now, baselineAt: BOOT_AT }),
       detail,
     });
   }

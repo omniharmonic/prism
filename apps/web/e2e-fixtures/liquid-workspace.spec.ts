@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 test('history dialog preserves the mounted conversation and restores keyboard focus', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/e2e-fixtures/agent.html?history&permissions&visual');
   const input = page.getByRole('textbox', { name: 'Message the agent' });
   await input.fill('Keep this draft while I browse history.');
@@ -20,6 +21,7 @@ test('history dialog preserves the mounted conversation and restores keyboard fo
 
 test('history honors OS and app reduced motion; permission controls remain in composer', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/e2e-fixtures/agent.html?history&permissions&visual');
   await expect(page.locator('.prism-agent-compose-surface').getByRole('combobox', { name: 'Agent permissions' })).toHaveValue('read-only');
   await page.getByRole('button', { name: 'Conversation history', exact: true }).click();
@@ -37,10 +39,8 @@ test.describe('iPad controls', () => {
     await page.goto('/e2e-fixtures/agent.html?history&permissions&visual');
     const permission = page.getByRole('combobox', { name: 'Agent permissions' });
     expect((await permission.boundingBox())!.height).toBeGreaterThanOrEqual(44);
-    const trigger = page.getByRole('button', { name: 'Conversation history', exact: true });
-    expect((await trigger.boundingBox())!.width).toBeGreaterThanOrEqual(44);
-    await trigger.click();
-    for (const button of await page.getByRole('dialog').getByRole('button', { name: 'Archive session', exact: true }).all()) {
+    await expect(page.getByRole('complementary', { name: 'Conversation history' })).toBeVisible();
+    for (const button of await page.getByRole('complementary', { name: 'Conversation history' }).getByRole('button', { name: 'Archive session', exact: true }).all()) {
       const box = (await button.boundingBox())!;
       expect(box.height).toBeGreaterThanOrEqual(44); expect(box.width).toBeGreaterThanOrEqual(44);
     }
@@ -64,4 +64,45 @@ test('focus mode retains the live document and restores saved panel choices', as
   await page.getByRole('button', { name: 'Toggle sidebar (⌘\\)', exact: true }).click();
   await expect(page.locator('.workspace-navigation')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Focus mode', exact: true })).toHaveAttribute('aria-pressed', 'false');
+});
+
+test('desktop history remains visible and conversation chrome does not show API costs', async ({page}) => {
+ await page.setViewportSize({width: 1440,height: 900});
+ await page.goto('/e2e-fixtures/agent.html?history&permissions&visual');
+ await expect(page.getByRole('complementary', {name: 'Conversation history'})).toBeVisible();
+ await expect(page.getByTestId('agent-session-row')).toHaveCount(3);
+ await expect(page.getByTestId('agent-session-cost')).toHaveCount(0);
+ await expect(page.locator('[data-testid="agent-conversation"]')).not.toContainText('$');
+});
+
+test('phone controls stay compact with full touch targets and adjacent attachment actions', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/e2e-fixtures/agent.html?history&permissions&visual&snapshots');
+  const permission = page.getByRole('combobox', { name: 'Agent permissions' });
+  expect((await permission.boundingBox())!.height).toBe(44);
+  expect(await permission.evaluate(el => getComputedStyle(el.parentElement!, '::before').height)).toBe('32px');
+  const attach = await page.getByRole('button', { name: 'Attach notes', exact: true }).boundingBox();
+  const capture = await page.locator('summary').filter({ hasText: 'Capture text' }).boundingBox();
+  expect(Math.abs(attach!.y + attach!.height / 2 - capture!.y - capture!.height / 2)).toBeLessThan(8);
+  await page.goto('/e2e-fixtures/inbox.html?resolved&email-status=owner');
+  await page.locator('.prism-message-row').filter({ hasText: 'Saturday workshop agenda' }).click();
+  const status = page.getByRole('combobox', { name: 'Thread status' });
+  expect((await status.boundingBox())!.height).toBe(44);
+  expect(await status.evaluate(el => getComputedStyle(el.parentElement!, '::before').height)).toBe('32px');
+});
+
+test('pointer focus avoids boxes while keyboard navigation keeps a visible focus indicator', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto('/e2e-fixtures/workspace.html?navigation');
+  await page.getByRole('button', { name: 'Notes', exact: true }).click();
+  const close = page.getByRole('button', { name: 'Close navigation' });
+  await expect(close).toBeVisible();
+  await close.focus();
+  await expect(close).toHaveCSS('outline-style', 'none');
+  await expect(close).toHaveCSS('box-shadow', 'none');
+  await page.getByRole('dialog', { name: 'Workspace navigation' }).focus();
+  await page.keyboard.press('Tab');
+  await expect(close).toBeFocused();
+  expect(await close.evaluate(el => getComputedStyle(el).boxShadow)).not.toBe('none');
 });

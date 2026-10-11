@@ -199,7 +199,6 @@ test("conversation identifies its authors and archive is a separate keyboard act
   await expect(page.getByText("You", { exact: true })).toBeVisible();
   await expect(page.getByText("Prism agent", { exact: true })).toBeVisible();
   await expect(page.getByTestId("agent-working-document")).toContainText("Draft brief");
-  await page.getByRole("button", { name: "Conversation history", exact: true }).click();
   const second = page.getByTestId("agent-session-row").filter({ hasText: "Explore the source material" });
   await second.focus();
   await page.keyboard.press("Tab");
