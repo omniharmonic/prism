@@ -17,16 +17,17 @@ async function fixture(mode: string): Promise<{worker: KokoroWorker; cleanup: ()
   const executable = join(root, 'worker');
   await writeFile(executable, `#!${process.execPath}\nconst readline = require('node:readline');
 if (process.env.KOKORO_TEST_SECRET) process.exit(9);
-console.log(JSON.stringify({id:'',status:'ready',ready:true}));
+if (${JSON.stringify(mode)} !== 'startup-hang') console.log(JSON.stringify({id:'',status:'ready',ready:true}));
+if (${JSON.stringify(mode)} === 'ignore-term') process.on('SIGTERM', () => {});
 readline.createInterface({input:process.stdin}).on('line', line => {
  const {id,text}=JSON.parse(line);
- if (${JSON.stringify(mode)}==='hang') return;
+ if (['hang','ignore-term'].includes(${JSON.stringify(mode)})) return;
  if (${JSON.stringify(mode)}==='crash') return process.exit(3);
  if (${JSON.stringify(mode)}==='oversize') return process.stdout.write('x'.repeat(2000000));
  console.log(JSON.stringify({id:${mode === 'wrong-id' ? "'wrong'" : 'id'},status:'ok',wavBase64:${JSON.stringify(wav().toString('base64'))},sampleRate:24000,frames:1}));
 });\n`);
   await chmod(executable, 0o700);
-  const worker = new KokoroWorker({ executable, cache: root, startupMs: 500, renderMs: 500, restartMs: 1, idleMs: 2000 });
+  const worker = new KokoroWorker({ executable, cache: root, startupMs: 500, renderMs: mode === 'ignore-term' ? 5000 : 500, restartMs: 1, idleMs: 2000 });
   return { worker, cleanup: async () => { await worker.close(); await rm(root, {recursive:true, force:true}); } };
 }
 async function ready(worker: KokoroWorker): Promise<void> {
@@ -67,4 +68,26 @@ test('invalid admin config and oversized input fail without process launch', asy
   assert.equal(await worker.available(), false);
   await assert.rejects(worker.synthesize('a'.repeat(161)), {code:'invalid_text'});
   await worker.close();
+});
+
+test('render timeout terminates a hung native process', async () => {
+  const f = await fixture('hang');
+  try { await ready(f.worker); await assert.rejects(f.worker.synthesize('Hello'), {code:'failed'}); await ready(f.worker); }
+  finally { await f.cleanup(); }
+});
+test('startup timeout keeps unready process unavailable', async () => {
+  const f = await fixture('startup-hang');
+  try { assert.equal(await f.worker.available(), false); await delay(600); assert.equal(await f.worker.available(), false); }
+  finally { await f.cleanup(); }
+});
+test('cancellation escalates when the native process ignores termination', async () => {
+  const f = await fixture('ignore-term');
+  try {
+    await ready(f.worker);
+    const controller = new AbortController();
+    const pending = f.worker.synthesize('Hello', controller.signal);
+    controller.abort();
+    await assert.rejects(pending, {code:'aborted'});
+    await ready(f.worker);
+  } finally { await f.cleanup(); }
 });
