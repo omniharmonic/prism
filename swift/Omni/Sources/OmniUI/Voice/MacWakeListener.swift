@@ -122,13 +122,13 @@ private final class WakeAudioSink: @unchecked Sendable {
             }
             let mic = await AVCaptureDevice.requestAccess(for: .audio)
             let speech = await withCheckedContinuation { continuation in
-                SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
+                SFSpeechRecognizer.requestAuthorization(Self.authorizationCallback(continuation))
             }
             updateGate()
             guard !Task.isCancelled, gate.acceptsPermission(permissionToken) else { return }
             authorization = nil; authorizationToken = nil
             guard gate.canListen else { return }
-            guard mic, speech == .authorized else {
+            guard mic, speech else {
                 VoiceDiagnostics.record(.wakePermissionDenied)
                 status = "Microphone or speech permission denied"; return
             }
@@ -196,6 +196,12 @@ private final class WakeAudioSink: @unchecked Sendable {
             self.retryTask = nil
             self.reconcile()
         }
+    }
+    /// Speech may invoke authorization on a background queue. Constructing its
+    /// completion in this nonisolated factory prevents inherited MainActor checks;
+    /// resuming the continuation returns the awaiting task to its own executor.
+    nonisolated static func authorizationCallback(_ continuation: CheckedContinuation<Bool, Never>) -> @Sendable (SFSpeechRecognizerAuthorizationStatus) -> Void {
+        { status in continuation.resume(returning: status == .authorized) }
     }
     nonisolated private static func audioTap(_ sink: WakeAudioSink) -> AVAudioNodeTapBlock {
         { buffer, _ in sink.append(buffer) }
