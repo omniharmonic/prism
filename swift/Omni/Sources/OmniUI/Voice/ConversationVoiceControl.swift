@@ -78,7 +78,7 @@ struct ConversationVoiceControl: View {
         if phase != .active { cancel() } else { consumeShortcutActivation() }
     }
     private func privacyChanged() {
-        guard controlsCurrentVoice else { return }
+        guard controlsCurrentVoice else { VoiceDiagnostics.record(.staleCallback); return }
         voice.setPrivacyLocked(PrivacyLock.shared.locked)
         if PrivacyLock.shared.locked { cancel() } else { consumeShortcutActivation() }
     }
@@ -135,6 +135,11 @@ struct ConversationVoiceControl: View {
                 Text(problem).font(.caption).foregroundStyle(Color.failureText)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("voice.problem")
+            }
+            if let notice = voice.captureNotice {
+                Text(notice).font(.caption).foregroundStyle(Color.quietText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("voice.captureNotice")
             }
             if let notice = device.replySpeechNotice {
                 Text(notice).font(.caption).foregroundStyle(Color.quietText)
@@ -193,7 +198,7 @@ struct ConversationVoiceControl: View {
         case .speaking: "Omni is speaking"
         case .preparing: "Preparing voice"
         case .listening: "Listening"
-        case .transcribing: "Transcribing"
+        case .transcribing: voice.isSubmitting ? "Sending your turn" : "Transcribing"
         case .answering: "Omni is responding"
         }
     }
@@ -217,7 +222,7 @@ struct ConversationVoiceControl: View {
             else if let countdown = voice.endpointCountdown { "Sending in \(countdown)…" }
             else if voice.activityNotice != nil || voice.endpointMode == .thinkAloud { "Send when you’re ready." }
             else { "Automatic · \(Int(voice.endpointPause))s pause" }
-        case .transcribing: "Recognizing your words…"
+        case .transcribing: voice.isSubmitting ? (model == nil ? "Creating your conversation…" : "Sending your message…") : "Recognizing your words…"
         case .answering: "Mic off while Omni responds."
         }
     }
@@ -363,7 +368,7 @@ struct ConversationVoiceControl: View {
     private func cancel() {
         // The departed new-thread view can still receive scene and privacy callbacks.
         // Its finish task belongs to the transferred session until the send returns.
-        guard controlsCurrentVoice else { return }
+        guard controlsCurrentVoice else { VoiceDiagnostics.record(.staleCallback); return }
         if model == nil { session.cancelPendingVoiceActivation() }
         showingVoiceSettings = false; device.stopPreview()
         action?.cancel(); action = nil

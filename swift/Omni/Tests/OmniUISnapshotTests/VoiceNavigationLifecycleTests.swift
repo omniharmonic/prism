@@ -60,8 +60,15 @@ import XCTest
         XCTAssertEqual(audio.cancels, cancellations)
     }
     func testMountedNewThreadHandoffNarratesFirstReplyAndContinues() async throws {
+        try await mountedHandoff(createDelay: .zero)
+    }
+    func testDelayedCreationKeepsActiveVoiceAndShowsSubmissionBeforeFirstReply() async throws {
+        try await mountedHandoff(createDelay: .milliseconds(300))
+    }
+    private func mountedHandoff(createDelay: Duration) async throws {
         NSApplication.shared.setActivationPolicy(.prohibited)
         let service = SampleService()
+        service.createDelay = createDelay
         service.completeStreamOnResult = true
         service.createdVoiceThreadID = "new-voice"
         let turn = "turn-new-voice"
@@ -84,6 +91,13 @@ import XCTest
         defer { window.contentViewController = nil; window.close(); active.cancel(); session.stop() }
         try await Task.sleep(for: .milliseconds(200))
         active.automaticFinish() // The mounted production control owns this callback and its send Task.
+        if createDelay != .zero {
+            for _ in 0..<50 where !active.isSubmitting { try await Task.sleep(for: .milliseconds(5)) }
+            XCTAssertTrue(active.isSubmitting)
+            XCTAssertTrue(active.isSessionActive)
+            XCTAssertEqual(session.destination, .newThread)
+            XCTAssertEqual(active.state, .transcribing)
+        }
         for _ in 0..<100 where audio.speech.isEmpty || audio.starts < 2 {
             try await Task.sleep(for: .milliseconds(20))
         }

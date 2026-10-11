@@ -11,7 +11,8 @@ import XCTest
         var starts = 0
         var silenced = 0
         func start() async throws { starts += 1 }
-        func finish() async throws -> String { "Words recognized before failure" }
+        var recognized = "Words recognized before failure"
+        func finish() async throws -> String { recognized }
         func cancel() {}
         func speak(_ text: String) {}
         func waitForPlayback() async {}
@@ -46,6 +47,27 @@ import XCTest
         receive?(.speech)
         XCTAssertEqual(voice.state, .off)
         XCTAssertEqual(audio.starts, 1)
+    }
+    func testAcousticPromotionStartsNewTurnWithoutAlreadySentDraftPrefix() async {
+        let evidence = VoiceActivityFrame(audioTime: 1, capturedAt: ProcessInfo.processInfo.systemUptime, duration: 0.32, isSpeech: true)
+        for event in [VoiceInterruptionEvent.speech, .speechEvidence(evidence)] {
+            let audio = Audio()
+            let active = VoiceConversation(audio: audio)
+            active.acousticInterruptionEnabled = true
+            await active.start(continuingDraft: "Saved prefix")
+            var sent: [String] = []
+            await active.finish { sent.append($0); return true }
+            XCTAssertEqual(sent, ["Saved prefix Words recognized before failure"])
+            audio.interruption?(event)
+            XCTAssertEqual(active.state, .listening)
+            XCTAssertEqual(active.continuingDraft, "")
+            XCTAssertEqual(active.draftAfterCapture(preserving: "Edited new draft"), "Edited new draft", "Old captured words must not be merged into the new turn")
+            audio.recognized = "New interruption words"
+            await active.finish { sent.append($0); return true }
+            XCTAssertEqual(sent, ["Saved prefix Words recognized before failure", "New interruption words"])
+            XCTAssertEqual(audio.starts, 1, "Acoustic promotion retains real lead-in rather than starting another recording")
+            active.cancel()
+        }
     }
     func testShortInterruptionLeadInSeedsAutomaticCompletion() async {
         let audio = Audio(); let voice = VoiceConversation(audio: audio)

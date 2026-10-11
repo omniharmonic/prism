@@ -15,6 +15,7 @@ final class SampleService: OmniService, @unchecked Sendable {
     private var jobRows: [[String: Any]] = []
     private var liveStreams: [String: [OmniStreamEnvelope]] = [:]
 
+    var createDelay: Duration = .zero
     var completeStreamOnResult = false
     var createdVoiceThreadID: String?
     var todayPartial = false
@@ -106,6 +107,7 @@ final class SampleService: OmniService, @unchecked Sendable {
     }
 
     func createThread(_ new: NewThread) async throws -> CreatedThread {
+        if createDelay != .zero { try await Task.sleep(for: createDelay) }
         guard let id = createdVoiceThreadID,
               let row = lock.withLock({ threadRows.first { $0["id"] as? String == id } }) else {
             throw PrismError.invalidRequest("sample")

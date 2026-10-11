@@ -48,4 +48,39 @@ import XCTest
         XCTAssertEqual(queue.inFlightSeconds, 1)
         queue.cancel()
     }
+    func testLongGeneratedPCMReplayPreservesEveryFrameWithinHardwareBudget() async throws {
+        for (rate, channels) in [(24_000.0, AVAudioChannelCount(1)), (48_000.0, AVAudioChannelCount(2))] {
+            let queue = SpeechPlaybackQueue()
+            let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: rate, channels: channels))
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4096))
+            buffer.frameLength = 4096
+            let pieces = Int(90 * rate / 4096)
+            var completions: [@Sendable () -> Void] = []
+            var scheduled = 0
+            var complete = false
+            let producer = Task {
+                defer { complete = true }
+                for _ in 0..<pieces {
+                    try await queue.schedule(buffer) { pcm, release in
+                        XCTAssertEqual(pcm.frameLength, 4096)
+                        scheduled += 1; completions.append(release)
+                    }
+                }
+            }
+            var played = 0
+            while !complete || !completions.isEmpty {
+                // Let the producer fill the hardware window before advancing it.
+                for _ in 0..<4 { await Task.yield() }
+                XCTAssertLessThanOrEqual(queue.inFlightSeconds, queue.maximumSeconds + 0.000001)
+                XCTAssertLessThanOrEqual(queue.inFlightBytes, queue.maximumBytes)
+                if !completions.isEmpty { completions.removeFirst()(); played += 1 }
+            }
+            try await producer.value
+            for _ in 0..<4 { await Task.yield() }
+            XCTAssertEqual(scheduled, pieces); XCTAssertEqual(played, pieces)
+            XCTAssertEqual(queue.inFlightSeconds, 0, accuracy: 0.000001)
+            XCTAssertEqual(queue.inFlightBytes, 0)
+        }
+    }
+
 }

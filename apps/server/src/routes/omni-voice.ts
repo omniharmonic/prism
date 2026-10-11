@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { resolveActor } from "../auth/actor";
 import { consumeRateLimit } from "../middleware/ratelimit";
 import { readCapped } from "./actions";
-import { validVoiceRequest, voiceProviderDescriptor, VOICE_UUID, VoiceError, cancelVoice, synthesizeVoice, voiceProviders } from "../omni/voice-synthesis";
+import { recordVoiceOutcome, validVoiceRequest, voiceProviderDescriptor, VOICE_UUID, VoiceError, cancelVoice, synthesizeVoice, voiceProviders } from "../omni/voice-synthesis";
 export const omniVoiceApi = new Hono();
 function scope(c: Context): string {
   const actor = resolveActor(c);
@@ -19,13 +19,16 @@ async function body(c: Context): Promise<Record<string, unknown> | null> {
 }
 omniVoiceApi.get("/providers", async c => { c.header("Cache-Control", "no-store"); return c.json(await voiceProviders()); });
 omniVoiceApi.post("/synthesis", async c => {
+  const startedAt = performance.now();
   const input = await body(c);
-  if (!validVoiceRequest(input))
+  if (!validVoiceRequest(input)) {
+    recordVoiceOutcome(input?.providerID, "validation", 400, startedAt);
     return c.json({ error: "bad_request" }, 400);
+  }
   const descriptor = voiceProviderDescriptor(input.providerID)!;
   const identity = scope(c);
   const retry = consumeRateLimit(`omni-voice:${identity}`, 30, 60_000);
-  if (retry !== null) { c.header("Retry-After", String(retry)); return c.json({ error: "rate_limited" }, 429); }
+  if (retry !== null) { recordVoiceOutcome(input.providerID, "admission", 429, startedAt); c.header("Retry-After", String(retry)); return c.json({ error: "rate_limited" }, 429); }
   try {
     const audio = await synthesizeVoice(identity, input, c.req.raw.signal);
     return new Response(audio as BodyInit, { headers: { "Content-Type": descriptor.contentType, "Cache-Control": "no-store, private", "Content-Length": String(audio.byteLength), "X-Content-Type-Options": "nosniff" } });

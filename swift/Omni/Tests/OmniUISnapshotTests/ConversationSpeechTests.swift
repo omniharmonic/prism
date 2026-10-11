@@ -24,7 +24,7 @@ import OmniClient
         func stop() { stops += 1 }
     }
     func testRecordingStopsPreviewAndRejectsPlaybackUntilOwnerReleases() {
-        let output = Output(); let speech = ConversationSpeech(output: output); let playbackOwner = UUID()
+        let output = Output(); let speech = ConversationSpeech(output: output, diagnostic: { _ in }); let playbackOwner = UUID()
         speech.preview(owner: playbackOwner, identifier: "chosen", rate: 0.6)
         speech.stopPreview(owner: UUID()); speech.silence(owner: UUID())
         XCTAssertTrue(speech.isPreviewing)
@@ -45,7 +45,7 @@ import OmniClient
         XCTAssertFalse(speech.isPreviewing)
     }
     func testReplyPreemptsPreviewAndPreviewNeverPreemptsQueuedReplies() {
-        let output = Output(); let speech = ConversationSpeech(output: output); let playbackOwner = UUID()
+        let output = Output(); let speech = ConversationSpeech(output: output, diagnostic: { _ in }); let playbackOwner = UUID()
         speech.preview(owner: playbackOwner, identifier: nil, rate: 0.5)
         speech.speak("First sentence.", owner: playbackOwner, identifier: nil, rate: 0.5)
         speech.speak("Second sentence.", owner: playbackOwner, identifier: nil, rate: 0.5)
@@ -65,7 +65,7 @@ import OmniClient
         speech.stopPreview(owner: playbackOwner); XCTAssertFalse(speech.isPreviewing)
     }
     func testPlaybackDrainWaitsForEveryQueuedSentence() async {
-        let output = Output(); let speech = ConversationSpeech(output: output); let owner = UUID()
+        let output = Output(); let speech = ConversationSpeech(output: output, diagnostic: { _ in }); let owner = UUID()
         speech.speak("First.", owner: owner, identifier: nil, rate: 0.5)
         speech.speak("Second.", owner: owner, identifier: nil, rate: 0.5)
         var drained = false
@@ -79,7 +79,7 @@ import OmniClient
         XCTAssertTrue(drained)
     }
     func testSilenceReleasesDrainAndLateCallbackCannotFinishNewPlayback() async {
-        let output = Output(); let speech = ConversationSpeech(output: output); let owner = UUID()
+        let output = Output(); let speech = ConversationSpeech(output: output, diagnostic: { _ in }); let owner = UUID()
         speech.speak("Cancelled.", owner: owner, identifier: nil, rate: 0.5)
         let waiter = Task { await speech.waitForPlayback(owner: owner) }
         await Task.yield()
@@ -97,7 +97,7 @@ import OmniClient
         XCTAssertTrue(drained)
     }
     func testPlaybackFailureReportsBeforeDrainAndIgnoresStaleOwner() async {
-        let output = Output(); let speech = ConversationSpeech(output: output); let owner = UUID()
+        let output = Output(); let speech = ConversationSpeech(output: output, diagnostic: { _ in }); let owner = UUID()
         var failure = ""
         speech.configurePlaybackFailure(owner: owner) { failure = $0 }
         let oldFailure = output.failure
@@ -116,7 +116,7 @@ import OmniClient
     }
 
     func testGeneratedAudioUsesSameOwnedDrainAndCancelledCompletionCannotReleaseNewReply() async throws {
-        let output = Output(); let speech = ConversationSpeech(output: output); let owner = UUID()
+        let output = Output(); let speech = ConversationSpeech(output: output, diagnostic: { _ in }); let owner = UUID()
         try speech.playAudio(Data([1]), owner: owner)
         var drained = false
         let waiting = Task { await speech.waitForPlayback(owner: owner); drained = true }
@@ -134,14 +134,14 @@ import OmniClient
     }
     func testGeneratedAudioSetupFailureDoesNotStrandDrain() async {
         let output = Output(); output.failAudio = true
-        let speech = ConversationSpeech(output: output); let owner = UUID()
+        let speech = ConversationSpeech(output: output, diagnostic: { _ in }); let owner = UUID()
         XCTAssertThrowsError(try speech.playAudio(Data([1]), owner: owner))
         await speech.waitForPlayback(owner: owner)
         XCTAssertTrue(output.audio.isEmpty)
     }
 
     func testRemotePreviewReservationBlocksCaptureReplyPreparationAndPendingAudio() throws {
-        let output = Output(); let speech = ConversationSpeech(output: output); let owner = UUID()
+        let output = Output(); let speech = ConversationSpeech(output: output, diagnostic: { _ in }); let owner = UUID()
         speech.beginRecording(owner: owner)
         XCTAssertNil(speech.reservePreview(owner: UUID(), cancel: {}))
         speech.endRecording(owner: owner)
@@ -156,7 +156,7 @@ import OmniClient
         XCTAssertNotNil(speech.reservePreview(owner: UUID(), cancel: {}))
     }
     func testPreviewLeaseCancelledByCaptureRejectsLateGeneratedAudio() throws {
-        let output = Output(); let speech = ConversationSpeech(output: output); let previewOwner = UUID()
+        let output = Output(); let speech = ConversationSpeech(output: output, diagnostic: { _ in }); let previewOwner = UUID()
         var cancelled = false
         let lease = try XCTUnwrap(speech.reservePreview(owner: previewOwner, cancel: { cancelled = true }))
         speech.beginRecording(owner: UUID())
@@ -165,7 +165,7 @@ import OmniClient
         XCTAssertTrue(output.audio.isEmpty)
     }
     func testEncodedPreviewUsesLeaseAndDrains() async throws {
-        let output = Output(); let speech = ConversationSpeech(output: output); let owner = UUID()
+        let output = Output(); let speech = ConversationSpeech(output: output, diagnostic: { _ in }); let owner = UUID()
         let lease = try XCTUnwrap(speech.reservePreview(owner: owner, cancel: {}))
         try speech.playPreviewAudio(Data([1]), owner: owner, lease: lease)
         var drained = false
@@ -192,7 +192,7 @@ import OmniClient
         func cancelVoiceSynthesis(sessionID: String, requestID: String) async throws {}
     }
     func testProviderCatalogCannotRepopulateAfterCancellationOrServiceReplacement() async throws {
-        let device = ConversationDevice(); let service = CatalogService()
+        let device = ConversationDevice(diagnostic: { _ in }); let service = CatalogService()
         device.configureReplySpeech(service: service)
         let task = Task { await device.refreshReplyProviders() }
         while !(await service.waiting()) { await Task.yield() }
@@ -215,7 +215,7 @@ import OmniClient
     }
 
     func testNextReplySessionRefreshesUnavailableCatalogAndRejectsPriorSessionResult() async throws {
-        let device = ConversationDevice(); let service = CatalogService()
+        let device = ConversationDevice(diagnostic: { _ in }); let service = CatalogService()
         device.configureReplySpeech(service: service)
         let initial = Task { await device.refreshReplyProviders() }
         while !(await service.waiting()) { await Task.yield() }
@@ -233,12 +233,12 @@ import OmniClient
     }
 
     func testDeviceSilenceCancelsLongReplyAndQueuedReplyWithoutStartingAnotherCloudPassage() async throws {
-        let output = Output(); let speech = ConversationSpeech(output: output)
+        let output = Output(); let speech = ConversationSpeech(output: output, diagnostic: { _ in })
         let name = "NarrationCancellation." + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         defer { defaults.removePersistentDomain(forName: name) }
         let preferences = ReplySpeechPreferences(defaults: defaults)
-        let device = ConversationDevice(speech: speech, replyPreferences: preferences)
+        let device = ConversationDevice(speech: speech, replyPreferences: preferences, diagnostic: { _ in })
         let service = CatalogService(); device.configureReplySpeech(service: service)
         device.speak(String(repeating: "passage ", count: 1000))
         device.speak("Queued second reply.")
@@ -256,7 +256,7 @@ import OmniClient
     }
 
     func testEncodedPreviewFailureClearsLeaseAndReleasesDrain() async throws {
-        let output = Output(); let speech = ConversationSpeech(output: output); let owner = UUID()
+        let output = Output(); let speech = ConversationSpeech(output: output, diagnostic: { _ in }); let owner = UUID()
         var failure = ""
         let lease = try XCTUnwrap(speech.reservePreview(owner: owner, cancel: {}))
         speech.configurePlaybackFailure(owner: owner) { failure = $0 }
@@ -267,6 +267,41 @@ import OmniClient
         await drain.value
         XCTAssertEqual(failure, "Preview route failed")
         XCTAssertFalse(speech.isPreviewing); XCTAssertFalse(speech.ownsPreview(lease, owner: owner))
+    }
+
+    func testFailureCleanupCannotStopReplacementReplyStartedByCallback() async throws {
+        let output = Output(); let speech = ConversationSpeech(output: output, diagnostic: { _ in }); let owner = UUID()
+        speech.configurePlaybackFailure(owner: owner) { _ in
+            speech.speak("Replacement reply.", owner: owner, identifier: nil, rate: 0.5)
+        }
+        try speech.playAudio(Data([1]), owner: owner)
+        output.failure?("The previous generated reply failed")
+        XCTAssertEqual(output.texts, ["Replacement reply."])
+        var drained = false
+        let waiter = Task { await speech.waitForPlayback(owner: owner); drained = true }
+        await Task.yield()
+        XCTAssertFalse(drained, "Old failure cleanup must not release the replacement reply")
+        output.completions[0]() // late callback from the failed MP3
+        await Task.yield(); XCTAssertFalse(drained)
+        output.completions[1](); await waiter.value
+        XCTAssertTrue(drained)
+    }
+
+    func testEncodedPlaybackDiagnosticBoundariesContainOnlyAllowedMetadata() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appending(path: "events.json")
+        let log = VoiceEventLog(url: url)
+        let output = Output(); let speech = ConversationSpeech(output: output, diagnostic: log.record)
+        let owner = UUID()
+        try speech.playAudio(Data([1]), owner: owner)
+        output.completions[0]()
+        output.failAudio = true
+        XCTAssertThrowsError(try speech.playAudio(Data([2]), owner: owner))
+        await log.flush()
+        let rows = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
+        XCTAssertEqual(rows.compactMap { $0["event"] as? String }, ["playbackStarted", "playbackFinished", "playbackFailed"])
+        XCTAssertTrue(rows.allSatisfy { Set($0.keys) == ["at", "event"] })
     }
 
 }

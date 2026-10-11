@@ -35,6 +35,8 @@ public extension ConversationAudio {
     public private(set) var transcript = ""
     public private(set) var continuingDraft = ""
     private var capturedText = ""
+    public private(set) var captureNotice: String?
+    private var emptyAutomaticAttempts = 0
     /// An explicit Resume may continue an unsent draft; a fresh voice launch must
     /// still leave unrelated composer text alone.
     public func canStart(withDraft draft: String) -> Bool {
@@ -62,7 +64,7 @@ public extension ConversationAudio {
     private var activityWatchdog: Task<Void, Never>?
     private var lastActivityAt: Double?
     private var pendingCompletion: [TimelineItem]?
-    private var submitting = false
+    public private(set) var isSubmitting = false
     private var drainTask: Task<Void, Never>?
     private var generation = 0
     private var starting = false
@@ -126,10 +128,15 @@ public extension ConversationAudio {
     }
 
     public func start(continuingDraft draft: String = "") async {
+        VoiceDiagnostics.record(state == .paused ? .resumed : .sessionStart)
+        await startCapture(continuingDraft: draft, resetEmptyAttempts: true)
+    }
+    private func startCapture(continuingDraft draft: String, resetEmptyAttempts: Bool) async {
         guard canStart else { return }
+        if resetEmptyAttempts { emptyAutomaticAttempts = 0 }
         starting = true
         defer { starting = false }
-        cancel()
+        resetSession(recordEvent: false)
         isSessionActive = true
         let request = generation
         continuingDraft = draft; capturedText = ""
@@ -149,6 +156,10 @@ public extension ConversationAudio {
                 if case .speechEvidence(let evidence) = event {
                     _ = self.endpointPolicy.accept(evidence, now: ProcessInfo.processInfo.systemUptime)
                 }
+                // The resumed prefix belonged to the accepted previous turn.
+                // Retained microphone lead-in starts a new turn, never that draft again.
+                self.continuingDraft = ""; self.capturedText = ""; self.captureNotice = nil
+                self.emptyAutomaticAttempts = 0
                 self.state = .listening; self.transcript = ""
                 self.watchActivity(request: request)
             }
@@ -163,12 +174,14 @@ public extension ConversationAudio {
         }
         do {
             try await audio.start()
-            guard generation == request, !Task.isCancelled else { return }
+            guard generation == request, !Task.isCancelled else { VoiceDiagnostics.record(.staleCallback); return }
             state = .listening
+            VoiceDiagnostics.record(.captureReady)
             watchActivity(request: request)
         } catch {
             guard generation == request else { return }
             audio.cancel(); state = .paused
+            VoiceDiagnostics.record(.captureFailed)
             if !(error is CancellationError) { problem = error.localizedDescription }
         }
     }
@@ -177,17 +190,30 @@ public extension ConversationAudio {
         guard !privacyLocked, state == .listening else { return }
         let request = generation
         activityWatchdog?.cancel(); activityWatchdog = nil; endpointCountdown = nil
-        state = .transcribing
+        state = .transcribing; captureNotice = nil
+        VoiceDiagnostics.record(.transcribing)
         do {
             let captured = try await audio.finish().trimmingCharacters(in: .whitespacesAndNewlines)
-            guard generation == request, !Task.isCancelled else { return }
+            guard generation == request, !Task.isCancelled else { VoiceDiagnostics.record(.staleCallback); return }
             capturedText = captured
             let text = Self.join(continuingDraft, captured)
             guard !text.isEmpty else {
+                VoiceDiagnostics.record(.emptyCapture)
                 state = .paused
-                problem = !submit && draftReason == .pause ? nil : "No speech was recognized. Try again."
+                if let recovery = audio.recoveryNotice {
+                    problem = recovery
+                } else if submit, endpointMode == .automatic, continuingDraft.isEmpty,
+                          canAutomaticallyListen(), emptyAutomaticAttempts < 2 {
+                    emptyAutomaticAttempts += 1
+                    VoiceDiagnostics.record(.emptyRetry)
+                    await startCapture(continuingDraft: "", resetEmptyAttempts: false)
+                    if state == .listening { captureNotice = "Didn't catch that. Still listening." }
+                } else {
+                    problem = !submit && draftReason == .pause ? nil : "No speech was recognized. Resume when you're ready to try again."
+                }
                 return
             }
+            if !captured.isEmpty { emptyAutomaticAttempts = 0 }
             let recovery = audio.recoveryNotice
             transcript = text; spoken = [:]; pendingCompletion = nil
             if let recovery {
@@ -195,11 +221,13 @@ public extension ConversationAudio {
                 state = .paused; problem = recovery
                 return
             }
-            submitting = submit
+            isSubmitting = submit
+            if submit { VoiceDiagnostics.record(.sending) }
             let sent = await send(text)
-            guard generation == request, !Task.isCancelled else { return }
-            submitting = false
+            guard generation == request, !Task.isCancelled else { VoiceDiagnostics.record(.staleCallback); return }
+            isSubmitting = false
             if sent {
+                VoiceDiagnostics.record(submit ? .sendAccepted : .paused)
                 state = submit ? .answering : .paused
                 if !submit {
                     problem = draftReason == .pause ? "Your words are saved as an unsent draft." : "Recording limit reached. Your words are saved as a draft."
@@ -209,10 +237,11 @@ public extension ConversationAudio {
                     agentDidComplete(completed)
                 }
             }
-            else { state = .paused; problem = "The voice message could not be sent. Review it and retry in this conversation." }
+            else { VoiceDiagnostics.record(.sendFailed); state = .paused; problem = "The voice message could not be sent. Review it and retry in this conversation." }
         } catch {
             guard generation == request else { return }
             audio.cancel(); state = .paused
+            VoiceDiagnostics.record(.captureFailed)
             if !(error is CancellationError) { problem = error.localizedDescription }
         }
     }
@@ -238,7 +267,7 @@ public extension ConversationAudio {
     /// the UI observed running=true. The supplied timeline is its final snapshot.
     public func agentDidComplete(_ timeline: [TimelineItem]) {
         guard isSessionActive else { return }
-        if state == .transcribing, submitting { pendingCompletion = timeline; return }
+        if state == .transcribing, isSubmitting { pendingCompletion = timeline; return }
         guard state == .answering || state == .speaking else { return }
         consume(timeline, running: false)
         beginPlaybackDrain()
@@ -246,6 +275,7 @@ public extension ConversationAudio {
 
     private func beginPlaybackDrain() {
         if drainTask == nil {
+            VoiceDiagnostics.record(.playbackDrain)
             state = .speaking
             let request = generation
             drainTask = Task { [weak self] in
@@ -258,6 +288,7 @@ public extension ConversationAudio {
                     self.problem = "Session paused. Review the conversation, then resume when ready."
                     return
                 }
+                VoiceDiagnostics.record(.listeningAgain)
                 await self.start()
             }
         }
@@ -267,6 +298,7 @@ public extension ConversationAudio {
     public func pause() {
         guard isSessionActive else { return }
         stopAudio()
+        VoiceDiagnostics.record(.paused)
         state = .paused
     }
 
@@ -274,11 +306,13 @@ public extension ConversationAudio {
         generation += 1
         activityWatchdog?.cancel(); activityWatchdog = nil; endpointCountdown = nil; lastActivityAt = nil
         drainTask?.cancel(); drainTask = nil
-        audio.cancel(); audio.silence(); spoken = [:]; submitting = false; pendingCompletion = nil
+        audio.cancel(); audio.silence(); spoken = [:]; isSubmitting = false; pendingCompletion = nil
     }
 
-    public func cancel() {
+    public func cancel() { resetSession(recordEvent: true) }
+    private func resetSession(recordEvent: Bool) {
+        if recordEvent, isSessionActive { VoiceDiagnostics.record(.cancelled) }
         stopAudio(); isSessionActive = false; state = .off
-        continuingDraft = ""; capturedText = ""
+        continuingDraft = ""; capturedText = ""; captureNotice = nil
     }
 }

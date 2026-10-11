@@ -22,7 +22,7 @@ import OmniClient
     }
     func testProviderUsesExactTextAndSessionWithoutPrivateFilePaths() async throws {
         let service = Service(); let sessionID = UUID().uuidString
-        let provider = HermesEdgeReplySpeechProvider(service: service, sessionID: sessionID, voiceID: "en-US-AriaNeural")
+        let provider = HermesEdgeReplySpeechProvider(service: service, sessionID: sessionID, voiceID: "en-US-AriaNeural", diagnostic: { _ in })
         let result = try await provider.render("Hello, Benjamin. The estimate is $3.14.")
         if case .encodedAudio(let data) = result { XCTAssertEqual(data, Data([1, 2, 3])) } else { XCTFail("Expected generated audio") }
         let request = await service.requests.first!
@@ -33,7 +33,7 @@ import OmniClient
     func testCancellationCancelsExactRemoteRequestAndCannotDeliverAudio() async {
         let service = Service(); await service.setHold()
         let sessionID = UUID().uuidString
-        let provider = HermesEdgeReplySpeechProvider(service: service, sessionID: sessionID, voiceID: "en-US-AriaNeural")
+        let provider = HermesEdgeReplySpeechProvider(service: service, sessionID: sessionID, voiceID: "en-US-AriaNeural", diagnostic: { _ in })
         let task = Task { try await provider.render("A pending reply.") }
         for _ in 0..<1000 { if await service.waiting() { break }; await Task.yield() }
         let waiting = await service.waiting(); XCTAssertTrue(waiting)
@@ -84,6 +84,19 @@ import OmniClient
         work.enqueue { current in if current() { rendered.append("new turn") } }
         await work.wait()
         XCTAssertEqual(rendered, ["first", "new turn"])
+    }
+
+    func testSynthesisDiagnosticBoundariesDoNotContainNarrationOrIdentifiers() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appending(path: "events.json")
+        let log = VoiceEventLog(url: url)
+        let provider = HermesEdgeReplySpeechProvider(service: Service(), sessionID: UUID().uuidString, voiceID: "aria", diagnostic: log.record)
+        _ = try await provider.render("Private narration fixture")
+        await log.flush()
+        let rows = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
+        XCTAssertEqual(rows.compactMap { $0["event"] as? String }, ["synthesisStarted", "synthesisFinished"])
+        XCTAssertTrue(rows.allSatisfy { Set($0.keys) == ["at", "event"] })
     }
 
 }
