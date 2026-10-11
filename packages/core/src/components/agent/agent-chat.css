@@ -138,3 +138,7 @@
 @media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
   .prism-agent-history-trigger { width: auto; }
 }
+
+.prism-agent-context-control { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 44px; min-height: 44px; margin: 0; padding: 0 8px; border-radius: 8px; font-size: 12px; line-height: 16px; vertical-align: top; list-style: none; }
+.prism-agent-context-control::-webkit-details-marker { display: none; }
+.prism-agent-context-control > svg { flex-shrink: 0; }

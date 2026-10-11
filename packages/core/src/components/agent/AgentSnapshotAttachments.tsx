@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { FileText, X } from "lucide-react";
+import { ChevronDown, FileText, X } from "lucide-react";
 import { useDocumentSnapshots } from "../../lib/agent/documentSnapshots";
 import {
   SNAPSHOT_MAX_CHARACTERS,
@@ -92,8 +92,8 @@ export function AgentSnapshotAttachments({
       <div className="flex flex-wrap gap-1">
         {available && (
           <details className="rounded-lg">
-            <summary className={control + " cursor-pointer"}>
-              Capture text
+            <summary className="prism-agent-context-control interactive focus-ring cursor-pointer">
+              <FileText size={14} />Capture text<ChevronDown size={12} />
             </summary>
             <div className="flex flex-wrap gap-1 rounded-lg border border-[var(--glass-border)] p-2">
               <button

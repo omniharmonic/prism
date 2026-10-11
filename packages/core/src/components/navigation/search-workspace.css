@@ -62,3 +62,7 @@
 
 /* Touch targets (touch.css condition); desktop uses the control tokens above. */
 @media screen and (max-width:767px),screen and (hover:none) and (pointer:coarse){.prism-search-input-row button{min-width:var(--touch-target);min-height:var(--touch-target)}.prism-search-feedback button,.prism-search-star{min-height:var(--touch-target)}}
+
+.prism-search-drag-handle { display: grid; place-items: center; height: 24px; flex-shrink: 0; touch-action: none; }
+.prism-search-drag-handle > span { width: 36px; height: 4px; border-radius: 3px; background: var(--glass-border-strong); }
+.prism-search-fullscreen .prism-search-filters { touch-action: pan-x; }

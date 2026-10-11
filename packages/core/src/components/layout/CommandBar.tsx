@@ -1,3 +1,4 @@
+import { useSurfaceDismiss } from "../ui/useSurfaceDismiss";
 import { AddSavedNoteContextButton } from "../agent/SavedNoteHandoff";
 import { containerTitle } from "../../lib/pages/containerTitle";
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
@@ -88,6 +89,7 @@ export function CommandBar() {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const createNote = useCreateNote();
   const isMobile = useIsMobile();
+  const dismissSearch = useSurfaceDismiss(dialogRef, commandBarOpen && isMobile, ".prism-search-drag-handle, .prism-search-input-row, .prism-search-filters", closeCommandBar);
   // Phone search fills the VISUAL viewport (what is left above the keyboard).
   const [viewportHeight, setViewportHeight] = useState<number | null>(null);
   useEffect(() => {
@@ -662,7 +664,7 @@ export function CommandBar() {
       inputMode="search" enterKeyHint="search" value={query}
       onChange={e => { setQuery(e.target.value); setSelectedId(null); }} onKeyDown={handleKeyDown}
       placeholder="Search your workspace…" />
-    <button tabIndex={0} aria-label="Close search" className="focus-ring" onClick={closeCommandBar}><X size={18} /></button>
+    <button tabIndex={0} aria-label="Close search" className="focus-ring" onClick={dismissSearch}><X size={18} /></button>
   </div>;
   const filters = <div className="prism-search-filters" aria-label="Filter search results">
     {([['all', 'All'], ['notes', 'Notes'], ['messages', 'Messages'], ['commands', 'Commands']] as const).map(([id, label]) =>
@@ -719,6 +721,7 @@ export function CommandBar() {
         style={{ zIndex: "var(--z-modal)" as unknown as number, height: viewportHeight ? `${viewportHeight}px` : "100dvh" }}
       >
         <div className="prism-search-sheet prism-search-sheet-full flex h-full flex-col" data-testid="phone-search">
+          <div className="prism-search-drag-handle" aria-hidden="true"><span /></div>
           {inputRow}{filters}{filterBar}{status}{feedback}<div id="prism-command-results" role="listbox" aria-label="Notes and commands" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 6 }}>{body}</div>
           {contextActions}
         </div>

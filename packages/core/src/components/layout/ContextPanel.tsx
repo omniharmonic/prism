@@ -24,7 +24,7 @@ const DETAIL_TABS = [
   { id: "graph", label: "Graph" },
 ];
 
-export function ContextPanel() {
+export function ContextPanel({ onClose = () => useUIStore.setState({ contextPanelOpen: false }) }: { onClose?: () => void } = {}) {
   const { contextPanelTab, setContextPanelTab, openTabs, activeTabId } = useUIStore();
   const activeTab = openTabs.find((t) => t.id === activeTabId);
   const noteId = activeTab?.noteId;
@@ -47,7 +47,7 @@ export function ContextPanel() {
           activeTab={section}
           onChange={(id) => setContextPanelTab(id === "details" ? "metadata" : id as typeof contextPanelTab)}
         />
-        <button type="button" aria-label="Close document panel" title="Close document panel" className="document-companion-close focus-ring" onClick={() => useUIStore.setState({contextPanelOpen:false})}><X size={17} /></button>
+        <button type="button" aria-label="Close document panel" title="Close document panel" className="document-companion-close focus-ring" onClick={onClose}><X size={17} /></button>
       </div>
 
       {section === "details" && <div className="document-companion-detail-tabs workspace-context-tabs">
