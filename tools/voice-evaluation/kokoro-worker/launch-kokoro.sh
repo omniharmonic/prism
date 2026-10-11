@@ -2,7 +2,7 @@
 # Deployment layout: this script, bin/KokoroWorker, asset-tools/{download.py,...}.
 # Verification never consumes protocol stdin. Diagnostics stay off stdout.
 set -euo pipefail
-readonly deployment_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly deployment_root="$(cd -- "$(/usr/bin/dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 : "${OMNI_TTS_EVALUATION_CACHE:?An absolute Kokoro cache directory is required}"
 case "$OMNI_TTS_EVALUATION_CACHE" in
   /*) ;;
