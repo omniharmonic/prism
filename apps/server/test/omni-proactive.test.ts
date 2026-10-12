@@ -13,6 +13,8 @@ import { resetOmniStoreForTests,eventsAfter,getThread,ensureThread,claimTurn,set
 import { resetNudgesForTests,nudgeAction,getNudge,nudgeDeliveryDecision,setNudgeSettings,resolveNudgeSource,claimNudgeDigest,upsertNudge,bindNudgeThread } from "../src/omni/nudges";
 import { interruptDecision } from "../src/omni/nudge-policy";
 import { attentionNotificationBody } from "../src/omni/attention-preferences";
+import { setProactiveHealthReaderForTests } from "../src/omni/source-health";
+import { resolveVaultEntry } from "../src/db";
 import { turnSettled } from "../src/omni/turns";
 import { proactiveContext,proactiveMessages,recordProactiveOwnerTurn } from "../src/omni/proactive";
 const revision="2026-10-10T12:00:00Z";
@@ -22,7 +24,7 @@ const decision=()=>({decisionId:"decision1",sourceId:"source1",sourceRevision:re
 const post=(b:unknown,headers:Record<string,string>=hook)=>omniApi.request("/hooks/proactive",{method:"POST",headers,body:JSON.stringify(b)});
 let stub:ReturnType<typeof createHermesStub>;
 beforeEach(()=>{resetDb();resetOmniStoreForTests();resetNudgesForTests();db.exec("DELETE FROM omni_proactive_decisions;DELETE FROM omni_proactive_owner_turns");stub=createHermesStub({key:process.env.OMNI_HERMES_KEY!});setHermesFetchForTests(stub.fetch);setOmniRecordSourcesForTests({resolver:async({id})=>({id:id!,path:"mail/dana",tags:["email"],updatedAt:revision})});});
-after(()=>{setHermesFetchForTests(null);setOmniRecordSourcesForTests({resolver:null});});
+after(()=>{setProactiveHealthReaderForTests(null);setHermesFetchForTests(null);setOmniRecordSourcesForTests({resolver:null});});
 test("authenticated preparation has readable history, replay and no notification bypass",async()=>{
  const d=decision();assert.equal((await post(d,owner())).status,403);assert.equal((await post(d,{...hook,"x-forwarded-for":"8.8.8.8"})).status,403);
  const first=await post(d);assert.equal(first.status,201);const r=await first.json() as {threadId:string;nudgeId:string};
@@ -138,4 +140,18 @@ test("suppression check is authenticated bounded owner-only IDs and prevents dis
  const response=await request(refs);assert.equal(response.status,200);assert.deepEqual(await response.json(),{suppressedSourceIds:["dismissed","resolved","archived"]});
  assert.deepEqual(await (await request([])).json(),{suppressedSourceIds:[]});assert.equal((await request(Array(501).fill("active"))).status,400);assert.equal((await request(["../source"])).status,400);assert.equal((await request("dismissed")).status,400);
  assert.equal(getNudge(ownerEmail,dismissed.id)!.dismissed,true);assert.equal(getNudge(ownerEmail,getNudge(ownerEmail,archived.id)!.id)!.resolved,false);
+});
+
+test("source health hook is service-only primary-vault coverage with minimal fields",async()=>{
+ const primary=resolveVaultEntry(undefined).id;
+ const common={kind:"server" as const,lastSuccessAt:"2026-10-11T01:00:00Z",failureStreak:4,staleAfterMs:900000,lastError:"Sensitive error credential",detail:{private:"source body"}};
+ setProactiveHealthReaderForTests(async()=>[{...common,name:"matrix",vaultId:primary,status:"failing"},{...common,name:"matrix@secondary",vaultId:"secondary",status:"disabled"}]);
+ const request=(headers:Record<string,string>)=>omniApi.request("/hooks/proactive/source-health",{method:"POST",headers,body:"{}"});
+ assert.equal((await request(owner())).status,403);assert.equal((await request({...hook,"x-forwarded-for":"8.8.8.8"})).status,403);assert.equal((await request({"content-type":"application/json",authorization:"Bearer invalid"})).status,403);
+ const response=await request(hook);assert.equal(response.status,200);const data=await response.json() as {sources:unknown[];checkedAt:string};assert.deepEqual(data.sources,[{name:"matrix",kind:"server",status:"failing",lastSuccessAt:common.lastSuccessAt,staleAfterMs:900000,failureStreak:4,reconcileOwed:0,reconcileStuck:0}]);assert.ok(Number.isFinite(Date.parse(data.checkedAt)));assert.equal(JSON.stringify(data).includes("Sensitive"),false);assert.equal(JSON.stringify(data).includes("secondary"),false);
+ setProactiveHealthReaderForTests(async()=>[{...common,name:"matrix",vaultId:primary,status:"ok",detail:{reconcileOwed:3,reconcileStuck:1,private:"hidden"}}]);
+ const partial=await (await request(hook)).json() as {sources:{reconcileOwed:number;reconcileStuck:number}[]};assert.equal(partial.sources[0]!.reconcileOwed,3);assert.equal(partial.sources[0]!.reconcileStuck,1);assert.equal(JSON.stringify(partial).includes("hidden"),false);
+ setProactiveHealthReaderForTests(async()=>[{...common,name:"matrix",vaultId:primary,status:"ok",failureStreak:NaN,detail:{reconcileOwed:-1,reconcileStuck:Infinity}}]);
+ const malformed=await (await request(hook)).json() as {sources:{status:string;failureStreak:number;reconcileOwed:number;reconcileStuck:number}[]};assert.equal(malformed.sources[0]!.status,"failing");assert.ok([malformed.sources[0]!.failureStreak,malformed.sources[0]!.reconcileOwed,malformed.sources[0]!.reconcileStuck].every(x=>Number.isFinite(x)&&x>=0));
+ setProactiveHealthReaderForTests(null);
 });

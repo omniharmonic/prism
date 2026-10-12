@@ -85,6 +85,7 @@ import { DIALS, type InterruptContext } from "../omni/nudge-policy";
 import { priorNudgeSources, resolveNudgeSource, nudgeWeeklyAudit, latestNudgeAudit, FRESHNESS_SUBSYSTEMS, NUDGE_KINDS, upsertNudge, listNudges, getNudge, nudgeAction, nudgeSettings, setNudgeSettings, bindNudgeThread, type Candidate } from "../omni/nudges";
 import { startNudgeDelivery } from "../omni/nudge-delivery";
 import { resolveNote } from "../omni/records";
+import { proactiveSourceHealth } from "../omni/source-health";
 import { syncAttentionPreferences, AttentionPreferenceError } from "../omni/attention-preferences";
 import { parseProactiveDecision, publishProactive, proactiveMessages, proactiveContext, recordProactiveOwnerTurn, proactiveOwnerScope, resolveProactiveSources, proactiveNudgePresentation, suppressedProactiveSources, ProactiveError } from "../omni/proactive";
 
@@ -1050,6 +1051,11 @@ omniApi.post("/hooks/turn", async (c) => {
   return c.json({ ok: true, threadId: t.id }, 202);
 });
 
+
+omniApi.post("/hooks/proactive/source-health", async c => {
+ const body=await jsonBody(c);if(!body)return bad(c,"JSON object required");
+ return c.json(await proactiveSourceHealth());
+});
 
 omniApi.post("/hooks/proactive/suppressed", async c => {
  const b=await jsonBody(c);if(!b)return bad(c,"JSON object required");

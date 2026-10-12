@@ -60,3 +60,6 @@ The coordinator checks canonical Sent evidence immediately before publication an
 
 
 `POST /api/omni/hooks/proactive/suppressed` accepts `{sourceIds:[...]}` with at most 500 bounded note IDs and returns only `{suppressedSourceIds:[...]}`. The service-authenticated coordinator uses this before reasoning/budget reservation to skip owner-dismissed, resolved, or archived-thread sources. Another owner's attention rows are excluded; caller-supplied owner identity is ignored. The check reads only the local attention ledger, never note contents, and does not change dismissal or resolution state.
+
+
+`POST /api/omni/hooks/proactive/source-health` accepts `{}` under the service hook guard. It returns `{sources:[{name,status,kind,lastSuccessAt,staleAfterMs,failureStreak,reconcileOwed,reconcileStuck}],checkedAt}` from the existing worker health registry, filtered to the configured Omni primary vault. Only the three explicit nonnegative count fields accompany the health fields; invalid count data marks coverage failing. No errors, arbitrary detail fields, credentials, message contents or secondary-vault rows leave this endpoint. The coordinator treats unhealthy or unknown channel coverage as a reason to hold that channel's reasoning and report a coverage warning; healthy task sources can still proceed. A healthy vault does not establish a healthy Matrix or mail ingest.
