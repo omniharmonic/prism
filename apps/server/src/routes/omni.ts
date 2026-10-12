@@ -86,7 +86,7 @@ import { priorNudgeSources, resolveNudgeSource, nudgeWeeklyAudit, latestNudgeAud
 import { startNudgeDelivery } from "../omni/nudge-delivery";
 import { resolveNote } from "../omni/records";
 import { syncAttentionPreferences, AttentionPreferenceError } from "../omni/attention-preferences";
-import { parseProactiveDecision, publishProactive, proactiveMessages, proactiveContext, recordProactiveOwnerTurn, proactiveOwnerScope, resolveProactiveSources, proactiveNudgePresentation, ProactiveError } from "../omni/proactive";
+import { parseProactiveDecision, publishProactive, proactiveMessages, proactiveContext, recordProactiveOwnerTurn, proactiveOwnerScope, resolveProactiveSources, proactiveNudgePresentation, suppressedProactiveSources, ProactiveError } from "../omni/proactive";
 
 export const omniApi = new Hono();
 
@@ -1050,6 +1050,12 @@ omniApi.post("/hooks/turn", async (c) => {
   return c.json({ ok: true, threadId: t.id }, 202);
 });
 
+
+omniApi.post("/hooks/proactive/suppressed", async c => {
+ const b=await jsonBody(c);if(!b)return bad(c,"JSON object required");
+ try{return c.json({suppressedSourceIds:suppressedProactiveSources(omniConfig.ownerEmail(),b.sourceIds)});}
+ catch(e){if(e instanceof ProactiveError)return c.json({error:e.code},e.status);throw e;}
+});
 
 omniApi.post("/hooks/proactive/resolve", async c => {
  const b=await jsonBody(c);if(!b)return bad(c,"JSON object required");
