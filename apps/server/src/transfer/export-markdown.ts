@@ -13,7 +13,7 @@
  * Read back by the import (a Markdown body is opened through `marked`'s GFM), task items and
  * tables are the same blocks again; a caption and a bookmark description come back as text.
  *
- * Runs ONLY in the conversion worker (transfer/worker.ts `to-markdown`). Pure: no database,
+ * Runs in the conversion worker or for pre-checked small inputs through convert/service.ts. Pure: no database,
  * config or network. The helpers that touch converted text are linear scans (no regex with an
  * unbounded quantifier over content).
  */

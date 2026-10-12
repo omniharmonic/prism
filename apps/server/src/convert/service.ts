@@ -613,6 +613,11 @@ export function htmlToMarkdown(html: string, opts?: ConvertOptions): Promise<str
   return convertText("html-md", html, no, core.htmlToMarkdownSync, (text) => ({ op: "html-md", html: text }), opts);
 }
 
+/** HTML → portable Markdown for external document sync, under the same conversion budgets. */
+export function exportHtmlToMarkdown(html: string, opts?: ConvertOptions): Promise<string> {
+  return convertText("html-md-export", html, no, core.exportHtmlToMarkdownSync, (text) => ({ op: "to-markdown", html: text }), opts);
+}
+
 /** HTML → Markdown for blocks appended to a Markdown page: Prism-only blocks stay as HTML blocks. */
 export function blocksHtmlToMarkdown(html: string, opts?: ConvertOptions): Promise<string> {
   return convertText("html-md-blocks", html, no, core.blocksHtmlToMarkdownSync, (text) => ({ op: "html-md", html: text, flavor: "blocks" }), opts);

@@ -125,3 +125,47 @@ async function opened2(page: Page, context: import("@playwright/test").BrowserCo
   await tab.close();
   return url;
 }
+
+for (const level of ["view", "comment", "suggest", "edit"] as const) {
+  test(`a share link with ${level} permission opens with an unrelated signed-in browser session`, async ({ browser }) => {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await connect(page, context, server, "eve");
+    await forwardBrowserRequests(page);
+    const token = await server.link({ resourceType: "note", resource: "plan", level });
+    const read = page.waitForResponse(r => new URL(r.url()).pathname === "/api/notes/plan");
+    await page.goto(`/e2e-fixtures/collab-route.html?target=plan&token=${encodeURIComponent(token)}`);
+    const response = await read;
+    expect(response.status(), await response.text()).toBe(200);
+    await expect(editor(page)).toContainText("Alpha beta gamma");
+    // A view link does not borrow the signed-in account's unrelated access.
+    if (level === "view") await expect(editor(page)).toHaveAttribute("contenteditable", "false");
+    await context.close();
+  });
+}
+
+/** Preserve credentials:omit when bridging browser requests to the real fixture server. */
+async function forwardBrowserRequests(page: Page) {
+  // Forward exactly what the browser sent. route.fetch's cookie jar can reattach
+  // a session even when the original browser fetch deliberately omitted it.
+  await page.route(url => /^\/(api|auth|acl)(\/|$)/.test(url.pathname), async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const response = await fetch(`http://127.0.0.1:${server.port}${url.pathname}${url.search}`, {
+      method: request.method(), headers: await request.allHeaders(),
+      ...(request.postData() ? { body: request.postData()! } : {}),
+    });
+    await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body: Buffer.from(await response.arrayBuffer()) });
+  });
+}
+
+test("an invalid share token cannot borrow an existing owner's session", async ({ browser }) => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await connect(page, context, server, "owner");
+  await forwardBrowserRequests(page);
+  await page.goto("/e2e-fixtures/collab-route.html?target=plan&token=invalid.share-token");
+  await expect(page.getByRole("alert")).toContainText("This shared document could not be opened");
+  await expect(editor(page)).toHaveCount(0);
+  await context.close();
+});

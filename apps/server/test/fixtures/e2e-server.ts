@@ -131,7 +131,7 @@ process.stdin.on("data", (chunk: string) => {
         process.stdout.write(JSON.stringify({ op: "add", ok: fresh }) + "\n");
       } else if (cmd.op === "link") {
         // An anyone-with-the-link capability (what Share → Link access mints), for a note or a page subtree.
-        const l = (cmd as unknown as { link: { resourceType: "note" | "page"; resource: string; level: "view" | "suggest" | "edit" } }).link;
+        const l = (cmd as unknown as { link: { resourceType: "note" | "page"; resource: string; level: "view" | "comment" | "suggest" | "edit" } }).link;
         const id = `cap-${Math.random().toString(36).slice(2, 12)}`;
         const exp = Date.now() + 86_400_000;
         createCapability({ id, resource_type: l.resourceType, resource: l.resource, level: l.level, label: null, expires_at: exp });
