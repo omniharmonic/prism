@@ -196,7 +196,7 @@ test("live: databases — a new inline view of each layout, a linked view, and a
   await expect(link).toHaveCount(0);
   await expect(editor(page).locator(".prism-database-block")).toHaveCount(++blocks);
   await expect.poll(() => stored(id), { timeout: 20_000 }).toContain("data-prism-database");
-  expect((await stored(id)).match(/data-prism-database=/g)).toHaveLength(6);
+  await expect.poll(async () => (await stored(id)).match(/data-prism-database=/g)?.length ?? 0, { timeout: 20_000 }).toBe(6);
   // Full-page database: a sub-page, opened in its own tab, with a link left here.
   await newLine(page);
   await slash(page, "full page", /^Full-page database/);
@@ -209,7 +209,7 @@ test("live: databases — a new inline view of each layout, a linked view, and a
   await expect(dialog).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Open team database" })).toBeVisible();
   await expect.poll(() => stored(id), { timeout: 20_000 }).toContain(`[[vault/Shared/Slash ${id}/team database]]`);
-  expect((await stored(id)).match(/data-prism-database=/g)).toHaveLength(6); // a link, not a seventh inline block
+  await expect.poll(async () => (await stored(id)).match(/data-prism-database=/g)?.length ?? 0, { timeout: 20_000 }).toBe(6); // a link, not a seventh inline block
 });
 
 test("live: Ask agent opens the conversation about this page", async ({ page, context }) => {

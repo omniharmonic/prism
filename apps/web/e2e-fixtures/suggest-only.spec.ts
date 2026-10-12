@@ -170,6 +170,7 @@ test("a stale revision keeps the draft and asks for the passage again", async ({
 });
 
 test("a lost response is retried with the same requestId and applied once", async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 280 });
   await open(page, "sam", "rich");
   const bodies: string[] = [];
   let first = true;
@@ -186,6 +187,9 @@ test("a lost response is retried with the same requestId and applied once", asyn
   const composer = await suggestReplace(page, "Second", "Another");
   await composer.getByRole("button", { name: "Suggest", exact: true }).click();
   await expect(composer.getByRole("alert")).toContainText("offline");
+  const bounds = (await composer.boundingBox())!;
+  expect(bounds.y).toBeGreaterThanOrEqual(8);
+  expect(bounds.y + bounds.height).toBeLessThanOrEqual(272);
   await composer.getByRole("button", { name: "Retry" }).click();
   await expect(page.getByRole("status").filter({ hasText: "Suggestion sent for review." })).toBeVisible();
   expect(bodies).toHaveLength(2);

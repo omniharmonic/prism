@@ -3,7 +3,8 @@ test.use({ viewport: { width: 390, height: 844 }, hasTouch: true });
 test('reopening a large sidebar reuses rows, scroll and search without replacing the editor', async ({ page }) => {
   await page.goto('/e2e-fixtures/workspace.html?navigation&large-navigation');
   const editor = page.locator('.tiptap');
-  await expect(editor).toBeVisible();
+  // Startup deliberately prepares all 1,206 retained rows before exposing the editor.
+  await expect(editor).toBeVisible({ timeout: 15_000 });
   await editor.evaluate(node => { (window as any).sidebarEditor = node; });
   const notes = page.getByRole('navigation', { name: 'Mobile workspace' }).getByRole('button', { name: 'Notes', exact: true });
   await notes.click();
