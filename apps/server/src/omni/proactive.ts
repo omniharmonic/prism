@@ -155,3 +155,11 @@ export async function proactiveNudgePresentation(owner:string,sourceId:string,cu
  if(!latest||latest.trashed||latest.tags.includes("prism-trashed")||latest.updatedAt!==r.source_revision)return null;
  return {title:r.title,summary:r.summary,reasons:[r.summary]};
 }
+
+/** Owner attention state only, before reasoning. No source content or external reads. */
+export function suppressedProactiveSources(owner:string,value:unknown):string[] {
+ if(!Array.isArray(value)||value.length>500||value.some(sourceId=>!id(sourceId)))throw new ProactiveError("invalid_source_ids",400);
+ const sourceIds=[...new Set(value as string[])];if(!sourceIds.length)return [];
+ const rows=db.prepare(`SELECT n.source_id FROM omni_nudges n LEFT JOIN omni_threads t ON t.id=n.thread_id WHERE n.owner_email=? AND n.source_id IN (${sourceIds.map(()=>"?").join(",")}) AND (n.dismissed=1 OR n.resolved=1 OR t.archived=1)`).all(owner,...sourceIds) as {source_id:string}[];
+ const suppressed=new Set(rows.map(r=>r.source_id));return sourceIds.filter(sourceId=>suppressed.has(sourceId));
+}

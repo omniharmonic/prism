@@ -9,8 +9,8 @@ import { resetDb,makeSession,sessionCookie } from "./helpers";
 import { createHermesStub } from "../scripts/lib/hermes-stub";
 import { setHermesFetchForTests } from "../src/omni/hermes-client";
 import { setOmniRecordSourcesForTests } from "../src/omni/records";
-import { resetOmniStoreForTests,eventsAfter,getThread,ensureThread,claimTurn,setTurnRun,endTurn } from "../src/omni/store";
-import { resetNudgesForTests,nudgeAction,getNudge,nudgeDeliveryDecision,setNudgeSettings,resolveNudgeSource,claimNudgeDigest } from "../src/omni/nudges";
+import { resetOmniStoreForTests,eventsAfter,getThread,ensureThread,claimTurn,setTurnRun,endTurn,updateThread } from "../src/omni/store";
+import { resetNudgesForTests,nudgeAction,getNudge,nudgeDeliveryDecision,setNudgeSettings,resolveNudgeSource,claimNudgeDigest,upsertNudge,bindNudgeThread } from "../src/omni/nudges";
 import { interruptDecision } from "../src/omni/nudge-policy";
 import { attentionNotificationBody } from "../src/omni/attention-preferences";
 import { turnSettled } from "../src/omni/turns";
@@ -123,4 +123,19 @@ test("changed supporting evidence releases readable summary override",async()=>{
  setOmniRecordSourcesForTests({resolver:async({id})=>({id:id!,path:"source/path",tags:[],updatedAt:id==="support1"?"new-support":revision})});
  const raw={sourceId:d.sourceId,kind:d.kind,title:"current source",summary:"Current unprepared candidate",reasons:[],senderId:null,baseScore:.6,priority:.4,deadline:null,urgentAt:null,commitment:false};
  assert.equal((await omniApi.request("/hooks/nudges",{method:"POST",headers:hook,body:JSON.stringify(raw)})).status,201);assert.equal(getNudge(config.ownerEmail,r.nudgeId)!.candidate.summary,raw.summary);
+});
+
+test("suppression check is authenticated bounded owner-only IDs and prevents dismissed/resolved/archive wakes",async()=>{
+ const source=(sourceId:string)=>({sourceId,sourcePath:"source/path",kind:"task" as const,title:"Sensitive title",summary:"Private source body",reasons:[],senderId:null,baseScore:.6,priority:.4,deadline:null,urgentAt:null,commitment:false});
+ const ownerEmail=config.ownerEmail;
+ const dismissed=upsertNudge(ownerEmail,source("dismissed"));nudgeAction(ownerEmail,dismissed.id,"dismiss");
+ upsertNudge(ownerEmail,source("resolved"));resolveNudgeSource(ownerEmail,"resolved");
+ const archived=upsertNudge(ownerEmail,source("archived"));ensureThread({id:"omni-archived"});bindNudgeThread(ownerEmail,archived.id,"omni-archived");updateThread("omni-archived",{archived:true});
+ upsertNudge(ownerEmail,source("active"));const another=upsertNudge("other@example.com",source("foreign"));nudgeAction("other@example.com",another.id,"dismiss");
+ const refs=["dismissed","resolved","archived","active","foreign","unknown"];
+ const request=(sourceIds:unknown,headers:Record<string,string>=hook)=>omniApi.request("/hooks/proactive/suppressed",{method:"POST",headers,body:JSON.stringify({sourceIds,ownerEmail:"other@example.com"})});
+ assert.equal((await request(refs,owner())).status,403);assert.equal((await request(refs,{...hook,"x-forwarded-for":"8.8.8.8"})).status,403);assert.equal((await request(refs,{"content-type":"application/json",authorization:"Bearer invalid"})).status,403);
+ const response=await request(refs);assert.equal(response.status,200);assert.deepEqual(await response.json(),{suppressedSourceIds:["dismissed","resolved","archived"]});
+ assert.deepEqual(await (await request([])).json(),{suppressedSourceIds:[]});assert.equal((await request(Array(501).fill("active"))).status,400);assert.equal((await request(["../source"])).status,400);assert.equal((await request("dismissed")).status,400);
+ assert.equal(getNudge(ownerEmail,dismissed.id)!.dismissed,true);assert.equal(getNudge(ownerEmail,getNudge(ownerEmail,archived.id)!.id)!.resolved,false);
 });
