@@ -35,17 +35,17 @@ test("Inbox: pulling the list down refetches it and says so; a short pull does n
   expect(await reads()).toBe(before);
   // Past the threshold the indicator arms; letting go refreshes.
   await drag(page, rows.first(), 0, 110, { hold: true });
-  await expect(ptr(page)).toHaveAttribute("data-state", "pulling");
-  await expect(ptr(page)).toContainText("Pull to refresh");
+  await expect(ptr(inbox)).toHaveAttribute("data-state", "pulling");
+  await expect(ptr(inbox)).toContainText("Pull to refresh");
   await release(rows.first());
   expect(await reads()).toBe(before); // released early: no refresh
   await drag(page, rows.first(), 0, 220, { hold: true });
-  await expect(ptr(page)).toHaveAttribute("data-state", "armed");
-  await expect(ptr(page)).toContainText("Release to refresh");
+  await expect(ptr(inbox)).toHaveAttribute("data-state", "armed");
+  await expect(ptr(inbox)).toContainText("Release to refresh");
   await release(rows.first());
-  await expect(said(page)).toHaveText("Inbox updated");
+  await expect(said(inbox)).toHaveText("Inbox updated");
   await expect.poll(reads).toBe(before + 1);
-  await expect(said(page)).toHaveAttribute("aria-live", "polite");
+  await expect(said(inbox)).toHaveAttribute("aria-live", "polite");
   // The swipe on a row still works, and a pull did not open the row.
   await expect(rows).toHaveCount(4);
   expect(await page.evaluate(() => (window as any).prismFixtureUI.getState().activeTabId)).toBe("tab-notifications");
@@ -53,7 +53,7 @@ test("Inbox: pulling the list down refetches it and says so; a short pull does n
   // The button does the same (a gesture is never the only way).
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await expect.poll(reads).toBe(before + 2);
-  await expect(said(page)).toHaveText("Inbox updated");
+  await expect(said(inbox)).toHaveText("Inbox updated");
 });
 
 test("Messages: pull to refresh — not when scrolled, not while a text field has focus, not for a sideways drag; reduced motion", async ({ page }) => {

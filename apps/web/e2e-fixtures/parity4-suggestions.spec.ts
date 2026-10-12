@@ -639,7 +639,8 @@ for (const shape of DEPTH_SHAPES) {
         // Every removed character is still there, struck, where a collaborator reads it.
         expect(await fx<string>(page, "struckText")).toBe(shape.struck);
       }
-      await rejectAll(page);
+      if (shape.struck !== null) await rejectAll(page);
+      else await expect(page.getByRole("button", { name: "Reject all suggestions" })).toHaveCount(0);
       expect(words(await fx<string>(page, "text"))).toBe(words(before.text));
       if (action.keepsShape) expect(await fx<string>(page, "html")).toBe(before.html);
       await expect(page.locator(".ProseMirror").first().locator('[data-suggestion]')).toHaveCount(0);

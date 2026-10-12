@@ -68,6 +68,7 @@ for (const theme of ["light", "dark"] as const) {
     await page.addInitScript(() => { (window as any).printCalls = 0; window.print = () => { (window as any).printCalls++; }; });
     await page.goto(transferUrl(theme === "dark" ? "?open=prism&dark" : "?open=prism"));
     await expect(page.getByRole("heading", { name: "Rename Prism", exact: true })).toBeVisible();
+    await page.getByText("Property options", { exact: true }).click();
     const chrome = [nav(page), page.getByLabel("Open document tabs"), page.getByRole("button", { name: "Page actions", exact: true }), page.locator(".document-formatting-bar").first(), page.getByRole("button", { name: "Add property" }), page.getByRole("button", { name: "Add tag" }), page.getByRole("button", { name: "Add cover" })];
     for (const c of chrome) await expect(c).toBeVisible();
 

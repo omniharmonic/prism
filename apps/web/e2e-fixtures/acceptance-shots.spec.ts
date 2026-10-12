@@ -67,12 +67,12 @@ async function presence(browser: Browser, baseURL: string, page: Page, context: 
   server ??= await startRealServer(baseURL);
   await connect(page, context, server, "owner");
   await page.goto("/e2e-fixtures/collab-route.html?target=plan");
-  await page.getByText(/Live · /).first().waitFor({ timeout: 30_000 });
+  await page.getByText(/^Live(?: · .+)?$/).first().waitFor({ timeout: 30_000 });
   const other = await browser.newContext({ baseURL, viewport: SIZES.desktop });
   const eve = await other.newPage();
   await connect(eve, other, server, "eve");
   await eve.goto("/e2e-fixtures/collab-route.html?target=plan");
-  await eve.getByText(/Live · /).first().waitFor({ timeout: 30_000 });
+  await eve.getByText(/^Live(?: · .+)?$/).first().waitFor({ timeout: 30_000 });
   await eve.getByText("Second paragraph here.").click();
   const group = page.locator('.document-page-header [data-slot="presence"]').getByRole("group", { name: /on this page/ });
   await group.first().waitFor({ timeout: 20_000 });

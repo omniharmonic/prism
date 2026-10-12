@@ -16,7 +16,7 @@ async function open(page: Page, who: "owner" | "eve", id = "plan") {
   await connect(page, page.context(), server, who);
   await page.goto(`/e2e-fixtures/collab-route.html?target=${id}`);
   await expect(page.locator(".tiptap")).not.toHaveText("");
-  await expect(page.getByText(/Live · /)).toBeVisible();
+  await expect(page.getByText(/^Live(?: · .+)?$/)).toBeVisible();
 }
 
 test("header avatars and jump to cursor", async ({ page, browser }) => {

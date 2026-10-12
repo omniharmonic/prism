@@ -113,6 +113,7 @@ test("system properties sort and filter", async ({ page }) => {
 test("relation picker and reverse property", async ({ page }) => {
   await page.goto("/e2e-fixtures/databases.html?open=t3");
   const bar = page.getByRole("group", { name: "Page properties" });
+  await bar.getByText("Property options", { exact: true }).click();
   await bar.getByRole("button", { name: "Add property" }).click();
   await page.getByRole("dialog", { name: "Add a property" }).getByRole("button", { name: /Project/ }).click();
   // The picker searches the TARGET database (#initiative), not the whole vault.
@@ -201,6 +202,7 @@ test("NP-DB-12: a relation edited from either side shows on both; the reverse pr
 
   // Forward side: on a task, the picker searches #initiative pages only; the choice is a chip.
   await page.goto("/e2e-fixtures/databases.html?open=t3");
+  await bar.getByText("Property options", { exact: true }).click();
   await bar.getByRole("button", { name: "Add property" }).click();
   await page.getByRole("dialog", { name: "Add a property" }).getByRole("button", { name: /Project/ }).click();
   const picker = page.getByRole("dialog", { name: "Link Project" });

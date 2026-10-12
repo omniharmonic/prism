@@ -162,6 +162,7 @@ export function HumanSuggestionComposer({
   }
 
   const single = kind === "suggest";
+  const popupTop = Math.max(8, Math.min(anchorRect.top, (typeof window !== "undefined" ? window.innerHeight : 800) - 300));
   const quoteShown = anchor ? (kind === "comment" || action === "replace" || action === "delete" ? anchor.originalQuote : anchor.originalQuote) : "";
   return (
     <div
@@ -175,7 +176,10 @@ export function HumanSuggestionComposer({
       style={{
         ...(docked ? {} : {
           position: "fixed" as const,
-          top: Math.min(anchorRect.top, (typeof window !== "undefined" ? window.innerHeight : 800) - 300),
+          top: popupTop,
+          // Error copy and larger text must not push Retry below a short window.
+          maxHeight: `calc(100dvh - ${popupTop + 8}px)`,
+          overflowY: "auto" as const,
           left: anchorRect.left,
           zIndex: 60,
           width: "min(340px, calc(100vw - 16px))",

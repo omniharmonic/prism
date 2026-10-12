@@ -291,8 +291,20 @@ test.describe("plain editor · phone, keyboard up", () => {
     expect((await blocks(page)).slice(0, 3)).toEqual(["heading", "paragraph", "image"]);
     // The toolbar's Image button is a tap too.
     await page.getByText("Foxtrot closing", { exact: true }).tap();
+    const imageButton = page.getByRole("toolbar", { name: "Editing toolbar" }).getByRole("button", { name: "Image", exact: true });
+    // The toolbar scrolls horizontally to reveal commands; finish that scroll before a trusted tap.
+    await imageButton.scrollIntoViewIfNeeded();
+    await imageButton.evaluate(async element => {
+      let previous = element.getBoundingClientRect(), stable = 0;
+      for (let frame = 0; frame < 120 && stable < 4; frame++) {
+        await new Promise(requestAnimationFrame);
+        const next = element.getBoundingClientRect();
+        stable = Math.abs(next.x - previous.x) < .1 && Math.abs(next.y - previous.y) < .1 ? stable + 1 : 0;
+        previous = next;
+      }
+    });
     const again = page.waitForEvent("filechooser");
-    await page.getByRole("toolbar", { name: "Editing toolbar" }).getByRole("button", { name: "Image", exact: true }).tap();
+    await imageButton.tap();
     await (await again).setFiles({ name: "second.png", mimeType: "image/png", buffer: PNG });
     await expect(editor(page).locator("img")).toHaveCount(2);
     expect(await calls()).toEqual([]);

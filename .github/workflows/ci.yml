@@ -33,18 +33,15 @@ jobs:
       - name: Service-worker denylist guard
         run: npm run check:sw -w @prism/web
 
-  e2e:
-    # Playwright e2e for the browser-only web paths. The actual specs
-    # (publish/wikilinks/password/onboarding) are all tagged `@live` because they
-    # require a running Prism Server + the real Parachute hub+vault, which CI does
-    # NOT provision — so they run locally against pm2 `prism-server`, never here.
-    #
-    # This job exists to keep the e2e TOOLCHAIN green: it typechecks the specs,
-    # installs the chromium browser, and runs `--grep-invert @live` (currently
-    # zero tests → `--pass-with-no-tests`). It is the drop-in home for any future
-    # NO-vault specs, and proves the Playwright config + browser install stay
-    # healthy. No CI job depends on the real hub+vault (Layer B stays local).
-    name: e2e toolchain (no vault)
+  e2e-shards:
+    # Every fixture test runs without production credentials or vault data.
+    # One browser worker per runner preserves the latency checks without CPU contention.
+    # Shards keep the full suite within a useful review cycle; no retries hide failures.
+    name: browser fixtures (${{ matrix.shard }}/16)
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -59,7 +56,25 @@ jobs:
         run: npx playwright install --with-deps chromium
         working-directory: apps/web
       - name: Run non-live e2e specs
-        run: npm run test:e2e -w @prism/web -- --grep-invert @live --pass-with-no-tests
+        run: npm run test:e2e -w @prism/web -- --grep-invert @live --shard=${{ matrix.shard }}/16 --workers=1
+      - name: Preserve failure traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-failures-${{ matrix.shard }}
+          path: apps/web/test-results/
+          retention-days: 7
+
+  e2e:
+    name: e2e toolchain (no vault)
+    needs: e2e-shards
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every browser shard to pass
+        env:
+          RESULT: ${{ needs.e2e-shards.result }}
+        run: test "$RESULT" = success
 
   rust:
     name: cargo check · test

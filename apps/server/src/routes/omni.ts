@@ -19,6 +19,7 @@
  *    an `Idempotency-Key`; execution goes only through Prism's live-action routes.
  */
 import { apnsApplicationForDevice, apnsEnabled, isApnsToken, isApnsEnvironment, isNotificationPreview, saveApnsToken, removeApnsTokenForDevice } from "../apns";
+import { proactiveIntake, acknowledgeProactiveIntake } from "../omni/proactive-intake";
 import { Hono, type Context } from "hono";
 import { omniVoiceApi } from "./omni-voice";
 import { streamSSE } from "hono/streaming";
@@ -1051,6 +1052,16 @@ omniApi.post("/hooks/turn", async (c) => {
   return c.json({ ok: true, threadId: t.id }, 202);
 });
 
+
+omniApi.post("/hooks/proactive/intake", async c => {
+ const b=await jsonBody(c);if(!b)return bad(c,"JSON object required");
+ return c.json(proactiveIntake());
+});
+omniApi.post("/hooks/proactive/intake/ack", async c => {
+ const b=await jsonBody(c);if(!b)return bad(c,"JSON object required");
+ try{return c.json({acknowledged:acknowledgeProactiveIntake(b.generation)});}
+ catch{return bad(c,"valid generation required");}
+});
 
 omniApi.post("/hooks/proactive/source-health", async c => {
  const body=await jsonBody(c);if(!body)return bad(c,"JSON object required");
