@@ -9,7 +9,7 @@ async function swipe(page: Page, fromX: number, toX: number, y = 420) {
   await touchDrag(page, { x: fromX, y, dx: toX - fromX, steps: 6, cancelable: false });
 }
 
-test("edge swipe goes back, else opens the drawer; mid-screen swipes are left to the page", async ({ page }) => {
+test("reserved edge opens the drawer even with history; Back and mid-screen gestures preserve navigation", async ({ page }) => {
   await page.goto("/e2e-fixtures/notion-shell.html");
   await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
   const drawer = page.getByRole("dialog", { name: "Workspace navigation" });
@@ -23,6 +23,9 @@ test("edge swipe goes back, else opens the drawer; mid-screen swipes are left to
   await expect(page.getByText("Field notes", { exact: true }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: "Back" })).toBeEnabled();
   await swipe(page, 6, 220);
+  await expect(drawer).toBeVisible();
+  await drawer.getByRole("button", { name: "Close navigation" }).click();
+  await page.getByRole("button", { name: "Back", exact: true }).click();
   await expect.poll(() => page.evaluate(() => { const s = (window as any).prismShellUI.getState(); return s.openTabs.find((t: any) => t.id === s.activeTabId)?.noteId; })).toBe("workspace");
   await expect(drawer).toHaveCount(0);
   // A sideways scroller that reaches the screen edge keeps its own drag.
@@ -33,7 +36,7 @@ test("edge swipe goes back, else opens the drawer; mid-screen swipes are left to
     scroller.innerHTML = '<div style="width:900px;height:60px"></div>';
     document.body.append(scroller);
   });
-  await swipe(page, 6, 220);
+  await swipe(page, 24, 220);
   await page.waitForTimeout(200);
   expect(await page.evaluate(() => { const s = (window as any).prismShellUI.getState(); return s.openTabs.find((t: any) => t.id === s.activeTabId)?.noteId; })).toBe("workspace");
   await expect(drawer).toHaveCount(0);

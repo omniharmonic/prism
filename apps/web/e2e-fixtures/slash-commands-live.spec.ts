@@ -39,7 +39,7 @@ async function openPage(page: Page, context: BrowserContext, content = "<h2>Head
     };
   });
   await page.goto(`/e2e-fixtures/collab-route.html?page=${id}`);
-  await expect(page.getByText(/Live · /)).toBeVisible();
+  await expect(page.getByText(/^Live(?: · .+)?$/)).toBeVisible();
   await expect(editor(page)).toContainText("Start");
   await newLine(page);
   return id;
@@ -89,9 +89,12 @@ test("live: structural blocks — toggle, toggle headings, callout, columns, tab
   expect(out).toMatch(/<table[\s\S]*<th[^>]*><p>Header A<\/p><\/th>/);
   expect(out).toContain('data-type="toc"');
   // …and it is what the server stores for the page.
-  await expect.poll(() => stored(id), { timeout: 20_000 }).toContain('data-count="5"');
-  const saved = await stored(id);
-  for (const marker of ['data-type="toggle"', 'data-heading-level="2"', 'data-type="callout"', "<table", 'data-type="toc"']) expect(saved).toContain(marker);
+  const markers = ['data-count="5"', 'data-type="toggle"', 'data-heading-level="2"', 'data-type="callout"', "<table", 'data-type="toc"'];
+  // Earlier structural edits can be saved while the final TOC transaction is still pending.
+  await expect.poll(async () => {
+    const saved = await stored(id);
+    return markers.filter(marker => !saved.includes(marker));
+  }, { timeout: 20_000 }).toEqual([]);
 });
 
 test("live: media — image upload, image from URL, file, PDF, audio, video", async ({ page, context }) => {
@@ -163,7 +166,7 @@ test("live: Page keeps its row when the editor is replaced while the page is cre
   const changed = await page.evaluate(async () => (await fetch("/acl/notes/blank/tags", { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tag: "reviewed" }) })).status);
   expect(changed).toBe(200);
   await expect(page.locator(".tiptap:not([data-before])")).toBeVisible();
-  await expect(page.getByText(/Live · /)).toBeVisible();
+  await expect(page.getByText(/^Live(?: · .+)?$/)).toBeVisible();
   release();
   await expect(editor(page).locator(".prism-child-page")).toHaveCount(1);
   await expect(page.getByRole("button", { name: "Open sub-page: Untitled" })).toBeVisible();
@@ -196,7 +199,7 @@ test("live: databases — a new inline view of each layout, a linked view, and a
   await expect(link).toHaveCount(0);
   await expect(editor(page).locator(".prism-database-block")).toHaveCount(++blocks);
   await expect.poll(() => stored(id), { timeout: 20_000 }).toContain("data-prism-database");
-  expect((await stored(id)).match(/data-prism-database=/g)).toHaveLength(6);
+  await expect.poll(async () => (await stored(id)).match(/data-prism-database=/g)?.length ?? 0, { timeout: 20_000 }).toBe(6);
   // Full-page database: a sub-page, opened in its own tab, with a link left here.
   await newLine(page);
   await slash(page, "full page", /^Full-page database/);
@@ -209,7 +212,7 @@ test("live: databases — a new inline view of each layout, a linked view, and a
   await expect(dialog).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Open team database" })).toBeVisible();
   await expect.poll(() => stored(id), { timeout: 20_000 }).toContain(`[[vault/Shared/Slash ${id}/team database]]`);
-  expect((await stored(id)).match(/data-prism-database=/g)).toHaveLength(6); // a link, not a seventh inline block
+  await expect.poll(async () => (await stored(id)).match(/data-prism-database=/g)?.length ?? 0, { timeout: 20_000 }).toBe(6); // a link, not a seventh inline block
 });
 
 test("live: Ask agent opens the conversation about this page", async ({ page, context }) => {

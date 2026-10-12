@@ -35,7 +35,7 @@ async function openLive(page: Page, context: BrowserContext, id: string) {
   await connect(page, context, server, "owner");
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(`/e2e-fixtures/collab-route.html?page=${id}`);
-  await expect(page.getByText(/Live · /)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText(/^Live(?: · .+)?$/)).toBeVisible({ timeout: 60_000 });
 }
 /** The note as the fake vault holds it now. */
 const stored = async (_page: Page, id: string) => {

@@ -25,7 +25,7 @@ async function open(page: Page, who: "sam" | "eve" | "owner", id: string) {
   await connect(page, page.context(), server, who);
   await page.goto(`/e2e-fixtures/collab-route.html?target=${id}`);
   await expect(editor(page)).toBeVisible();
-  await expect(page.getByText(/Live · /)).toBeVisible();
+  await expect(page.getByText(/^Live(?: · .+)?$/)).toBeVisible();
   await expect(editor(page)).not.toHaveText("");
 }
 
@@ -170,6 +170,7 @@ test("a stale revision keeps the draft and asks for the passage again", async ({
 });
 
 test("a lost response is retried with the same requestId and applied once", async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 280 });
   await open(page, "sam", "rich");
   const bodies: string[] = [];
   let first = true;
@@ -186,6 +187,9 @@ test("a lost response is retried with the same requestId and applied once", asyn
   const composer = await suggestReplace(page, "Second", "Another");
   await composer.getByRole("button", { name: "Suggest", exact: true }).click();
   await expect(composer.getByRole("alert")).toContainText("offline");
+  const bounds = (await composer.boundingBox())!;
+  expect(bounds.y).toBeGreaterThanOrEqual(8);
+  expect(bounds.y + bounds.height).toBeLessThanOrEqual(272);
   await composer.getByRole("button", { name: "Retry" }).click();
   await expect(page.getByRole("status").filter({ hasText: "Suggestion sent for review." })).toBeVisible();
   expect(bodies).toHaveLength(2);
@@ -339,7 +343,7 @@ test("in the workspace itself: Shared with me opens the LIVE suggest-only editor
   // Wave 3: a PLAIN suggest share stays in the live session inside the workspace too
   // (Canvas routes only governance review to the propose draft). The socket is
   // read-only server-side; the body is not editable; no local draft exists.
-  await expect(page.getByText(/Live · /)).toBeVisible();
+  await expect(page.getByText(/^Live(?: · .+)?$/)).toBeVisible();
   await expect(editor(page)).toHaveAttribute("contenteditable", "false");
   await expect(page.getByRole("button", { name: /Submit for review/ })).toHaveCount(0);
   const before = await editor(page).innerText();

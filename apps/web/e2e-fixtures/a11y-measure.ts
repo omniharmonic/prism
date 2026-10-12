@@ -21,6 +21,10 @@ export function touchTargets(page: Page, scaffold: string[] = []): Promise<Targe
   return page.evaluate(({ CONTROLS, NOT_OURS, scaffold }) => {
     const vw = window.innerWidth, vh = window.innerHeight;
     const visible = (el: Element) => {
+      // Closed <details> descendants retain layout boxes in Chromium but are not painted.
+      for (let p = el.parentElement; p; p = p.parentElement) {
+        if (p.matches("details:not([open])") && !p.querySelector(":scope > summary")?.contains(el)) return false;
+      }
       const st = getComputedStyle(el);
       if (st.display === "none" || st.visibility !== "visible" || st.pointerEvents === "none") return false;
       for (let p: Element | null = el; p; p = p.parentElement) {
@@ -151,6 +155,9 @@ export function reflow(page: Page): Promise<ReflowReport> {
     for (const el of Array.from(document.querySelectorAll<HTMLElement>("main, [role=main], [role=dialog], dialog[open], nav, aside, [role=complementary]"))) {
       const st = getComputedStyle(el);
       if (st.display === "none" || st.visibility !== "visible" || !el.getClientRects().length) continue;
+      // Settings sections are a one-dimensional tab rail, like the document-tab strip.
+      // Its controls remain reachable by scrolling; the surrounding dialog must still reflow.
+      if (el.matches(".prism-settings__navigation")) continue;
       if (el.scrollWidth > el.clientWidth + 1 && (st.overflowX === "auto" || st.overflowX === "scroll")) pageScroll.push(`${desc(el)} scrolls sideways ${el.scrollWidth} > ${el.clientWidth}`);
     }
     /** Inside something that scrolls (or deliberately clips) sideways on its own: allowed. */
@@ -163,6 +170,10 @@ export function reflow(page: Page): Promise<ReflowReport> {
       return false;
     };
     const shown = (el: Element) => {
+      // Closed <details> descendants retain layout boxes in Chromium but are not painted.
+      for (let p = el.parentElement; p; p = p.parentElement) {
+        if (p.matches("details:not([open])") && !p.querySelector(":scope > summary")?.contains(el)) return false;
+      }
       const st = getComputedStyle(el);
       if (st.display === "none" || st.visibility !== "visible" || Number(st.opacity) === 0) return false;
       for (let p: Element | null = el; p; p = p.parentElement) if ((p as HTMLElement).inert || p.getAttribute("aria-hidden") === "true") return false;
@@ -207,21 +218,33 @@ export async function textSpacingClips(page: Page): Promise<string[]> {
   const scan = () => page.evaluate((NOT_OURS) => {
     const out: Record<string, [number, number]> = {};
     let n = 0;
+    const closedDetails = Array.from(document.querySelectorAll("details:not([open])"));
     for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
-      if (el.closest(NOT_OURS) || !el.getClientRects().length) continue;
+      if (el.closest(NOT_OURS) || !el.getClientRects().length || getComputedStyle(el).visibility !== "visible") continue;
+      if (closedDetails.some(details => details.contains(el) && details !== el && !details.querySelector(":scope > summary")?.contains(el))) continue;
       if (!Array.from(el.childNodes).some((c) => c.nodeType === 3 && c.textContent!.trim())) continue;
       // The nearest box that clips this text.
       let clip: HTMLElement | null = el;
+      let scrollableX = false;
       for (; clip && clip !== document.body; clip = clip.parentElement) {
         const st = getComputedStyle(clip);
+        if (st.overflowX === "auto" || st.overflowX === "scroll") scrollableX = true;
         if (st.overflowY === "hidden" || st.overflowY === "clip" || st.overflowX === "hidden" || st.overflowX === "clip") break;
       }
       if (!clip || clip === document.body) continue;
       const st = getComputedStyle(clip);
       const dy = (st.overflowY === "hidden" || st.overflowY === "clip") && !st.webkitLineClamp?.match(/\d/) ? clip.scrollHeight - clip.clientHeight : 0;
-      const dx = (st.overflowX === "hidden" || st.overflowX === "clip") && st.textOverflow !== "ellipsis" && getComputedStyle(el).textOverflow !== "ellipsis" ? clip.scrollWidth - clip.clientWidth : 0;
+      // A retained off-screen subtree or a popup's padding can enlarge scrollWidth without
+      // cutting off this text. Measure the actual text range against the clipping box.
+      const clipBox = clip.getBoundingClientRect();
+      const textRects = Array.from(el.childNodes).filter(node => node.nodeType === 3 && node.textContent?.trim()).flatMap(node => {
+        const range = document.createRange(); range.selectNodeContents(node); return Array.from(range.getClientRects());
+      });
+      const dx = !scrollableX && (st.overflowX === "hidden" || st.overflowX === "clip") && st.textOverflow !== "ellipsis" && getComputedStyle(el).textOverflow !== "ellipsis"
+        ? Math.max(0, ...textRects.map(rect => Math.max(clipBox.left - rect.left, rect.right - clipBox.right))) : 0;
       if (!clip.dataset.a11yProbe) clip.dataset.a11yProbe = String(++n) + ":" + `${clip.tagName.toLowerCase()}.${typeof clip.className === "string" ? clip.className.trim().split(/\s+/).slice(0, 3).join(".") : ""} "${(clip.textContent || "").trim().replace(/\s+/g, " ").slice(0, 30)}"`;
-      out[clip.dataset.a11yProbe] = [dx, dy];
+      const previous = out[clip.dataset.a11yProbe] ?? [0, 0];
+      out[clip.dataset.a11yProbe] = [Math.max(previous[0], dx), Math.max(previous[1], dy)];
     }
     return out;
   }, NOT_OURS);
@@ -393,6 +416,10 @@ export async function controlBoundaryContrast(page: Page): Promise<NonTextReport
     const kit = (window as any).__a11yContrast as { parse(c: string): RGBA; over(a: RGBA, b: RGBA): RGBA; ratio(a: RGBA, b: RGBA): number; hex(c: RGBA): string; behind(el: Element | null): RGBA | null; name(el: Element): string };
     const report: { low: Array<{ what: string; ratio: number; colors: string }>; ok: number; unmeasured: string[] } = { low: [], ok: 0, unmeasured: [] };
     const shown = (el: Element) => {
+      // Closed <details> descendants retain layout boxes in Chromium but are not painted.
+      for (let p = el.parentElement; p; p = p.parentElement) {
+        if (p.matches("details:not([open])") && !p.querySelector(":scope > summary")?.contains(el)) return false;
+      }
       const st = getComputedStyle(el);
       if (st.display === "none" || st.visibility !== "visible" || Number(st.opacity) < 0.05) return false;
       for (let p: Element | null = el; p; p = p.parentElement) if ((p as HTMLElement).inert || p.getAttribute("aria-hidden") === "true") return false;
@@ -416,6 +443,9 @@ export async function controlBoundaryContrast(page: Page): Promise<NonTextReport
       seen.add(what);
       const rect = el.getBoundingClientRect();
       const boxes: Element[] = [el];
+      // The message field shares one visible boundary with its send/context controls.
+      const composer = el.closest(".prism-agent-compose-surface");
+      if (composer) boxes.push(composer);
       // A wrapper that hugs the control may be the box a person sees.
       for (let p = el.parentElement, i = 0; p && i < 2; p = p.parentElement, i++) { const r = p.getBoundingClientRect(); if (r.height <= rect.height + 28 && r.width <= Math.max(rect.width * 3, rect.width + 120)) boxes.push(p); else break; }
       // A custom checkbox / switch / radio is usually a button around a small drawn box: that box is its boundary.

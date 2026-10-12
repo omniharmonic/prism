@@ -29,7 +29,7 @@ const share = (id: string) => `/e2e-fixtures/collab-route.html?target=${id}`;
 const inApp = (id: string) => `/e2e-fixtures/collab-route.html?page=${id}`;
 async function live(page: Page) {
   await expect(editor(page)).toBeVisible();
-  await expect(page.getByText(/Live · /)).toBeVisible();
+  await expect(page.getByText(/^Live(?: · .+)?$/)).toBeVisible();
   await expect(editor(page)).not.toHaveText("");
 }
 const pathOf = async (id: string) => ((await server.note(id)) as unknown as { path?: string } | null)?.path;
@@ -67,7 +67,7 @@ test("a rename reaches another client that has the page open — workspace and s
   // The live document was never interrupted: same editor node, still live, and Eve keeps typing where she was.
   expect(await sameEditor(eve.page)).toBe(true);
   expect(await sameEditor(guest.page)).toBe(true);
-  await expect(eve.page.getByText(/Live · /)).toBeVisible();
+  await expect(eve.page.getByText(/^Live(?: · .+)?$/)).toBeVisible();
   await eve.page.keyboard.type(" and still is.");
   await expect(editor(owner.page)).toContainText("Eve was here and still is.");
   // The breadcrumb under the title follows too.

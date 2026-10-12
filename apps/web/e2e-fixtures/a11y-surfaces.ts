@@ -352,6 +352,7 @@ export const SURFACES: Surface[] = [
   { id: "settings-ai", path: "/e2e-fixtures/workspace.html", open: (page) => settings(page, "AI & agent") },
   { id: "settings-advanced", path: "/e2e-fixtures/workspace.html", open: (page) => settings(page, "Advanced") },
   { id: "page-properties-customize", path: "/e2e-fixtures/databases.html?open=page", open: async (page) => {
+    await page.getByRole("group", { name: "Page properties" }).getByText("Property options", { exact: true }).click();
     await page.getByRole("group", { name: "Page properties" }).getByRole("button", { name: "Customize…" }).click();
     await page.getByRole("dialog", { name: "Customize properties" }).getByLabel("Show Due at top").check();
     await expect(page.getByRole("dialog", { name: "Customize properties" }).getByRole("button", { name: "Move Due up" })).toBeVisible();

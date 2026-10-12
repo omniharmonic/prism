@@ -48,7 +48,7 @@ test("a canvas made from the New page menu opens live with no crash card", async
   await page.goto("/e2e-fixtures/collab-route.html?app");
   await createCanvas(page, "Fresh board");
   await expect(canvasReady(page)).toBeVisible({ timeout: 20_000 });
-  await expect(page.getByText(/Live · /)).toBeVisible();
+  await expect(page.getByText(/^Live(?: · .+)?$/)).toBeVisible();
   await expect(page.getByRole("alert")).toHaveCount(0);
   expect(crashes).toEqual([]);
 });
@@ -65,7 +65,7 @@ test("the vault failing the first collab read: the canvas is NOT opened as a doc
   await page.route(/\/api\/notes\/flaky-board(\?|$)/, (route) => route.request().method() === "GET" ? route.fulfill({ json: body }) : route.fallback());
   await page.goto("/e2e-fixtures/collab-route.html?page=flaky-board");
   await expect(canvasReady(page)).toBeVisible({ timeout: 20_000 });
-  await expect(page.getByText(/Live · /)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/^Live(?: · .+)?$/)).toBeVisible({ timeout: 15_000 });
   const state = await server.live("flaky-board");
   expect(state.remaining, "the armed read failure was spent by the collab load").toBe(0);
   expect(state.live).toEqual({ elements: 1, fragment: 0 });

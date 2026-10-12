@@ -130,7 +130,7 @@ test("NP-PG-08: page style on a live document is stored on the page and honoured
   // Stored on the page as metadata; the body was not rewritten and the document is still live.
   await expect.poll(async () => (await server.note("plan"))!.metadata?.prism_page_style).toEqual({ small: true, full: true });
   expect((await server.note("plan"))!.content).toBe(body);
-  await expect(owner.page.getByText(/Live · /)).toBeVisible();
+  await expect(owner.page.getByText(/^Live(?: · .+)?$/)).toBeVisible();
 
   // Another device, another person: the same page opens in the same style, and is still one live document.
   const eve = await device(browser, "eve", inApp("plan"), { width: 1440, height: 900 });
@@ -380,7 +380,7 @@ test("NP-PG-03: a title edit in a live document reaches another client that has 
   await expect(eve.page.getByRole("heading", { name: "Rename Meeting notes", exact: true })).toBeVisible({ timeout: 15_000 });
   await expect(eve.page.getByRole("heading", { name: "Rename Notes", exact: true })).toHaveCount(0);
   // Its live document was never interrupted.
-  await expect(eve.page.getByText(/Live · /)).toBeVisible();
+  await expect(eve.page.getByText(/^Live(?: · .+)?$/)).toBeVisible();
   await owner.context.close();
   await eve.context.close();
 });

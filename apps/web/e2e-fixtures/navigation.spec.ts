@@ -102,7 +102,10 @@ test("opening Tools brings its rows into view above the footer", async ({ page }
   await nav.getByRole("button", { name: "Tools", exact: true }).click();
   const last = nav.getByRole("button", { name: "Customize sidebar…", exact: true });
   await expect(last).toBeVisible();
-  const footerTop = (await nav.getByRole("button", { name: "New page", exact: true }).boundingBox())!.y;
-  await expect.poll(async () => { const b = await last.boundingBox(); return b ? b.y + b.height : Infinity; }).toBeLessThanOrEqual(footerTop);
+  await expect.poll(async () => {
+    const b = await last.boundingBox();
+    const footer = await nav.getByRole("button", { name: "New page", exact: true }).boundingBox();
+    return b && footer ? b.y + b.height - footer.y : Infinity;
+  }).toBeLessThanOrEqual(0);
   for (const name of ["Calendar", "People", "Automations", "Map"]) await expect(nav.getByRole("button", { name, exact: true })).toBeInViewport({ ratio: 1 });
 });

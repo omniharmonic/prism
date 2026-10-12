@@ -182,10 +182,24 @@ test.describe("keyboard-only journey", () => {
     await expect(body).toContainText("The rollout plan is ready");
     const k = new Keys(page);
     await k.tabTo(body, "live editor");
-    await page.keyboard.press(`${mod}+ArrowUp`);
-    await page.keyboard.press("Home");
-    for (let i = 0; i < 4; i++) await page.keyboard.press("ArrowRight");
-    for (let i = 0; i < 12; i++) await page.keyboard.press("Shift+ArrowRight");
+    // Native focus restores the caret on the next frame. Let that finish before moving it.
+    await body.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.keyboard.press(process.platform === "darwin" ? "Meta+ArrowUp" : "Control+Home");
+    // Let each native caret move reach ProseMirror before issuing the next key.
+    // Otherwise CI can send the entire sequence inside one selectionchange frame.
+    const selection = () => body.evaluate(el => {
+      const { from, to } = (el as any).editor.state.selection;
+      return { from, to };
+    });
+    await expect.poll(selection).toEqual({ from: 1, to: 1 });
+    for (let i = 0; i < 4; i++) {
+      await page.keyboard.press("ArrowRight");
+      await expect.poll(selection).toEqual({ from: i + 2, to: i + 2 });
+    }
+    for (let i = 0; i < 12; i++) {
+      await page.keyboard.press("Shift+ArrowRight");
+      await expect.poll(selection).toEqual({ from: 5, to: i + 6 });
+    }
     const comment = page.getByRole("button", { name: "Comment on selection" });
     await expect(comment).toBeVisible();
     // The selection toolbar is reachable from the text.
