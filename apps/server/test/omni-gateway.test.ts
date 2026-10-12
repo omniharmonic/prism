@@ -1085,3 +1085,16 @@ test("hidden or unverified terminal answers keep completion previews generic", a
     assert.deepEqual(replyPreviews, [undefined]);
   }
 });
+
+test('reviewed proactive script enables app scheduling/resume with immutable runner and prompt',async()=>{
+ const fs=await import('node:fs/promises');const os=await import('node:os');const path=await import('node:path');
+ const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'proactive-route-')));const prior=process.env.OMNI_REVIEWED_JOB_SCRIPTS_DIR;process.env.OMNI_REVIEWED_JOB_SCRIPTS_DIR=root;
+ try{
+  const script='omni-proactive-hourly.py';await fs.copyFile(new URL(`./fixtures/reviewed-proactive-jobs/${script}`,import.meta.url),path.join(root,script));Object.assign(fake.jobs[0]!,{no_agent:true,script,deliver:'local',origin:null});
+  const view=await (await req('/jobs',{headers:owner()})).json() as {jobs:Array<{reviewedScript:boolean;canRun:boolean;canResume:boolean;canEdit:boolean}>};assert.equal(view.jobs[0]?.reviewedScript,true);assert.equal(view.jobs[0]?.canRun,true);assert.equal(view.jobs[0]?.canResume,true);assert.equal(view.jobs[0]?.canEdit,true);
+  assert.equal((await req('/jobs/abcdef012345',{method:'PUT',headers:owner(),body:JSON.stringify({name:'Proactive review',schedule:'10 9 * * *'})})).status,200);
+  assert.equal((await post('/jobs/abcdef012345/resume',{})).status,200);assert.equal((await req('/jobs/abcdef012345',{method:'PUT',headers:owner(),body:JSON.stringify({prompt:'run another instruction'})})).status,403);
+  assert.equal((await req('/jobs/abcdef012345',{method:'PUT',headers:owner(),body:JSON.stringify({script:'unreviewed.py'})})).status,400);
+  await fs.appendFile(path.join(root,script),'\n# mutation');assert.equal((await post('/jobs/abcdef012345/run',{})).status,403);assert.equal((await req('/jobs/abcdef012345',{method:'PUT',headers:owner(),body:JSON.stringify({name:'changed'})})).status,403);
+ }finally{if(prior===undefined)delete process.env.OMNI_REVIEWED_JOB_SCRIPTS_DIR;else process.env.OMNI_REVIEWED_JOB_SCRIPTS_DIR=prior;await fs.rm(root,{recursive:true,force:true});}
+});

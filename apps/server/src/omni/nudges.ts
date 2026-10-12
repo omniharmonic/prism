@@ -1,5 +1,6 @@
 /** Owner-local nudge ledger. Source uniqueness and push claims survive restarts. No outward actions here. */
 import { db } from "../db";
+import { attentionPreferences } from "./attention-preferences";
 import { omniConfig } from "./config";
 import { newId } from "./store";
 import { localClock, consequenceScore, interruptDecision, type Dial, type InterruptContext, type NudgePolicyInput } from "./nudge-policy";
@@ -86,13 +87,13 @@ export function bindNudgeThread(owner:string,id:string,threadId:string):void { d
 export const claimNudgePush = db.transaction((owner:string,id:string,now=Date.now()):number|null=>{
  const n=getNudge(owner,id);if(!n||n.resolved)return null;const s=nudgeSettings(owner);
  const count=rateCount(owner,now);
- const decision=interruptDecision(n,s.context,s.dial,s.killed,count,now);
+ const decision=interruptDecision(n,s.context,s.dial,s.killed,count,now,attentionPreferences(owner));
  if(decision!=="now"&&decision!=="digest")return null;
  db.prepare("UPDATE omni_nudges SET surfaces=surfaces+1,last_surface_at=? WHERE owner_email=? AND id=?").run(now,owner,id);
  return Number(db.prepare("INSERT INTO omni_nudge_pushes(owner_email,nudge_id,ts) VALUES(?,?,?)").run(owner,id,now).lastInsertRowid);
 });
 export function finishNudgePush(claim:number,outcome:"sent"|"failed"):void {db.prepare("UPDATE omni_nudge_pushes SET outcome=? WHERE id=?").run(outcome,claim);}
-export function resetNudgesForTests():void {db.exec("DELETE FROM omni_nudges;DELETE FROM omni_nudge_settings;DELETE FROM omni_feedback;DELETE FROM omni_nudge_pushes;DELETE FROM omni_nudge_audits;DELETE FROM omni_nudge_digest_slots;DELETE FROM omni_nudge_views;");}
+export function resetNudgesForTests():void {db.exec("DELETE FROM omni_nudges;DELETE FROM omni_nudge_settings;DELETE FROM omni_feedback;DELETE FROM omni_nudge_pushes;DELETE FROM omni_nudge_audits;DELETE FROM omni_nudge_digest_slots;DELETE FROM omni_nudge_views;DELETE FROM omni_attention_preferences;");}
 
 export function priorNudgeSources(owner:string):{sources:{sourceId:string;kind:Candidate["kind"]}[];complete:boolean} {
  const rows=db.prepare("SELECT source_id,candidate FROM omni_nudges WHERE owner_email=? AND resolved=0 LIMIT 5001").all(owner) as {source_id:string;candidate:string}[];
@@ -112,7 +113,7 @@ export function nudgeWeeklyAudit(owner:string,replies:{sourceId:string;repliedAt
 /** A digest consumes one interruption budget slot, while each included item claims its surface atomically. */
 export const claimNudgeDigest=db.transaction((owner:string,now=Date.now()):{ids:string[];claims:number[]}|null=>{
  const settings=nudgeSettings(owner),count=rateCount(owner,now);
- const eligible=listNudges(owner,false,now).filter(n=>interruptDecision(n,settings.context,settings.dial,settings.killed,count,now)==="digest");
+ const eligible=listNudges(owner,false,now).filter(n=>interruptDecision(n,settings.context,settings.dial,settings.killed,count,now,attentionPreferences(owner))==="digest");
  if(!eligible.length)return null;
  const clock=localClock(now),slot=`${clock.date}:${clock.hour}`;
  if(!db.prepare("INSERT OR IGNORE INTO omni_nudge_digest_slots(owner_email,slot,claimed_at) VALUES(?,?,?)").run(owner,slot,now).changes)return null;
@@ -123,4 +124,4 @@ export const claimNudgeDigest=db.transaction((owner:string,now=Date.now()):{ids:
  }
  return {ids:eligible.map(n=>n.id),claims};
 });
-export function nudgeDeliveryDecision(owner:string,id:string,now=Date.now()):string {const n=getNudge(owner,id);if(!n||n.resolved)return "hold";const s=nudgeSettings(owner);return interruptDecision(n,s.context,s.dial,s.killed,rateCount(owner,now),now);}
+export function nudgeDeliveryDecision(owner:string,id:string,now=Date.now()):string {const n=getNudge(owner,id);if(!n||n.resolved)return "hold";const s=nudgeSettings(owner);return interruptDecision(n,s.context,s.dial,s.killed,rateCount(owner,now),now,attentionPreferences(owner));}
