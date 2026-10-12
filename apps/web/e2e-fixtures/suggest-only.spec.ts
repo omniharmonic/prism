@@ -25,7 +25,7 @@ async function open(page: Page, who: "sam" | "eve" | "owner", id: string) {
   await connect(page, page.context(), server, who);
   await page.goto(`/e2e-fixtures/collab-route.html?target=${id}`);
   await expect(editor(page)).toBeVisible();
-  await expect(page.getByText(/Live · /)).toBeVisible();
+  await expect(page.getByText(/^Live(?: · .+)?$/)).toBeVisible();
   await expect(editor(page)).not.toHaveText("");
 }
 
@@ -339,7 +339,7 @@ test("in the workspace itself: Shared with me opens the LIVE suggest-only editor
   // Wave 3: a PLAIN suggest share stays in the live session inside the workspace too
   // (Canvas routes only governance review to the propose draft). The socket is
   // read-only server-side; the body is not editable; no local draft exists.
-  await expect(page.getByText(/Live · /)).toBeVisible();
+  await expect(page.getByText(/^Live(?: · .+)?$/)).toBeVisible();
   await expect(editor(page)).toHaveAttribute("contenteditable", "false");
   await expect(page.getByRole("button", { name: /Submit for review/ })).toHaveCount(0);
   const before = await editor(page).innerText();

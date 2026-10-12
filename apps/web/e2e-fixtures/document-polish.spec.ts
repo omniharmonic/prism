@@ -7,7 +7,7 @@ test("page properties preserve the editor and failed title changes remain recove
   const editor = page.locator('.tiptap[contenteditable=true]');
   await expect(editor).toBeVisible();
   await editor.evaluate(node => { (window as any).originalWritingEditor = node; });
-  await page.locator('.document-properties-disclosure summary').click();
+  await page.locator('.db-properties-menu > summary, .document-properties-disclosure > summary').click();
   await expect(page.locator('.document-properties-content')).toContainText('Projects/Prism/A living workspace');
   await expect(page.locator('.document-property-tag')).toHaveText('project');
   expect(await editor.evaluate(node => node === (window as any).originalWritingEditor)).toBe(true);
@@ -148,7 +148,8 @@ test("real collaborative host shares properties and readable mobile header witho
     const formatting = page.getByRole('button', { name: 'Formatting', exact: true });
     await expect(formatting).toHaveAttribute('aria-expanded', 'false');
     await expect(page.getByRole('button', { name: 'Editing', exact: true })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Accept all suggestions', exact: true })).toBeVisible();
+    // Review actions appear only when there are suggestions to review.
+    await expect(page.getByRole('button', { name: 'Accept all suggestions', exact: true })).toHaveCount(0);
     await editor.press('ControlOrMeta+a');
     await formatting.click();
     await page.getByRole('group', { name: 'Text formatting' }).getByRole('button', { name: 'Bold', exact: true }).click();
@@ -159,9 +160,9 @@ test("real collaborative host shares properties and readable mobile header witho
     await expect(editor.locator('strong')).toHaveText('Our shared ideas stay connected.');
     await formatting.click();
     await editor.evaluate(node => { (window as any).originalWritingEditor = node; });
-    await page.locator('.document-properties-disclosure summary').click();
+    await page.locator('.db-properties-menu > summary, .document-properties-disclosure > summary').click();
     await expect(page.locator('.document-properties-content')).toContainText(path);
-    await expect(page.getByText('Live · Editing', { exact: true })).toBeVisible();
+    await expect(page.getByText(/^Live(?: · Editing)?$/)).toBeVisible();
     await page.getByRole('button', { name: 'Rename A collaborative workspace with connected ideas', exact: true }).click();
     const renameTitle = page.getByRole('textbox', { name: 'Document title' });
     await renameTitle.fill('A clearer shared workspace');
@@ -230,7 +231,7 @@ test("real collaborative host shares properties and readable mobile header witho
     await expect(page.locator('.tiptap[contenteditable=false]')).toBeVisible();
     await expect(formatting).toHaveCount(0);
     await expect(page.getByRole('button', { name: /^Rename / })).toHaveCount(0);
-    await expect(page.locator('.document-properties-disclosure summary')).toBeVisible();
+    await expect(page.locator('.db-properties-menu > summary, .document-properties-disclosure > summary')).toBeVisible();
     const readonlyBody = await page.locator('.tiptap').innerHTML();
     await page.getByRole('button', { name: 'Outline', exact: true }).click();
     await page.getByRole('navigation', { name: 'Document outline' }).getByRole('button', { name: /Our shared ideas/ }).click();

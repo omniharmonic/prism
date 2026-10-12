@@ -39,7 +39,7 @@ async function openPage(page: Page, context: BrowserContext, content = "<h2>Head
     };
   });
   await page.goto(`/e2e-fixtures/collab-route.html?page=${id}`);
-  await expect(page.getByText(/Live · /)).toBeVisible();
+  await expect(page.getByText(/^Live(?: · .+)?$/)).toBeVisible();
   await expect(editor(page)).toContainText("Start");
   await newLine(page);
   return id;
@@ -163,7 +163,7 @@ test("live: Page keeps its row when the editor is replaced while the page is cre
   const changed = await page.evaluate(async () => (await fetch("/acl/notes/blank/tags", { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tag: "reviewed" }) })).status);
   expect(changed).toBe(200);
   await expect(page.locator(".tiptap:not([data-before])")).toBeVisible();
-  await expect(page.getByText(/Live · /)).toBeVisible();
+  await expect(page.getByText(/^Live(?: · .+)?$/)).toBeVisible();
   release();
   await expect(editor(page).locator(".prism-child-page")).toHaveCount(1);
   await expect(page.getByRole("button", { name: "Open sub-page: Untitled" })).toBeVisible();

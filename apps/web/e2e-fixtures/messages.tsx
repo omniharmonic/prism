@@ -4,7 +4,7 @@ import { replyAgent, agentControls } from "./reply-agent";
 import React, { useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { LiveActionsProvider, PlatformProvider, type Note } from "@prism/core";
+import { LiveActionsProvider, PlatformProvider, VaultClientProvider, type VaultClient, type Note } from "@prism/core";
 import EmailRenderer from "../../../packages/core/src/components/renderers/EmailRenderer";
 import type { LiveActionsClient } from "../../../packages/core/src/lib/actions/client";
 import { MessageThread } from "../../../packages/core/src/components/comms/MessageThread";
@@ -72,6 +72,12 @@ function Fixture() {
   const currentScope = useRef(scope);
   currentScope.current = scope;
   Object.assign(controls, { switchActor: () => setActor("morgan") });
+  const vault = useMemo(() => ({
+    scope: () => scope,
+    changeTags: async (_id: string, change: { add: string[]; remove: string[] }) => {
+      emailNote.tags = [...(emailNote.tags ?? []).filter(tag => !change.remove.includes(tag)), ...change.add];
+    },
+  }) as VaultClient, [scope]);
   const agent = useMemo(() => replyAgent(() => currentScope.current), [scope]);
   const emailActions: Partial<LiveActionsClient> = {
     scope: () => scope,
@@ -114,6 +120,7 @@ function Fixture() {
         <PlatformProvider
           value={location.search.includes("native") ? "desktop" : "web"}
         >
+          <VaultClientProvider client={vault}>
           <AgentClientProvider client={location.search.includes("agent") ? agent : null}>
           <LiveActionsProvider client={emailClient}>
             <div style={{ height: "100dvh" }}>
@@ -124,6 +131,7 @@ function Fixture() {
             </div>
           </LiveActionsProvider>
           </AgentClientProvider>
+          </VaultClientProvider>
         </PlatformProvider>
       </QueryClientProvider>
     );

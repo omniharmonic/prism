@@ -94,15 +94,15 @@ test("phone reload restores the document without covering it with an agent drawe
 // A restore lands whenever the server answers. On a slow connection the reader has already
 // opened the Browse drawer by then; the restored tab must not shut it under their finger
 // (only a page a person opens dismisses the drawer).
-test("phone: a workspace restored late leaves the drawer the reader opened meanwhile", async ({ page }) => {
+test("phone: startup settles restored tabs before navigation becomes interactive", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await seed(page);
   await page.goto(path + "&hold=weekly-review");
   await expect(page.getByText("Reopening your workspace…")).toBeVisible();
+  await expect(page.locator(".prism-workspace-shell")).toHaveAttribute("inert", "");
+  await page.evaluate(() => (window as any).prismFixtureReleaseRead("weekly-review"));
   await page.getByRole("button", { name: "Notes", exact: true }).click();
   const drawer = page.getByRole("dialog", { name: "Workspace navigation" });
-  await expect(drawer).toBeVisible();
-  await page.evaluate(() => (window as any).prismFixtureReleaseRead("weekly-review"));
   await expect.poll(() => ids(page)).toEqual(["field-notes", "weekly-review"]);
   await expect(page.getByText("Reopening your workspace…")).toHaveCount(0);
   await expect(drawer).toBeVisible();

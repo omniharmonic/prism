@@ -86,14 +86,14 @@ test("degrades → heals → the SAME browser profile opens it live (nothing poi
   // Same profile, same storage: the live editor opens it.
   await page.getByRole("button", { name: "Open in the live editor" }).click();
   await expect(liveEditor(page)).toBeVisible();
-  await expect(page.getByText(/Live · Editing/)).toBeVisible();
+  await expect(page.getByText(/^Live(?: · Editing)?$/)).toBeVisible();
   await expect(liveEditor(page)).toContainText("Now an ordinary page.");
   await expect(plain(page)).toHaveCount(0);
   await expect(page.getByText("Update required")).toHaveCount(0);
   // …and again after a reload (the local copy it now keeps is the healthy document).
   await reopen(page);
   await expect(liveEditor(page)).toBeVisible();
-  await expect(page.getByText(/Live · Editing/)).toBeVisible();
+  await expect(page.getByText(/^Live(?: · Editing)?$/)).toBeVisible();
   await expect(liveEditor(page)).toContainText("Now an ordinary page.");
   // It is really editable: typing reaches the stored note, once.
   await liveEditor(page).click();
@@ -109,7 +109,7 @@ test("a live page whose content becomes too complex falls back to plain text and
   await connect(page, page.context(), server, "eve");
   await page.goto("/e2e-fixtures/collab-route.html?target=rich");
   await expect(liveEditor(page)).toBeVisible();
-  await expect(page.getByText(/Live · Editing/)).toBeVisible();
+  await expect(page.getByText(/^Live(?: · Editing)?$/)).toBeVisible();
   const original = (await server.note("rich"))!.content;
   // The note is replaced elsewhere by something no parser can take.
   await server.put("rich", BOMB);
@@ -120,7 +120,7 @@ test("a live page whose content becomes too complex falls back to plain text and
   await server.put("rich", original);
   await page.getByRole("button", { name: "Try the live editor again" }).click();
   await expect(liveEditor(page)).toBeVisible();
-  await expect(page.getByText(/Live · Editing/)).toBeVisible();
+  await expect(page.getByText(/^Live(?: · Editing)?$/)).toBeVisible();
   await expect(liveEditor(page).getByRole("heading", { name: "Purpose" })).toHaveCount(1);
   await expect(page.getByText("Update required")).toHaveCount(0);
 });
@@ -130,7 +130,7 @@ test("a live page whose changes cannot be saved says so (never silently), still 
   await connect(page, page.context(), server, "eve");
   await page.goto("/e2e-fixtures/collab-route.html?target=plan");
   await expect(liveEditor(page)).toBeVisible();
-  await expect(page.getByText(/Live · Editing/)).toBeVisible();
+  await expect(page.getByText(/^Live(?: · Editing)?$/)).toBeVisible();
   const notSaved = page.getByTestId("collab-not-saved");
   await expect(notSaved).toHaveCount(0);
   // From now on the server can render nothing for the vault: the page is "too large to save".

@@ -209,7 +209,7 @@ test("sign-out removes local live-document state; unsynced documents go through 
     // 2. An UNSYNCED document: the prompt counts it; "stay" keeps everything.
     await page.goto("/e2e-fixtures/collab-storage.html?live");
     await expect(editor).toBeVisible();
-    await expect(page.getByText(/Live · /)).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText(/^Live(?: · .+)?$/)).toBeVisible({ timeout: 10000 });
     up = false;
     for (const socket of sockets.splice(0)) socket.close();
     await expect(page.getByText(/Connecting…|Offline/).first()).toBeVisible({ timeout: 10000 });
@@ -297,7 +297,7 @@ test("an account change right before the background sync sends nothing", async (
     await page.goto("/e2e-fixtures/collab-storage.html?live");
     const editor = page.locator(".tiptap[contenteditable=true]");
     await expect(editor).toBeVisible();
-    await expect(page.getByText(/Live · /)).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText(/^Live(?: · .+)?$/)).toBeVisible({ timeout: 10000 });
     up = false;
     for (const socket of sockets.splice(0)) socket.close();
     await expect(page.getByText(/Connecting…|Offline/).first()).toBeVisible({ timeout: 10000 });

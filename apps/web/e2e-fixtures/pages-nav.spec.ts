@@ -683,7 +683,7 @@ test("phone: the page actions sheet lists every page action with 44px rows and c
   await handle.evaluate((element) => {
     for (const [type, y] of [["touchstart", 100], ["touchmove", 230], ["touchend", 230]] as const) {
       const event = new Event(type, { bubbles: true });
-      Object.defineProperty(event, "touches", { value: type === "touchend" ? [] : [{ clientY: y }] });
+      Object.defineProperty(event, "touches", { value: type === "touchend" ? [] : [{ clientX: 100, clientY: y }] });
       element.dispatchEvent(event);
     }
   });

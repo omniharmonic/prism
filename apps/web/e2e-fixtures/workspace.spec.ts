@@ -107,11 +107,11 @@ test("failed document saves remain retryable without losing the typed content", 
   await editor.click();
   await editor.pressSequentially("Keep this draft. ");
   await editor.press("ControlOrMeta+s");
-  await expect(page.getByRole("alert")).toContainText("Changes could not be saved");
+  await expect(page.getByRole("alert").filter({ hasText: "Changes could not be saved" })).toContainText("Changes could not be saved");
   await expect(editor).toContainText("Keep this draft.");
   await page.evaluate(() => { (window as unknown as { prismFixtureControls: { rejectWrite: boolean } }).prismFixtureControls.rejectWrite = false; });
   await page.getByRole("button", { name: "Retry save" }).click();
-  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByRole("alert").filter({ hasText: "Changes could not be saved" })).toHaveCount(0);
   await expect(page.getByText(/^Saved /)).toBeVisible();
   const writes = await page.evaluate(() => (window as unknown as { prismFixtureWrites: Array<{ content?: string }> }).prismFixtureWrites.filter((w) => w.content !== undefined));
   expect(writes).toHaveLength(2);

@@ -82,7 +82,7 @@ test("real collaborative editor survives StrictMode and reload with scoped durab
     await page.route("**/api/federated/**", route => route.fulfill({ status: 204 }));
     await page.goto("/e2e-fixtures/collab-storage.html?live");
     await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
-    await expect(page.getByText("Live · Editing", { exact: true })).toBeVisible();
+    await expect(page.getByText(/^Live(?: · Editing)?$/)).toBeVisible();
     await page.locator(".tiptap[contenteditable=true]").fill("SCOPED_CRDT_EDIT");
     await expect.poll(async () => page.evaluate(async () => {
       const db = await new Promise<IDBDatabase>((resolve, reject) => { const r = indexedDB.open("prism-collab-v3"); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });

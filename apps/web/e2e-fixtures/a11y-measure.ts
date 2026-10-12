@@ -21,6 +21,10 @@ export function touchTargets(page: Page, scaffold: string[] = []): Promise<Targe
   return page.evaluate(({ CONTROLS, NOT_OURS, scaffold }) => {
     const vw = window.innerWidth, vh = window.innerHeight;
     const visible = (el: Element) => {
+      // Closed <details> descendants retain layout boxes in Chromium but are not painted.
+      for (let p = el.parentElement; p; p = p.parentElement) {
+        if (p.matches("details:not([open])") && !p.querySelector(":scope > summary")?.contains(el)) return false;
+      }
       const st = getComputedStyle(el);
       if (st.display === "none" || st.visibility !== "visible" || st.pointerEvents === "none") return false;
       for (let p: Element | null = el; p; p = p.parentElement) {
@@ -151,6 +155,9 @@ export function reflow(page: Page): Promise<ReflowReport> {
     for (const el of Array.from(document.querySelectorAll<HTMLElement>("main, [role=main], [role=dialog], dialog[open], nav, aside, [role=complementary]"))) {
       const st = getComputedStyle(el);
       if (st.display === "none" || st.visibility !== "visible" || !el.getClientRects().length) continue;
+      // Settings sections are a one-dimensional tab rail, like the document-tab strip.
+      // Its controls remain reachable by scrolling; the surrounding dialog must still reflow.
+      if (el.matches(".prism-settings__navigation")) continue;
       if (el.scrollWidth > el.clientWidth + 1 && (st.overflowX === "auto" || st.overflowX === "scroll")) pageScroll.push(`${desc(el)} scrolls sideways ${el.scrollWidth} > ${el.clientWidth}`);
     }
     /** Inside something that scrolls (or deliberately clips) sideways on its own: allowed. */
@@ -163,6 +170,10 @@ export function reflow(page: Page): Promise<ReflowReport> {
       return false;
     };
     const shown = (el: Element) => {
+      // Closed <details> descendants retain layout boxes in Chromium but are not painted.
+      for (let p = el.parentElement; p; p = p.parentElement) {
+        if (p.matches("details:not([open])") && !p.querySelector(":scope > summary")?.contains(el)) return false;
+      }
       const st = getComputedStyle(el);
       if (st.display === "none" || st.visibility !== "visible" || Number(st.opacity) === 0) return false;
       for (let p: Element | null = el; p; p = p.parentElement) if ((p as HTMLElement).inert || p.getAttribute("aria-hidden") === "true") return false;
@@ -209,6 +220,7 @@ export async function textSpacingClips(page: Page): Promise<string[]> {
     let n = 0;
     for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
       if (el.closest(NOT_OURS) || !el.getClientRects().length) continue;
+      if (Array.from(document.querySelectorAll("details:not([open])")).some(details => details.contains(el) && details !== el && !details.querySelector(":scope > summary")?.contains(el))) continue;
       if (!Array.from(el.childNodes).some((c) => c.nodeType === 3 && c.textContent!.trim())) continue;
       // The nearest box that clips this text.
       let clip: HTMLElement | null = el;
@@ -393,6 +405,10 @@ export async function controlBoundaryContrast(page: Page): Promise<NonTextReport
     const kit = (window as any).__a11yContrast as { parse(c: string): RGBA; over(a: RGBA, b: RGBA): RGBA; ratio(a: RGBA, b: RGBA): number; hex(c: RGBA): string; behind(el: Element | null): RGBA | null; name(el: Element): string };
     const report: { low: Array<{ what: string; ratio: number; colors: string }>; ok: number; unmeasured: string[] } = { low: [], ok: 0, unmeasured: [] };
     const shown = (el: Element) => {
+      // Closed <details> descendants retain layout boxes in Chromium but are not painted.
+      for (let p = el.parentElement; p; p = p.parentElement) {
+        if (p.matches("details:not([open])") && !p.querySelector(":scope > summary")?.contains(el)) return false;
+      }
       const st = getComputedStyle(el);
       if (st.display === "none" || st.visibility !== "visible" || Number(st.opacity) < 0.05) return false;
       for (let p: Element | null = el; p; p = p.parentElement) if ((p as HTMLElement).inert || p.getAttribute("aria-hidden") === "true") return false;
@@ -416,6 +432,9 @@ export async function controlBoundaryContrast(page: Page): Promise<NonTextReport
       seen.add(what);
       const rect = el.getBoundingClientRect();
       const boxes: Element[] = [el];
+      // The message field shares one visible boundary with its send/context controls.
+      const composer = el.closest(".prism-agent-compose-surface");
+      if (composer) boxes.push(composer);
       // A wrapper that hugs the control may be the box a person sees.
       for (let p = el.parentElement, i = 0; p && i < 2; p = p.parentElement, i++) { const r = p.getBoundingClientRect(); if (r.height <= rect.height + 28 && r.width <= Math.max(rect.width * 3, rect.width + 120)) boxes.push(p); else break; }
       // A custom checkbox / switch / radio is usually a button around a small drawn box: that box is its boundary.

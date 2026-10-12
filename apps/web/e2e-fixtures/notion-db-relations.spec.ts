@@ -63,6 +63,7 @@ test("A: an editor who may not change the schema is told why at the + column", a
 test("B: a new relation finds its target from the name, searches only it, and creates a page inline", async ({ page }) => {
   await page.goto("/e2e-fixtures/databases.html?open=t3");
   const bar = page.getByRole("group", { name: "Page properties" });
+  await bar.getByText("Property options", { exact: true }).click();
   await bar.getByRole("button", { name: "Add property" }).click();
   const dialog = page.getByRole("dialog", { name: "Add a property" });
   await dialog.getByLabel("Property name").fill("Initiatives");

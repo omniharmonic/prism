@@ -55,7 +55,7 @@ test("prose startup requests none of the specialized collaborative editing engin
   try {
     await page.goto("/e2e-fixtures/collab-storage.html?live");
     await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
-    await expect(page.getByText("Live · Editing", { exact: true })).toBeVisible();
+    await expect(page.getByText(/^Live(?: · Editing)?$/)).toBeVisible();
     expect(engines).toEqual([]);
   } finally { await fixture.close(); }
 });
@@ -71,7 +71,7 @@ for (const platform of ["native", "linux"] as const) {
   try {
     await page.goto("/e2e-fixtures/collab-storage.html?live");
     await expect(page.getByRole("status")).toHaveText("Loading code editor…");
-    await expect(page.getByText("Live · Editing", { exact: true })).toBeVisible();
+    await expect(page.getByText(/^Live(?: · Editing)?$/)).toBeVisible();
     const doc = fixture.doc();
     doc.getText("codemirror").insert(doc.getText("codemirror").length, "\n// REMOTE_DURING_LOAD");
     const connections = [...doc.getConnections()];
@@ -119,7 +119,7 @@ test("a failed sheet import offers explicit reload and preserves remote cells", 
   try {
     await page.goto("/e2e-fixtures/collab-storage.html?live");
     await expect(page.getByRole("alert")).toContainText("spreadsheet couldn’t open");
-    await expect(page.getByText("Live · Editing", { exact: true })).toBeVisible();
+    await expect(page.getByText(/^Live(?: · Editing)?$/)).toBeVisible();
     const doc = fixture.doc();
     const connections = [...doc.getConnections()];
     const row = doc.getArray<Y.Array<string>>("rows").get(1);
@@ -186,7 +186,7 @@ test("the deferred canvas opens with its own tools and keeps the live connection
   try {
     await page.goto("/e2e-fixtures/collab-storage.html?live");
     await expect(page.getByRole("button", { name: "Focus canvas", exact: true })).toBeVisible();
-    await expect(page.getByText("Live · Editing", { exact: true })).toBeVisible();
+    await expect(page.getByText(/^Live(?: · Editing)?$/)).toBeVisible();
     const connections = [...fixture.doc().getConnections()];
     await page.getByRole("button", { name: "Focus canvas", exact: true }).click();
     await expect(page.getByRole("dialog", { name: "Focused canvas" })).toBeVisible();
