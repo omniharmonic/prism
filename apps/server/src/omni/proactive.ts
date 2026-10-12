@@ -26,6 +26,9 @@ if(!(db.prepare("PRAGMA table_info(omni_proactive_decisions)").all() as {name:st
  INSERT INTO omni_proactive_decisions SELECT *, 'change' FROM omni_proactive_decisions_legacy;
  DROP TABLE omni_proactive_decisions_legacy;`);
 })();
+for(const column of ["title","summary"]){
+ if(!(db.prepare("PRAGMA table_info(omni_proactive_decisions)").all() as {name:string}[]).some(r=>r.name===column))db.exec(`ALTER TABLE omni_proactive_decisions ADD COLUMN ${column} TEXT`);
+}
 export interface ProactiveDecision {
  decisionId:string; boundary?:string; sourceId:string; sourceRevision:string; evidence:{sourceId:string;revision:string}[];
  title:string; summary:string; body:string; kind:Candidate["kind"]; expiresAt:number;
@@ -84,7 +87,7 @@ export async function publishProactive(owner:string,d:ProactiveDecision,now=Date
   ensureThread({id:boundThread,title:d.title,taskNoteId:d.sourceId,source:"nudge",state:"waiting"});
   bindNudgeThread(owner,nudge.id,boundThread);
   const body=readableBody(d);
-  db.prepare("INSERT INTO omni_proactive_decisions VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").run(owner,d.decisionId,digest,d.sourceId,d.sourceRevision,boundThread,nudge.id,body,JSON.stringify(d.evidence),d.expiresAt,now,d.boundary??"change");
+  db.prepare("INSERT INTO omni_proactive_decisions(owner_email,decision_id,digest,source_id,source_revision,thread_id,nudge_id,body,evidence,expires_at,created_at,boundary,title,summary) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(owner,d.decisionId,digest,d.sourceId,d.sourceRevision,boundThread,nudge.id,body,JSON.stringify(d.evidence),d.expiresAt,now,d.boundary??"change",d.title,d.summary);
   const seq=appendEvent(boundThread,null,{t:"text",blockId:`proactive-${d.decisionId}`,text:body},omniConfig.eventsPerThread());
   bumpUnread(boundThread);
   return {result:{decisionId:d.decisionId,threadId:boundThread,nudgeId:nudge.id,replayed:false},seq};
@@ -138,4 +141,17 @@ export async function resolveProactiveSources(owner:string,value:unknown):Promis
   result.resolved.push(ref.sourceId);publishNotice({type:"card",id:resolved.nudgeId,op:"resolved"});publishNotice({type:"thread",id:resolved.threadId,op:"resolved"});
  }
  return result;
+}
+
+/** A deterministic sweep refreshes scoring but must not replace still-grounded preparation with raw previews. */
+export async function proactiveNudgePresentation(owner:string,sourceId:string,currentRevision:string|null|undefined):Promise<{title:string;summary:string;reasons:string[]}|null> {
+ const r=db.prepare("SELECT * FROM omni_proactive_decisions WHERE owner_email=? AND source_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1").get(owner,sourceId) as (Row&{title:string|null;summary:string|null})|undefined;
+ if(!r||!r.title||!r.summary||r.expires_at<=Date.now()||r.source_revision!==currentRevision||getNudge(owner,r.nudge_id)?.resolved)return null;
+ for(const evidence of JSON.parse(r.evidence) as ProactiveDecision["evidence"]){
+  if(evidence.sourceId===sourceId)continue;
+  const n=await resolveNote({id:evidence.sourceId,fresh:true});if(!n||n.trashed||n.tags.includes("prism-trashed")||n.updatedAt!==evidence.revision)return null;
+ }
+ const latest=await resolveNote({id:sourceId,fresh:true});
+ if(!latest||latest.trashed||latest.tags.includes("prism-trashed")||latest.updatedAt!==r.source_revision)return null;
+ return {title:r.title,summary:r.summary,reasons:[r.summary]};
 }

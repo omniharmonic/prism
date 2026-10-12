@@ -86,7 +86,7 @@ import { priorNudgeSources, resolveNudgeSource, nudgeWeeklyAudit, latestNudgeAud
 import { startNudgeDelivery } from "../omni/nudge-delivery";
 import { resolveNote } from "../omni/records";
 import { syncAttentionPreferences, AttentionPreferenceError } from "../omni/attention-preferences";
-import { parseProactiveDecision, publishProactive, proactiveMessages, proactiveContext, recordProactiveOwnerTurn, proactiveOwnerScope, resolveProactiveSources, ProactiveError } from "../omni/proactive";
+import { parseProactiveDecision, publishProactive, proactiveMessages, proactiveContext, recordProactiveOwnerTurn, proactiveOwnerScope, resolveProactiveSources, proactiveNudgePresentation, ProactiveError } from "../omni/proactive";
 
 export const omniApi = new Hono();
 
@@ -1097,7 +1097,8 @@ omniApi.post("/hooks/nudges",async c=>{
  for(const field of ["deadline","urgentAt"])if(b[field]!==null&&(!finite(b[field])||!Number.isSafeInteger(b[field] as number)||Number(b[field])<0))return bad(c,`${field}: timestamp or null`);
  if(b.senderId!==null&&(!text(b.senderId,128)||!NOTE_ID_RE.test(b.senderId)))return bad(c,"senderId: note id or null");
  const source=await resolveNote({id:b.sourceId,fresh:true});if(!source?.path||source.tags?.includes("prism-trashed")||source.trashed)return c.json({error:"source_unavailable"},422);
- const n=upsertNudge(omniConfig.ownerEmail(),{...b,sourcePath:source.path} as unknown as Candidate);
+ const presentation=await proactiveNudgePresentation(omniConfig.ownerEmail(),b.sourceId,source.updatedAt);
+ const n=upsertNudge(omniConfig.ownerEmail(),{...b,...presentation,sourcePath:source.path} as unknown as Candidate);
  publishNotice({type:"card",id:n.id,op:"nudge"});return c.json(n,201);
 });
 omniApi.post("/hooks/nudges/operational",async c=>{

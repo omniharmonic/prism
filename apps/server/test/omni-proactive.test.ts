@@ -109,3 +109,18 @@ test("confirmed inactive sources resolve only known fresh preparation, retaining
  assert.equal(getNudge(config.ownerEmail,r.nudgeId)!.resolved,true);assert.equal(getThread(r.threadId)!.state,"done");assert.equal(getThread(r.threadId)!.unread,0);assert.equal(proactiveMessages(config.ownerEmail,r.threadId).length,1);assert.equal(await proactiveContext(config.ownerEmail,r.threadId),"");assert.equal(nudgeDeliveryDecision(config.ownerEmail,r.nudgeId),"hold");
  assert.deepEqual((await (await resolve(refs)).json() as {ignored:string[]}).ignored,["source1"]);
 });
+
+test("hourly deterministic sweep preserves fresh readable prep; changed source allows current candidate",async()=>{
+ const d=decision();const created=await post(d);const r=await created.json() as {nudgeId:string};
+ const raw={sourceId:d.sourceId,kind:d.kind,title:"raw title",summary:"raw relay preview",reasons:["raw scoring reason"],senderId:null,baseScore:.6,priority:.4,deadline:null,urgentAt:null,commitment:false};
+ const sweep=()=>omniApi.request("/hooks/nudges",{method:"POST",headers:hook,body:JSON.stringify(raw)});
+ assert.equal((await sweep()).status,201);const preserved=getNudge(config.ownerEmail,r.nudgeId)!;assert.equal(preserved.candidate.title,d.title);assert.equal(preserved.candidate.summary,d.summary);assert.equal(preserved.candidate.baseScore,.6);
+ setOmniRecordSourcesForTests({resolver:async({id})=>({id:id!,path:"mail/dana",tags:[],updatedAt:"new-revision"})});assert.equal((await sweep()).status,201);assert.equal(getNudge(config.ownerEmail,r.nudgeId)!.candidate.summary,raw.summary);
+});
+
+test("changed supporting evidence releases readable summary override",async()=>{
+ const d=decision();const created=await post({...d,evidence:[...d.evidence,{sourceId:"support1",revision}]});const r=await created.json() as {nudgeId:string};
+ setOmniRecordSourcesForTests({resolver:async({id})=>({id:id!,path:"source/path",tags:[],updatedAt:id==="support1"?"new-support":revision})});
+ const raw={sourceId:d.sourceId,kind:d.kind,title:"current source",summary:"Current unprepared candidate",reasons:[],senderId:null,baseScore:.6,priority:.4,deadline:null,urgentAt:null,commitment:false};
+ assert.equal((await omniApi.request("/hooks/nudges",{method:"POST",headers:hook,body:JSON.stringify(raw)})).status,201);assert.equal(getNudge(config.ownerEmail,r.nudgeId)!.candidate.summary,raw.summary);
+});
