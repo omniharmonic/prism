@@ -33,6 +33,12 @@ If codesign requires a Keychain prompt, the owner approves it on the Mini.
    simple Prism Client bundle should contain one main executable. If a bundle has
    additional frameworks/helpers, sign each nested code item from the inside out
    with its appropriate entitlements before signing the enclosing app.
+   For Omni, include the existing valid Developer ID provisioning profile at
+   `Omni.app/Contents/embedded.provisionprofile` **before signing**. Its app/team
+   identifiers and push entitlement must match the release entitlements. Decode
+   locally with `security cms -D -i` and check its expiration; do not publish its
+   contents. An unsigned Xcode build does not automatically embed this profile.
+   Missing profiles can pass notarization yet fail launch with AMFI -413.
 4. Sign the app with `codesign --force --timestamp --options runtime --sign
    'Developer ID Application: BENJAMIN GLEASON ROSS (83Y42N33H8)' '<app>.app'`.
    Preserve only required release entitlements. Never carry Debug
