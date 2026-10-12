@@ -89,9 +89,12 @@ test("live: structural blocks — toggle, toggle headings, callout, columns, tab
   expect(out).toMatch(/<table[\s\S]*<th[^>]*><p>Header A<\/p><\/th>/);
   expect(out).toContain('data-type="toc"');
   // …and it is what the server stores for the page.
-  await expect.poll(() => stored(id), { timeout: 20_000 }).toContain('data-count="5"');
-  const saved = await stored(id);
-  for (const marker of ['data-type="toggle"', 'data-heading-level="2"', 'data-type="callout"', "<table", 'data-type="toc"']) expect(saved).toContain(marker);
+  const markers = ['data-count="5"', 'data-type="toggle"', 'data-heading-level="2"', 'data-type="callout"', "<table", 'data-type="toc"'];
+  // Earlier structural edits can be saved while the final TOC transaction is still pending.
+  await expect.poll(async () => {
+    const saved = await stored(id);
+    return markers.filter(marker => !saved.includes(marker));
+  }, { timeout: 20_000 }).toEqual([]);
 });
 
 test("live: media — image upload, image from URL, file, PDF, audio, video", async ({ page, context }) => {
