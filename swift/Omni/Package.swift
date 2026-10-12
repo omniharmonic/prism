@@ -26,7 +26,9 @@ let package = Package(
             ]
         ),
         // The shared SwiftUI screens. The app target (App/, Omni.xcodeproj) is a thin shell.
-        .target(name: "OmniUI", dependencies: ["OmniCore", .product(name: "OmniVoiceKit", package: "OmniVoiceKit")]),
+        .target(name: "WakeAudioBridge"),
+        .target(name: "WakeAudioBridgeTestSupport", dependencies: ["WakeAudioBridge"], path: "Tests/WakeAudioBridgeTestSupport"),
+        .target(name: "OmniUI", dependencies: ["WakeAudioBridge", "OmniCore", .product(name: "OmniVoiceKit", package: "OmniVoiceKit")]),
         // A command-line walk through the same calls the app makes, against the laptop dev
         // gateway only (Scripts/smoke.sh).
         .executableTarget(
@@ -41,7 +43,7 @@ let package = Package(
         .testTarget(name: "OmniCoreTests", dependencies: ["OmniCore"]),
         // Renders the Mac screens off-screen from sample data and writes PNGs (TESTING.md).
         // No server, no window on screen.
-        .testTarget(name: "OmniUISnapshotTests", dependencies: ["OmniUI", "OmniCore"], resources: [.copy("Fixtures")]),
+        .testTarget(name: "OmniUISnapshotTests", dependencies: ["OmniUI", "OmniCore", "WakeAudioBridgeTestSupport"], resources: [.copy("Fixtures")]),
     ],
     swiftLanguageModes: [.v6]
 )

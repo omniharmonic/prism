@@ -5,6 +5,7 @@ import AppKit
 import Observation
 import OmniCore
 import SwiftUI
+import WakeAudioBridge
 
 private final class WakeAudioSink: @unchecked Sendable {
     private let lock = NSLock()
@@ -29,7 +30,8 @@ private final class WakeAudioSink: @unchecked Sendable {
     }
     public private(set) var status = "Off"
     private let owner = UUID()
-    private let engine = AVAudioEngine()
+    private let capture = WakeAudioEngineCycle()
+    private var configurationObserver: NSObjectProtocol?
     private var recognizer: SFSpeechRecognizer?
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var audioSink: WakeAudioSink?
@@ -66,12 +68,7 @@ private final class WakeAudioSink: @unchecked Sendable {
             // Recheck on return without cancelling a pending recovery cooldown.
             Task { @MainActor in self.reconcile() }
         })
-        observers.append(NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { _ in
-            Task { @MainActor in
-                guard self.recognition != nil || self.retryTask != nil else { return }
-                self.stop(); self.scheduleRecovery()
-            }
-        })
+
     }
     /// App-lifetime readiness survives closing the main window. Observation is
     /// rearmed after every change, including conversation microphone release.
@@ -149,10 +146,21 @@ private final class WakeAudioSink: @unchecked Sendable {
         let sink = WakeAudioSink(request); audioSink = sink
         let token = epoch.begin()
         let startedAt = ProcessInfo.processInfo.systemUptime
+        let (engine, captureToken) = capture.begin()
+        configurationObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.capture.accepts(captureToken) else { return }
+                self.stop(); self.scheduleRecovery(reason: "Microphone changed")
+            }
+        }
         let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
+        let format = input.inputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { stop(); scheduleRecovery(reason: "Microphone unavailable"); return }
-        input.installTap(onBus: 0, bufferSize: 1024, format: format, block: Self.audioTap(sink))
+        do {
+            try OmniWakeAudioBridge.installTap(on: input, block: Self.audioTap(sink))
+        } catch {
+            stop(); scheduleRecovery(reason: "Microphone unavailable"); return
+        }
         tapped = true
         recognition = recognizer.recognitionTask(with: request, resultHandler: Self.recognitionCallback { [weak self] wake, finished, failed in
             guard let self, self.epoch.isCurrent(token) else { return }
@@ -167,7 +175,7 @@ private final class WakeAudioSink: @unchecked Sendable {
                 }
         })
         do {
-            engine.prepare(); try engine.start(); VoiceDiagnostics.record(.wakeStarted); status = "Listening locally (experimental)"
+            try OmniWakeAudioBridge.prepareAndStart(engine); VoiceDiagnostics.record(.wakeStarted); status = "Listening locally (experimental)"
             rollover = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(50))
                 guard !Task.isCancelled, let self, self.epoch.isCurrent(token) else { return }
@@ -217,8 +225,15 @@ private final class WakeAudioSink: @unchecked Sendable {
     private func stop() {
         epoch.invalidate()
         rollover?.cancel(); rollover = nil
-        engine.stop()
-        if tapped { engine.inputNode.removeTap(onBus: 0); tapped = false }
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver)
+            self.configurationObserver = nil
+        }
+        if let engine = capture.retire() {
+            engine.stop()
+            if tapped { engine.inputNode.removeTap(onBus: 0) }
+        }
+        tapped = false
         audioSink?.close(); audioSink = nil; recognition?.cancel()
         request = nil; recognition = nil; recognizer = nil
         VoiceMicrophoneCoordinator.shared.releaseWake(owner: owner)
