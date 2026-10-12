@@ -40,7 +40,9 @@ test("header carries save state, Share, Agent, ⋯", async ({ page }, info) => {
  * control (with Back beside it) and lists the trail.
  */
 test("NP-PG-06: the breadcrumb is in the header bar — one row, overflow menu, icons, keyboard, every width", async ({ page }, info) => {
-  await page.setViewportSize({ width: 1440, height: 900 });
+  // Leave room for the expanded trail with both Linux and macOS system fonts.
+  // The responsive cases below still exercise 1440, 1024, 768 and phone widths.
+  await page.setViewportSize({ width: 1800, height: 900 });
   await page.goto("/e2e-fixtures/notion-shell.html");
   await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
   const ui = () => page.evaluate(() => { const s = (window as any).prismShellUI.getState(); return s.openTabs.find((t: any) => t.id === s.activeTabId)?.noteId as string; });
@@ -71,7 +73,7 @@ test("NP-PG-06: the breadcrumb is in the header bar — one row, overflow menu, 
   await expect(crumbs.getByRole("button", { name: "A living workspace" })).toHaveAttribute("title", "Open A living workspace");
   await expect(crumbs.getByRole("button", { name: "Decisions" })).toHaveAttribute("title", "Show Decisions in the sidebar");
   await expect(page.locator(".document-page-header .document-breadcrumb")).toHaveCount(0);
-  await page.screenshot({ path: info.outputPath("header-breadcrumb-1440.png") });
+  await page.screenshot({ path: info.outputPath("header-breadcrumb-1800.png") });
   // Keyboard only: the “…” button opens the menu of hidden ancestors; Escape closes it.
   const more = crumbs.getByRole("button", { name: "Show 1 more location" });
   await more.focus();
