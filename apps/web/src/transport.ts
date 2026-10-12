@@ -179,7 +179,10 @@ export async function serverFetch(input: string, init: RequestInit = {}): Promis
   // editor older than the stored note's schema. Only to our own server.
   if ((isOurServer(url) || url.startsWith(`${location.origin}/`)) && !headers.has("X-Prism-Editor-Schema")) headers.set("X-Prism-Editor-Schema", String(COLLAB_SCHEMA_VERSION));
   if (!isNative) {
-    return fetch(url, { ...init, headers, credentials: init.credentials ?? "include" });
+    // A share link is an explicit credential. Sending the ambient session cookie too
+    // makes the server resolve that user instead, violating the capability actor binding.
+    const capability = /^Capability\s/i.test(headers.get("Authorization") ?? "");
+    return fetch(url, { ...init, headers, credentials: capability ? "omit" : init.credentials ?? "include" });
   }
   // `sent` = OUR device token rode this request (a caller's own Authorization, e.g. a
   // capability link, is the caller's business and never touches the session).

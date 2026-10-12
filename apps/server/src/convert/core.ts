@@ -23,6 +23,7 @@ import { hasSuggestions, resolveSuggestions, type PmNode } from "../suggestions"
 import { addTaskListRule, taskListsInHtml } from "@prism/core/task-lists";
 import { marked } from "marked";
 import TurndownService from "turndown";
+import { newExportTurndown } from "../transfer/export-markdown";
 import { normalizeLineBreaks } from "./precheck";
 
 // TipTap's generate{JSON,HTML} need a DOM at call time; provide a lightweight
@@ -126,4 +127,11 @@ export function htmlToMarkdownSync(html: string): string {
   // To-do items are written `- [x]` / `- [ ]` (the reader above makes to-dos of them again).
   plainTurndown ??= addTaskListRule(new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced" }));
   return plainTurndown.turndown(rejectPendingSuggestionsSync(normalizeLineBreaks(html)));
+}
+
+let exportTurndown: ReturnType<typeof newExportTurndown> | null = null;
+/** External document export, preserving tables/tasks and excluding unaccepted suggestions. */
+export function exportHtmlToMarkdownSync(html: string): string {
+  exportTurndown ??= newExportTurndown();
+  return exportTurndown.turndown(rejectPendingSuggestionsSync(normalizeLineBreaks(html)));
 }

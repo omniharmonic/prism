@@ -15,9 +15,13 @@ import { containerTitle } from "@prism/core/pages";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
+import { exportHtmlToMarkdown } from "../convert/service";
 
 const execFileP = promisify(execFile);
 const MAXBUF = 64 * 1024 * 1024;
+// Recognized HTML elements only: Markdown autolinks (<https://…>, <person@…>)
+// also start with '<' and must never be handed to the HTML parser.
+const STORED_HTML = /^\s*<(?:p|h[1-6]|ul|ol|li|div|blockquote|pre|table|section|article|figure|figcaption|hr|br|img|details|summary|span|a|strong|em|b|i|s|u|code|html|body)(?:\s|\/?>)/i;
 
 /** Resolve the gog binary (matches the desktop's which/homebrew fallback). */
 export function resolveGog(): string {
@@ -48,10 +52,10 @@ export class GoogleDocsClient {
     return String(id);
   }
 
-  /** Replace a doc's content. Streams via stdin (frontmatter-safe). */
+  /** Replace a doc with rendered Markdown. Streams via stdin (frontmatter-safe). */
   async writeDoc(docId: string, content: string): Promise<void> {
     await new Promise<void>((resolve, reject) => {
-      const child = spawn(this.gogBin, ["docs", "write", docId, "--file", "-", "--replace", "--account", this.account], { stdio: ["pipe", "pipe", "pipe"] });
+      const child = spawn(this.gogBin, ["docs", "write", docId, "--file", "-", "--replace", "--markdown", "--account", this.account], { stdio: ["pipe", "pipe", "pipe"] });
       let err = "";
       child.stderr.on("data", (d) => (err += d.toString()));
       child.on("error", reject);
@@ -92,14 +96,19 @@ export interface GoogleDocsPushResult {
 /** Push a note to Google Docs: create the doc on first sync (title = note path
  *  leaf), then replace its content. Returns the doc id (persist as remote_id). */
 export async function pushNoteToGoogleDoc(client: Pick<GoogleDocsClient, "createDoc" | "writeDoc">, note: { path?: string | null; content: string }, remoteId?: string): Promise<GoogleDocsPushResult> {
+  // Stored notes start as Markdown; the live editor saves HTML after editing.
+  // Normalize before any remote mutation, and never fall back to raw HTML if conversion fails.
+  const content = STORED_HTML.test(note.content)
+    ? await exportHtmlToMarkdown(note.content)
+    : note.content;
   if (!remoteId) {
     // A container-named page (`…/food-chain/PROJECT`) is exported under its folder's name, not as "PROJECT".
     const title = containerTitle(note.path) ?? (note.path?.split("/").pop() || "Untitled").replace(/\.[^.]+$/, "");
     const docId = await client.createDoc(title);
-    await client.writeDoc(docId, note.content);
+    await client.writeDoc(docId, content);
     return { docId, created: true };
   }
-  await client.writeDoc(remoteId, note.content);
+  await client.writeDoc(remoteId, content);
   return { docId: remoteId, created: false };
 }
 

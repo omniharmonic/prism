@@ -26,7 +26,7 @@ export interface RealServer {
   /** Seed one more note in the fake vault (a NEW id; the shared seed is never changed). */
   add(note: { id: string; path: string; content?: string; tags?: string[]; metadata?: Record<string, unknown> }): Promise<boolean>;
   /** Mint an anyone-with-the-link capability token for one note, or for a page and its sub-pages. */
-  link(grant: { resourceType: "note" | "page"; resource: string; level: "view" | "suggest" | "edit" }): Promise<string>;
+  link(grant: { resourceType: "note" | "page"; resource: string; level: "view" | "comment" | "suggest" | "edit" }): Promise<string>;
   /** Override the server's conversion limits (null restores them) — e.g. `{ inlineMaxNodes: 0, maxNodes: 1 }` makes every page "too large to save". */
   limits(patch: Record<string, number> | null): Promise<void>;
   /** The vault answers 500 to the next `count` plain reads of a note whose path contains `pathContains` (a slow/busy vault). */
