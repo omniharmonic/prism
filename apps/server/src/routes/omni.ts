@@ -85,6 +85,8 @@ import { DIALS, type InterruptContext } from "../omni/nudge-policy";
 import { priorNudgeSources, resolveNudgeSource, nudgeWeeklyAudit, latestNudgeAudit, FRESHNESS_SUBSYSTEMS, NUDGE_KINDS, upsertNudge, listNudges, getNudge, nudgeAction, nudgeSettings, setNudgeSettings, bindNudgeThread, type Candidate } from "../omni/nudges";
 import { startNudgeDelivery } from "../omni/nudge-delivery";
 import { resolveNote } from "../omni/records";
+import { syncAttentionPreferences, AttentionPreferenceError } from "../omni/attention-preferences";
+import { parseProactiveDecision, publishProactive, proactiveMessages, proactiveContext, recordProactiveOwnerTurn, proactiveOwnerScope, resolveProactiveSources, ProactiveError } from "../omni/proactive";
 
 export const omniApi = new Hono();
 
@@ -408,6 +410,7 @@ omniApi.post("/threads", async (c) => {
   }
   const thread = ensureThread({ id, title, objective, taskNoteId, source });
   const r = startTurn(id, withNotes(prompt, taskNoteId ? [taskNoteId, ...ids] : ids), null);
+  if ("turn" in r && humanOrigin(c).human) recordProactiveOwnerTurn(omniConfig.ownerEmail(), id, r.turn.id);
   publishNotice({ type: "thread", id, op: "created" });
   return c.json({ thread: threadView(getThread(id) ?? thread, null), turnId: "turn" in r ? r.turn.id : null }, 201);
 });
@@ -449,7 +452,7 @@ omniApi.get("/threads/:id", async (c) => {
   expireApprovals();
   return c.json({
     thread: { ...threadView(getThread(id), session), ...(nonmarking ? { lastSeq: readSequence } : {}) },
-    messages: messages.map(messageView).filter(Boolean),
+    messages: [...messages.map(messageView).filter(Boolean), ...proactiveMessages(omniConfig.ownerEmail(), id)].sort((a,b)=>String(a?.at??"").localeCompare(String(b?.at??""))),
     cards: threadCards(id),
     approvals: threadApprovals(id).map(approvalView),
     activeTurnId: activeTurn(id)?.id ?? null,
@@ -531,7 +534,10 @@ omniApi.post("/threads/:id/turns", async (c) => {
       return hermesFailure(c, e);
     }
   }
-  const r = startTurn(id, withNotes(text, ids), key);
+  const preparation = await proactiveContext(omniConfig.ownerEmail(), id);
+  const boundSource = getThread(id)?.taskNoteId;
+  const r = startTurn(id, withNotes(text, boundSource ? [...new Set([boundSource, ...ids])] : ids) + preparation, key);
+  if ("turn" in r && humanOrigin(c).human) recordProactiveOwnerTurn(omniConfig.ownerEmail(), id, r.turn.id);
   if ("active" in r) return c.json({ error: "conflict", detail: "a turn is already running", turnId: r.active.id }, 409);
   if ("replay" in r) {
     c.header("Idempotent-Replayed", "true");
@@ -1045,6 +1051,30 @@ omniApi.post("/hooks/turn", async (c) => {
 });
 
 
+omniApi.post("/hooks/proactive/resolve", async c => {
+ const b=await jsonBody(c);if(!b)return bad(c,"JSON object required");
+ try{return c.json(await resolveProactiveSources(omniConfig.ownerEmail(),b.sources));}
+ catch(e){if(e instanceof ProactiveError)return c.json({error:e.code},e.status);throw e;}
+});
+
+omniApi.post("/hooks/proactive/preferences", async c => {
+ const b=await jsonBody(c);if(!b)return bad(c,"JSON object required");
+ try{return c.json(syncAttentionPreferences(omniConfig.ownerEmail(),b.version,b.preferences));}
+ catch(e){if(e instanceof AttentionPreferenceError)return c.json({error:e.code},e.status);throw e;}
+});
+
+omniApi.post("/hooks/proactive/owner-intent", async c => {
+ const b=await jsonBody(c);if(!b||typeof b.threadId!=="string"||!SESSION_ID_RE.test(b.threadId)||typeof b.sessionId!=="string"||!SESSION_ID_RE.test(b.sessionId)||!b.change||typeof b.change!=="object"||Array.isArray(b.change))return bad(c,"owner turn scope required");
+ const scope=proactiveOwnerScope(omniConfig.ownerEmail(),b.threadId,b.sessionId);
+ return scope?c.json(scope):c.json({authorized:false,error:"current_owner_turn_required"},403);
+});
+
+omniApi.post("/hooks/proactive", async c => {
+ const body=await jsonBody(c);if(!body)return bad(c,"JSON object required");
+ try {const decision=parseProactiveDecision(body);const result=await publishProactive(omniConfig.ownerEmail(),decision);return c.json(result,result.replayed?200:201);}
+ catch(e){if(e instanceof ProactiveError)return c.json({error:e.code},e.status);return hermesFailure(c,e);}
+});
+
 // ── M3 nudges: hooks only propose, app presses only start private work ─────────
 omniApi.get("/nudges", c => c.json({nudges:listNudges(omniConfig.ownerEmail(),c.req.query("later")==="1")}));
 omniApi.get("/nudges/settings", c => { const {dial,killed}=nudgeSettings(omniConfig.ownerEmail());return c.json({dial,killed}); });
@@ -1134,6 +1164,7 @@ omniApi.post("/nudges/:id/start",async c=>{
   const instruction=b.action==="draft-reply"?"Read the source and prepare a reply draft for my review. Propose it with omni_propose; do not send, publish or execute anything.":"Read the source and help me start working on this item. Explain the next useful step. Do not send, publish or execute anything.";
   const prompt=operational?`Investigate this operational source privately: ${JSON.stringify(operational)}. ${n.candidate.summary} Check current status before proposing a fix. Do not send, publish, retry or execute anything without my review.`:withNotes(instruction,[n.candidate.sourceId]);
   const r=startTurn(threadId,prompt,`nudge-${sha256(`${id}:${b.action}:${key}`)}`);
+  if("turn" in r && humanOrigin(c).human)recordProactiveOwnerTurn(owner,threadId,r.turn.id);
   publishNotice({type:"thread",id:threadId,op:"nudge-started"});
   return c.json({threadId,turnId:"turn" in r?r.turn.id:"replay" in r?r.replay.id:r.active.id});
  })();nudgeStarts.set(id,work);try{return await work;}finally{nudgeStarts.delete(id);}

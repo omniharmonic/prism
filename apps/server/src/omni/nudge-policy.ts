@@ -1,3 +1,4 @@
+import type { AttentionPreferences } from "./attention-preferences";
 /** Pure M3 interrupt policy. Unknown calendar holds; unknown Focus uses standard OS-controlled notifications. */
 export const DIALS = ["off", "conservative", "balanced", "eager"] as const;
 export type Dial = typeof DIALS[number];
@@ -20,17 +21,23 @@ export function consequenceScore(base: number, deadline: number | null, commitme
   const proximity = deadline === null ? 0 : deadline <= now ? .25 : deadline - now <= 86_400_000 ? .15 : deadline - now <= 7 * 86_400_000 ? .05 : 0;
   return Math.max(0, Math.min(1, base + proximity + (commitment ? .1 : 0) - penalty));
 }
-export function interruptDecision(n: NudgePolicyInput, context: InterruptContext | null, dial: Dial, killed: boolean, pushesLastHour: number, now: number): "now" | "digest" | "hold" | "later" {
+export function interruptDecision(n: NudgePolicyInput, context: InterruptContext | null, dial: Dial, killed: boolean, pushesLastHour: number, now: number, preferences:AttentionPreferences={}): "now" | "digest" | "hold" | "later" {
   if (n.dismissed || n.surfaces >= MAX_SURFACES) return "later";
   if (killed || dial === "off" || (n.snoozedUntil ?? 0) > now || n.score < BARS[dial] && n.priority < .6) return "hold";
   if (!context || context.observedAt > now || now - context.observedAt > CONTEXT_TTL) return "hold";
   if (context.focus === "work" && now - (context.focusObservedAt ?? context.observedAt) <= CONTEXT_TTL) return "hold";
   if (pushesLastHour >= CAPS[dial] || n.lastSurfaceAt !== null && now - n.lastSurfaceAt < 4 * 3_600_000) return "hold";
   const clock = localClock(now);
+  if(preferences.deadline_only && n.deadline===null)return "hold";
+  if(preferences.quiet_hours){
+   const [start,end]=preferences.quiet_hours.split("-").map(t=>{const [h,m]=t.split(":").map(Number);return h!*60+m!;});
+   const minute=clock.hour*60+clock.minute;
+   if(start===end || start!<end! && minute>=start! && minute<end! || start!>end! && (minute>=start! || minute<end!))return "hold";
+  }
   if(n.businessHoursOnly&&(["Sat","Sun"].includes(clock.weekday)||clock.hour<8||clock.hour>=18))return "hold";
   const recentUrgent = n.priority >= .7 && n.urgentAt !== null && n.urgentAt <= now && now - n.urgentAt <= 3_600_000;
   const deadlineToday = n.deadline !== null && localClock(n.deadline).date === clock.date;
-  if (clock.hour >= 21 || clock.hour < 7) return recentUrgent && !context.inMeeting ? "now" : "hold";
+  if (!preferences.quiet_hours && (clock.hour >= 21 || clock.hour < 7)) return recentUrgent && !context.inMeeting ? "now" : "hold";
   if (context.inMeeting) return n.score >= .85 && deadlineToday ? "now" : "hold";
   if (n.score >= .85 && (deadlineToday || recentUrgent)) return "now";
   // A five-minute window tolerates timer jitter; the persisted owner/date/hour slot claims one grouped digest.
