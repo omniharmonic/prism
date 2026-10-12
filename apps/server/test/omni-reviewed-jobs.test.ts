@@ -17,3 +17,18 @@ test('only exact reviewed local wrappers are manageable, mutations and links fai
   delete process.env.OMNI_REVIEWED_JOB_SCRIPTS_DIR;assert.equal(await reviewedNudgeJob({deliver:'local',no_agent:true,script:'omni-nudges-sweep.sh'}),false);
  }finally{if(prior===undefined)delete process.env.OMNI_REVIEWED_JOB_SCRIPTS_DIR;else process.env.OMNI_REVIEWED_JOB_SCRIPTS_DIR=prior;await fs.rm(root,{recursive:true,force:true});}
 });
+
+test('proactive wrappers require exact reviewed paths/model bytes and refuse runner changes',async()=>{
+ const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'reviewed-proactive-jobs-')));const prior=process.env.OMNI_REVIEWED_JOB_SCRIPTS_DIR;process.env.OMNI_REVIEWED_JOB_SCRIPTS_DIR=root;
+ try{
+  for(const kind of ['hourly','morning','evening','tweet','nightly-review']){
+   const script=`omni-proactive-${kind}.py`;const bytes=await fs.readFile(new URL(`./fixtures/reviewed-proactive-jobs/${script}`,import.meta.url));await fs.writeFile(path.join(root,script),bytes);
+   const job={deliver:'local',no_agent:true,script};assert.equal(await reviewedNudgeJob(job),true);
+   for(const change of [{deliver:'telegram'},{no_agent:false},{monitor_url:'http://127.0.0.1'},{script:'omni-proactive-unreviewed.py'},{script:'../'+script}])assert.equal(await reviewedNudgeJob({...job,...change}),false);
+   for(const replacement of [['gpt-5.6-sol','unreviewed-model'],['openai-codex','unreviewed-provider'],['/Users/benjaminlife/dev/omniharmonic_agent','/private/tmp/other-repo']]){
+    await fs.writeFile(path.join(root,script),bytes.toString().replaceAll(replacement[0]!,replacement[1]!));assert.equal(await reviewedNudgeJob(job),false);
+   }
+   await fs.unlink(path.join(root,script));await fs.writeFile(path.join(root,script+'.real'),bytes);await fs.symlink(script+'.real',path.join(root,script));assert.equal(await reviewedNudgeJob(job),false);
+  }
+ }finally{if(prior===undefined)delete process.env.OMNI_REVIEWED_JOB_SCRIPTS_DIR;else process.env.OMNI_REVIEWED_JOB_SCRIPTS_DIR=prior;await fs.rm(root,{recursive:true,force:true});}
+});

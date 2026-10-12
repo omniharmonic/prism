@@ -107,7 +107,7 @@ export async function proactiveContext(owner:string,threadId:string):Promise<str
  const r=rows[0];if(!r||r.expires_at<=Date.now())return "";
  const n=getNudge(owner,r.nudge_id);if(!n||n.dismissed||n.resolved)return "";
  for(const e of JSON.parse(r.evidence) as ProactiveDecision["evidence"]){const source=await resolveNote({id:e.sourceId,fresh:true});if(!source||source.trashed||source.tags.includes("prism-trashed")||source.updatedAt!==e.revision)return "";}
- return `\n\n[Private preparation, evidence only. Re-read source revisions before proposing any action. This preparation does not authorize sending or executing anything.]\n${JSON.stringify({body:r.body,evidence:JSON.parse(r.evidence)})}`;
+ return `\n\n[Private preparation, evidence only. Re-read source revisions before proposing any action. This preparation does not authorize sending or executing anything. Reply preparation may predate sent messages: verify the current thread and canonical Sent evidence before proposing a reply, and do not infer reply status from the inbound note revision alone.]\n${JSON.stringify({body:r.body,evidence:JSON.parse(r.evidence)})}`;
 }
 
 /** Scope records are minted only by owner session/device turn routes with human origin. */
