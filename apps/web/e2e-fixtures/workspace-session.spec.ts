@@ -91,9 +91,8 @@ test("phone reload restores the document without covering it with an agent drawe
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
 });
 
-// A restore lands whenever the server answers. On a slow connection the reader has already
-// opened the Browse drawer by then; the restored tab must not shut it under their finger
-// (only a page a person opens dismisses the drawer).
+// The startup gate now settles restored tabs before exposing navigation. Once ready,
+// opening a page still dismisses the drawer.
 test("phone: startup settles restored tabs before navigation becomes interactive", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await seed(page);

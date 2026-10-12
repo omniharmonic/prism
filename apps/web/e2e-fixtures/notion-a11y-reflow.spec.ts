@@ -44,3 +44,30 @@ test("the reflow measures catch overflow, off-screen controls and clipped text",
   expect(r.offscreen.join()).toContain("Far");
   expect((await textSpacingClips(page)).join()).toContain("Two words here");
 });
+
+/** Chromium keeps geometry for closed disclosure children; only painted controls count. */
+test("closed disclosure content is excluded, but opening it exposes overlap", async ({ page }) => {
+  await page.setContent(`<details><summary>Options</summary><button style="width:100px;height:44px">Hidden action</button></details>
+    <button style="position:absolute;top:26px;left:0;width:300px;height:80px;background:white">Overlay</button>`);
+  expect((await reflow(page)).overlap).toEqual([]);
+  await page.locator("details").evaluate(el => el.setAttribute("open", ""));
+  expect((await reflow(page)).overlap.join()).toContain("Hidden action");
+});
+
+test("phone settings rail keeps every section reachable by scrolling without page overflow", async ({ page }) => {
+  await openSurface(page, SURFACES.find(s => s.id === "settings-appearance")!, "phone", "light");
+  await page.setViewportSize({ width: 320, height: 568 });
+  const rail = page.getByRole("navigation", { name: "Settings sections" });
+  const buttons = rail.getByRole("button");
+  await buttons.first().focus();
+  for (let i = 0; i < await buttons.count(); i++) {
+    await buttons.nth(i).scrollIntoViewIfNeeded();
+    await buttons.nth(i).click();
+    await expect(buttons.nth(i)).toHaveAttribute("aria-pressed", "true");
+    await expect.poll(async () => {
+      const r = (await rail.boundingBox())!, b = (await buttons.nth(i).boundingBox())!;
+      return b.x >= r.x - 1 && b.x + b.width <= r.x + r.width + 1;
+    }).toBe(true);
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});

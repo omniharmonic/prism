@@ -20,6 +20,7 @@ Installed `/Applications/Prism Client.app` on laptop and Mini. Both retain the e
 `~/release-artifacts/prism-client-v2026.10.11-5/prism-client/notarized.zip`.
 Previous bundles are preserved at
 `~/release-artifacts/backups/prism-before-build7-20261011/Prism Client.app` on both Macs.
+Both installed executables hash to `a5796bfe74430a38ccd3c482b618cab0401a961b259ee6ab2230ffc5929e15ae`.
 The laptop displayed Saved before quitting; the Mini app was not running before replacement.
 
 Laptop interactive verification: startup completed, existing sign-in and document tabs restored,
@@ -31,3 +32,5 @@ interactive Mini acceptance remains an owner check. Preferences, vault data and 
 The release's original browser CI did **not** pass: 128 failed, 2492 passed, 14 skipped,
 10 not run. Node checks and Rust checks passed. Browser fixture and assertion repairs are being
 verified separately on current main; this receipt does not claim that unfinished check is green.
+
+Concurrent Omni deployment advanced the server checkout to `7234e508`; comparison against the accepted tag shows no changes in `apps/web`, `packages/core` or `apps/client`. Public health remained `{ "ok": true, "vault": true }`.

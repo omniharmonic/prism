@@ -218,9 +218,10 @@ export async function textSpacingClips(page: Page): Promise<string[]> {
   const scan = () => page.evaluate((NOT_OURS) => {
     const out: Record<string, [number, number]> = {};
     let n = 0;
+    const closedDetails = Array.from(document.querySelectorAll("details:not([open])"));
     for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
       if (el.closest(NOT_OURS) || !el.getClientRects().length) continue;
-      if (Array.from(document.querySelectorAll("details:not([open])")).some(details => details.contains(el) && details !== el && !details.querySelector(":scope > summary")?.contains(el))) continue;
+      if (closedDetails.some(details => details.contains(el) && details !== el && !details.querySelector(":scope > summary")?.contains(el))) continue;
       if (!Array.from(el.childNodes).some((c) => c.nodeType === 3 && c.textContent!.trim())) continue;
       // The nearest box that clips this text.
       let clip: HTMLElement | null = el;
