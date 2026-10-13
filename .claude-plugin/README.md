@@ -9,9 +9,10 @@ and wires the Parachute vault MCP server.
   `reconcile`, `schema-bridge`, `wikilinks`.
 - **Setup skills** (`.claude/skills/`): `prism-setup` (orchestrator) +
   `prism-setup-vault`, `prism-setup-server`, `prism-setup-schema`,
-  `prism-setup-desktop`, `prism-setup-integrations` — walk a user through
-  setting up every part of a Prism (vault, server, schemas, desktop config,
-  and the Matrix/Google/Notion/Anthropic/transcript integrations).
+  `prism-setup-agent`, `prism-setup-reach`, `prism-setup-integrations` — set up
+  a Prism step by step. The steps are the ones the app's setup checklist shows
+  (Workspace settings → Server); each step's "Have your agent do it" prompt
+  names the step id the orchestrator maps to a skill.
 - **MCP server**: `parachute-vault` — the vault-scoped HTTP MCP at
   `${PARACHUTE_URL}/vault/${PARACHUTE_VAULT}/mcp`, Bearer-authed with the
   hub-issued JWT (`${PARACHUTE_TOKEN}`).
