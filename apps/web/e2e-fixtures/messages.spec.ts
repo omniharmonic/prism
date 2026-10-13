@@ -510,3 +510,26 @@ test("explicit Cc survives close and changes send identity without losing the bo
   const retried = await page.evaluate(() => (window as any).prismMessagesFixture.replyCalls);
   expect(retried[2].key).toBe(retried[1].key);
 });
+
+test("an opened email shows its whole saved conversation, oldest first, with the open message marked", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/e2e-fixtures/messages.html?email&conversation");
+  const messages = page.locator(".prism-email-message");
+  await expect(messages).toHaveCount(3);
+  await expect(messages.nth(0)).toContainText("The message that started it.");
+  await expect(messages.nth(1)).toContainText("First line");
+  await expect(messages.nth(2)).toContainText("The third message, sent the next day.");
+  // The one that is open, and the only one marked.
+  await expect(messages.nth(1)).toHaveAttribute("aria-current", "true");
+  await expect(page.locator('.prism-email-message[aria-current="true"]')).toHaveCount(1);
+  // A note whose id merely looks alike belongs to another conversation.
+  await expect(page.getByText("Another conversation entirely.")).toHaveCount(0);
+  await expect(page.locator(".prism-email-source")).toContainText("3 messages");
+});
+
+test("an email with no other saved message is shown as before", async ({ page }) => {
+  await page.goto("/e2e-fixtures/messages.html?email");
+  await expect(page.locator(".prism-email-message")).toHaveCount(1);
+  await expect(page.locator('.prism-email-message[aria-current="true"]')).toHaveCount(0);
+  await expect(page.locator(".prism-email-source")).not.toContainText("messages");
+});

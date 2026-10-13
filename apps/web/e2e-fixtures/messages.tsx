@@ -47,6 +47,22 @@ if (location.search.includes("email-visual")) {
   emailNote.content = "# Saturday workshop agenda\n\n**From:** Morgan <morgan@example.test>\n**To:** Alex <alex@example.test>\n**Date:** 2026-10-01 10:00\n**Attachments:** Agenda.pdf, workshop notes.txt\n\n---\n\nHi Alex,\n\nI’ve attached the updated agenda. Could you confirm which section you’ll facilitate?\n\nThanks,\nMorgan\n\nOn Tuesday, Alex wrote:\n> Let’s use the first half hour for introductions.\n> We can collect questions before the workshop.\n> I’ll share my notes once they’re ready.";
   emailNote.metadata!.subject = "Saturday workshop agenda";
 }
+// `?conversation`: the open email is the second of three saved messages of one conversation; a
+// fourth note has a look-alike id and is not part of it.
+const conversation: Note[] = [];
+if (location.search.includes("conversation")) {
+  const part = (id: string, from: string, date: string, body: string, threadId = "<root@example.test>"): Note => ({
+    id, path: `Email/${id}`, tags: ["email"], createdAt: "2026-10-01", updatedAt: "2026-10-01",
+    content: `# A useful conversation\n\n**From:** ${from}\n**To:** Alex <alex@example.test>\n**Date:** ${date}\n\n---\n\n${body}`,
+    metadata: { type: "email", subject: "A useful conversation", from, date, source: "proton-bridge", threadId },
+  });
+  Object.assign(emailNote.metadata!, { threadId: "<root@example.test>", date: "2026-10-01 10:00" });
+  conversation.push(
+    part("email-later", "Riley <riley@example.test>", "2026-10-02 09:00", "The third message, sent the next day."),
+    part("email-first", "Alex <alex@example.test>", "2026-09-30 16:00", "The message that started it."),
+    part("email-other", "Sam <sam@example.test>", "2026-10-01 12:00", "Another conversation entirely.", "<ROOT@example.test>"),
+  );
+}
 if (emailNote.metadata) {
   if (location.search.includes("noaccount")) delete emailNote.metadata.account;
   if (location.search.includes("nomessageid")) delete emailNote.metadata.messageId;
@@ -74,6 +90,16 @@ function Fixture() {
   Object.assign(controls, { switchActor: () => setActor("morgan") });
   const vault = useMemo(() => ({
     scope: () => scope,
+    ...(conversation.length ? {
+      queryNotes: async (spec: { filter?: { conditions: Array<{ key: string; value?: unknown }> } }) => {
+        const wanted = String(spec.filter?.conditions[0]?.value ?? "").toLowerCase();
+        // Lenient, as the real engine compares: the look-alike id comes back too.
+        const rows = [emailNote, ...conversation].filter((n) => String(n.metadata?.threadId ?? "").toLowerCase() === wanted)
+          .map((n) => ({ id: n.id, path: n.path ?? null, tags: n.tags ?? [], createdAt: n.createdAt, updatedAt: n.updatedAt ?? null, metadata: { threadId: n.metadata?.threadId, date: n.metadata?.date } }));
+        return { rows, next: null, total: rows.length, limited: false };
+      },
+      getNote: async (id: string) => [emailNote, ...conversation].find((n) => n.id === id)!,
+    } : {}),
     changeTags: async (_id: string, change: { add: string[]; remove: string[] }) => {
       emailNote.tags = [...(emailNote.tags ?? []).filter(tag => !change.remove.includes(tag)), ...change.add];
     },

@@ -32,6 +32,7 @@ import {
 import { useIsWeb } from "../../data/Platform";
 import { MessageComposer } from "../comms/MessageComposer";
 import { parseEmailContent } from "../../lib/messages/emailThread";
+import { useEmailThread, type ThreadMessage } from "../../lib/messages/useEmailThread";
 
 export default function EmailRenderer({
   note,
@@ -122,6 +123,9 @@ function VaultEmailView({
     date,
     typeof meta?.source === "string" ? meta.source : undefined,
   );
+  // The other saved messages of the same conversation, when there are any (`useEmailThread`).
+  const thread = useEmailThread(note, typeof meta?.threadId === "string" ? meta.threadId : "", meta?.source === "proton-bridge");
+  const shown: ThreadMessage[] = thread ?? messages.map((message) => ({ ...message, noteId: note.id, current: true }));
   const isWeb = useIsWeb();
   const canReply = !readOnly && (!!live || (!isWeb && !!account));
   // Why the mailbox actions are not on offer — shown beside them, in the same
@@ -174,7 +178,7 @@ function VaultEmailView({
             <p className="prism-email-source">
               <Mail size={13} aria-hidden="true" />
               {meta?.source === "proton-bridge" ? "Proton Bridge" : "Email"}
-              {messageCount > 1 && <span> · {messageCount} messages</span>}
+              {(thread?.length ?? messageCount) > 1 && <span> · {thread?.length ?? messageCount} messages</span>}
             </p>
             <EmailThreadStatus note={note} readOnly={readOnly} />
             <div className="flex flex-wrap gap-2 mt-2">
@@ -267,8 +271,8 @@ function VaultEmailView({
 
           {/* Message bodies */}
           <div className="prism-email-messages">
-            {messages.length > 0 ? (
-              messages.map((msg, i) => {
+            {shown.length > 0 ? (
+              shown.map((msg, i) => {
                 const parts = splitEmailQuote(msg.body);
                 const attachments = msg.details.filter((detail) =>
                   detail.startsWith("Attachments: "),
@@ -278,8 +282,10 @@ function VaultEmailView({
                 );
                 return (
                   <article
-                    key={i}
+                    key={`${msg.noteId}:${i}`}
                     className="prism-email-message"
+                    data-current={thread && msg.current ? "true" : undefined}
+                    aria-current={thread && msg.current ? "true" : undefined}
                     aria-label={`Email from ${msg.from || "unknown sender"}`}
                   >
                     <header className="prism-email-author">
