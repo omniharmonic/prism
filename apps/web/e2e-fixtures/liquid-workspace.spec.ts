@@ -82,7 +82,7 @@ test('phone controls stay compact with full touch targets and adjacent attachmen
   expect((await permission.boundingBox())!.height).toBe(44);
   expect(await permission.evaluate(el => getComputedStyle(el.parentElement!, '::before').height)).toBe('32px');
   const attach = await page.getByRole('button', { name: 'Attach notes', exact: true }).boundingBox();
-  const capture = await page.locator('summary').filter({ hasText: 'Capture text' }).boundingBox();
+  const capture = await page.getByRole('button', { name: 'Attach files', exact: true }).boundingBox();
   expect(Math.abs(attach!.y + attach!.height / 2 - capture!.y - capture!.height / 2)).toBeLessThan(1);
   await page.goto('/e2e-fixtures/inbox.html?resolved&email-status=owner');
   await page.locator('.prism-message-row').filter({ hasText: 'Saturday workshop agenda' }).click();

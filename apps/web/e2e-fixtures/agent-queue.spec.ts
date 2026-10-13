@@ -151,8 +151,7 @@ test('queued context previews retain the instruction and recheck revoked source 
  const composer=page.getByRole('textbox',{name:'Message the agent'});
  await composer.fill('First instruction');await page.getByRole('button',{name:'Send',exact:true}).click();
  await expect(page.getByRole('button',{name:'Queue follow-up'})).toBeVisible();
- await page.getByText('Capture text',{exact:true}).click();
- await page.getByRole('button',{name:'Attach document snapshot',exact:true}).click();
+ await page.getByRole('button',{name:'Attach this page',exact:true}).click();
  await composer.fill('Discuss captured context');await page.getByRole('button',{name:'Queue follow-up'}).click();
  await page.getByRole('region',{name:'Queued follow-ups'}).getByRole('button',{name:'Edit',exact:true}).click();
  const editor=page.getByRole('dialog',{name:'Edit queued message'});

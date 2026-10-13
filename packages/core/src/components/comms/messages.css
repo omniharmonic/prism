@@ -668,9 +668,16 @@
 .prism-agent-draft-actions button.prism-agent-draft-primary { background: var(--action-bg); color: var(--action-fg); border-color: transparent; }
 .prism-agent-draft-dialog button:disabled { opacity: .45; cursor: not-allowed; }
 .prism-agent-draft-dialog [role=alert], .prism-agent-draft-dialog [role=status] { margin-top: 12px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
-.prism-agent-draft-output { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--glass-border); }
+.prism-agent-draft-output, .prism-agent-draft-live { margin-bottom: 22px; padding-bottom: 20px; border-bottom: 1px solid var(--glass-border); }
+.prism-agent-draft-live > [role=status] { margin-top: 0; color: var(--text-secondary); }
+.prism-agent-draft-text[data-live] { color: var(--text-secondary); }
+.prism-agent-draft-text[data-live]::after { content: ""; display: inline-block; width: 7px; height: 1em; margin-left: 2px; vertical-align: text-bottom; background: currentColor; opacity: .55; animation: prism-fade-in .8s ease-in-out infinite alternate; }
+.prism-agent-draft-text[data-markdown] { white-space: normal; }
+@media (prefers-reduced-motion: reduce) { .prism-agent-draft-text[data-live]::after { animation: none; } }
+:root.reduce-motion .prism-agent-draft-text[data-live]::after { animation: none; }
 .prism-agent-draft-output h3 { font-size: 12px; font-weight: 600; color: var(--text-muted); }
-.prism-agent-draft-text { margin-top: 12px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; font-size: 14px; }
+.prism-agent-draft-text { margin-top: 10px; padding: 12px 14px; border: 1px solid var(--glass-border); border-radius: 10px; background: var(--glass); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; font-size: 14px; }
+.prism-agent-draft-note { margin-top: 10px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-secondary); font-size: 12.5px; line-height: 1.5; }
 .prism-agent-draft-confirm { margin-top: 14px; padding: 12px; border: 1px solid var(--glass-border); border-radius: 10px; font-size: 13px; }
 @media (max-width: 480px) { .prism-agent-draft-dialog { padding: 16px; } }
 

@@ -1,9 +1,10 @@
 import { test, expect } from "@playwright/test";
 const open = async (page: any) => {
   await page.goto("/e2e-fixtures/agent.html?context&snapshots");
-  await page.getByText("Capture text", { exact: true }).click();
+  // The page in the fixture is open, so its capture is offered beside "Attach files" (no menu to open first).
+  await expect(page.getByRole("button", { name: "Attach files", exact: true })).toBeEnabled();
   await expect(
-    page.getByRole("button", { name: "Attach document snapshot", exact: true }),
+    page.getByRole("button", { name: "Attach this page", exact: true }),
   ).toBeEnabled();
 };
 test("selected unsaved text is previewable, survives reload and remains separate from the user prompt", async ({
@@ -51,7 +52,7 @@ test("failed snapshot sends retain the payload and source access is checked befo
 }) => {
   await open(page);
   await page
-    .getByRole("button", { name: "Attach document snapshot", exact: true })
+    .getByRole("button", { name: "Attach this page", exact: true })
     .click();
   await page.evaluate(() => {
     const c = (window as any).prismAgentFixture;
@@ -125,4 +126,18 @@ test("text file snapshots disclose truncation, stay inert and fit the mobile com
     "Choose a text or code file",
   );
   await page.screenshot({ path: "test-results/agent-snapshots-mobile.png" });
+});
+
+test("attachments are two plain actions; what the page offers appears only while it offers it", async ({ page }) => {
+  await page.goto("/e2e-fixtures/agent.html?context&snapshots");
+  await expect(page.getByRole("button", { name: "Attach notes", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Attach files", exact: true })).toBeEnabled();
+  await expect(page.getByText("Capture text")).toHaveCount(0);
+  // Nothing is selected yet: no greyed "Attach selection" waiting to be explained.
+  await expect(page.getByRole("button", { name: "Attach selection", exact: true })).toHaveCount(0);
+  const editor = page.getByRole("region", { name: "Working document" }).locator("[contenteditable=true]");
+  await editor.fill("A passage to hand over");
+  await editor.press("ControlOrMeta+a");
+  await expect(page.getByRole("button", { name: "Attach selection", exact: true })).toBeEnabled();
+  for (const control of await page.getByTestId("agent-snapshot-attachments").getByRole("button").all()) expect(await control.isDisabled()).toBe(false);
 });
