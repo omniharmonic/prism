@@ -14,16 +14,17 @@ const e = divide(left, d);
 const f = divide(right, e);
 const g = divide(d, f);
 const h = divide(e, g);
-export function PrismMark({ monochrome = false, decorative = false, compact: compactOverride, ...props }: React.SVGProps<SVGSVGElement> & { monochrome?: boolean; decorative?: boolean; compact?: boolean }) {
+/** `animated`: the mark draws and undraws itself in a loop (`.prism-mark-loop`, shell.css) — for a screen that is waiting. */
+export function PrismMark({ monochrome = false, decorative = false, compact: compactOverride, animated = false, className, ...props }: React.SVGProps<SVGSVGElement> & { monochrome?: boolean; decorative?: boolean; compact?: boolean; animated?: boolean }) {
   const compact = compactOverride ?? (typeof props.width === "number" && props.width <= 32);
   const colors = monochrome ? ["currentColor", "currentColor", "currentColor"] : ["#92a9d6", "#7c96ce", "#b4a4ce"];
   return <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 34" width={28} height={30}
     role={decorative ? undefined : "img"} aria-label={decorative ? undefined : "Prism — many sources, one workspace"}
-    aria-hidden={decorative || undefined} fill="none" {...props}>
+    aria-hidden={decorative || undefined} fill="none" className={[animated ? "prism-mark-loop" : "", className ?? ""].join(" ").trim() || undefined} {...props}>
     <g strokeWidth={compact ? 1.6 : 1.15} strokeLinejoin="round" strokeLinecap="round">
-      <path d={`M${point(apex)} ${point(right)} ${point(left)}Z`} stroke={colors[0]} />
-      <path d={`M${point(left)} ${point(d)}M${point(right)} ${point(e)}`} stroke={colors[1]} />
-      <path d={`M${point(d)} ${point(f)}M${point(e)} ${point(g)}M${point(f)} ${point(h)}`} stroke={colors[2]} />
+      <path pathLength={animated ? 1 : undefined} d={`M${point(apex)} ${point(right)} ${point(left)}Z`} stroke={colors[0]} />
+      <path pathLength={animated ? 1 : undefined} d={`M${point(left)} ${point(d)}M${point(right)} ${point(e)}`} stroke={colors[1]} />
+      <path pathLength={animated ? 1 : undefined} d={`M${point(d)} ${point(f)}M${point(e)} ${point(g)}M${point(f)} ${point(h)}`} stroke={colors[2]} />
     </g>
   </svg>;
 }

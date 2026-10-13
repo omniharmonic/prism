@@ -282,7 +282,7 @@ function MobileNavigation({ open, dragDistance, drawerRef, onReady, restoring }:
       <RetainedNavigation />
     </MobileDrawer>
     {!prepared && createPortal(<div className="workspace-startup" role="status" aria-label="Preparing workspace">
-      <PrismMark decorative />
+      <PrismMark decorative animated={!tree.isError} />
       <p>{tree.isError ? "Your workspace couldn’t be loaded." : "Opening your workspace…"}</p>
       {(tree.isError || slow || tree.fetchStatus === "paused") && <div className="workspace-startup-actions">
         <p>Check your connection, or continue while it reconnects.</p>

@@ -32,13 +32,26 @@
       .prism-boot > span { animation: prism-boot-in .4s ease-out .6s both; }
       @keyframes prism-boot-in { from { opacity: 0; } }
       @media (prefers-reduced-motion: reduce) { .prism-boot, .prism-boot > span { animation: none; } }
+      /* The mark forming and unforming, for a moment of waiting: the outline is drawn, then the two
+         golden-ratio cuts, then the three inside them; it rests whole, and each line runs on out the
+         way it came. One 3.6 s cycle that starts and ends on nothing, so it loops without a seam.
+         Each path is measured as length 1 (`pathLength`), so the same numbers fit every line. */
+      .prism-mark-loop path { stroke-dasharray: 1 1.2; stroke-dashoffset: 1.04; animation: 3.6s cubic-bezier(.45, 0, .2, 1) infinite both; }
+      .prism-mark-loop path:nth-child(1) { animation-name: prism-mark-outline; }
+      .prism-mark-loop path:nth-child(2) { animation-name: prism-mark-cuts; }
+      .prism-mark-loop path:nth-child(3) { animation-name: prism-mark-inner; }
+      @keyframes prism-mark-outline { 0% { stroke-dashoffset: 1.04; } 30%, 60% { stroke-dashoffset: 0; } 90%, 100% { stroke-dashoffset: -1.04; } }
+      @keyframes prism-mark-cuts { 0%, 14% { stroke-dashoffset: 1.04; } 40%, 64% { stroke-dashoffset: 0; } 92%, 100% { stroke-dashoffset: -1.04; } }
+      @keyframes prism-mark-inner { 0%, 26% { stroke-dashoffset: 1.04; } 50%, 68% { stroke-dashoffset: 0; } 94%, 100% { stroke-dashoffset: -1.04; } }
+      /* Reduced motion: the whole mark, at rest. */
+      @media (prefers-reduced-motion: reduce) { .prism-mark-loop path { animation: none; stroke-dasharray: none; stroke-dashoffset: 0; } }
     </style>
   </head>
 
   <body>
     <!-- The first frame, before any script has run: the mark and one quiet line, centred, in the
          theme's own colours (the same mark as PrismMark; the paths are its output). -->
-    <div id="root"><div class="prism-boot" role="status"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 34" width="44" height="47" fill="none" aria-hidden="true"><g stroke-width="1.15" stroke-linejoin="round" stroke-linecap="round"><path d="M16 3 30 29 2 29Z" stroke="#92a9d6"/><path d="M2 29 24.6525 19.0689M30 29 16 22.8622" stroke="#7c96ce"/><path d="M24.6525 19.0689 21.3475 25.2067M16 22.8622 22.6099 22.8622M21.3475 25.2067 20.0851 22.8622" stroke="#b4a4ce"/></g></svg><span>Opening Prism…</span></div></div>
+    <div id="root"><div class="prism-boot" role="status"><svg class="prism-mark-loop" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 34" width="44" height="47" fill="none" aria-hidden="true"><g stroke-width="1.15" stroke-linejoin="round" stroke-linecap="round"><path pathLength="1" d="M16 3 30 29 2 29Z" stroke="#92a9d6"/><path pathLength="1" d="M2 29 24.6525 19.0689M30 29 16 22.8622" stroke="#7c96ce"/><path pathLength="1" d="M24.6525 19.0689 21.3475 25.2067M16 22.8622 22.6099 22.8622M21.3475 25.2067 20.0851 22.8622" stroke="#b4a4ce"/></g></svg><span>Opening Prism…</span></div></div>
     <script type="module" src="/src/bootstrap.ts"></script>
   </body>
 </html>

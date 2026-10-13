@@ -251,6 +251,20 @@ html[data-pointer-focus="true"] .prism-workspace-shell button:focus-visible {
   color: var(--text-secondary); background: var(--bg-base);
 }
 .workspace-startup > svg { width: 48px; height: 48px; }
+/* The mark forming and unforming, for a moment of waiting: the outline is drawn, then the two
+   golden-ratio cuts, then the three inside them; it rests whole, and each line runs on out the
+   way it came. One 3.6 s cycle that starts and ends on nothing, so it loops without a seam.
+   Each path is measured as length 1 (`pathLength`), so the same numbers fit every line. */
+.prism-mark-loop path { stroke-dasharray: 1 1.2; stroke-dashoffset: 1.04; animation: 3.6s cubic-bezier(.45, 0, .2, 1) infinite both; }
+.prism-mark-loop path:nth-child(1) { animation-name: prism-mark-outline; }
+.prism-mark-loop path:nth-child(2) { animation-name: prism-mark-cuts; }
+.prism-mark-loop path:nth-child(3) { animation-name: prism-mark-inner; }
+@keyframes prism-mark-outline { 0% { stroke-dashoffset: 1.04; } 30%, 60% { stroke-dashoffset: 0; } 90%, 100% { stroke-dashoffset: -1.04; } }
+@keyframes prism-mark-cuts { 0%, 14% { stroke-dashoffset: 1.04; } 40%, 64% { stroke-dashoffset: 0; } 92%, 100% { stroke-dashoffset: -1.04; } }
+@keyframes prism-mark-inner { 0%, 26% { stroke-dashoffset: 1.04; } 50%, 68% { stroke-dashoffset: 0; } 94%, 100% { stroke-dashoffset: -1.04; } }
+/* Reduced motion: the whole mark, at rest. */
+@media (prefers-reduced-motion: reduce) { .prism-mark-loop path { animation: none; stroke-dasharray: none; stroke-dashoffset: 0; } }
+:root.reduce-motion .prism-mark-loop path { animation: none; stroke-dasharray: none; stroke-dashoffset: 0; }
 .workspace-startup-actions button { min-height: 44px; padding: 8px 16px; color: var(--text-accent); }
 
 /* The full tree stays in memory. Only offscreen row painting is culled; data
