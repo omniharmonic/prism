@@ -50,9 +50,15 @@ export function Popover({
 
   useEffect(() => {
     if (!open) return;
+    // A modal dialog opened from this panel (a confirmation) sits above it: answering it, with the
+    // pointer or with Escape, is not a click outside the panel and must not close it.
+    const above = (t: EventTarget | null): boolean => {
+      const dialog = t instanceof Element ? t.closest("dialog") : null;
+      return !!dialog && !dialog.contains(anchor.current);
+    };
     const down = (e: PointerEvent) => {
       const t = e.target as Node;
-      if (panel.current?.contains(t) || anchor.current?.contains(t)) return;
+      if (panel.current?.contains(t) || anchor.current?.contains(t) || above(t)) return;
       // A popover opened FROM this one (e.g. an option picker inside a bulk-edit
       // panel) is portaled beside it; using it must not close its parent.
       if (t instanceof Element && t.closest(".db-popover")) return;
@@ -60,6 +66,7 @@ export function Popover({
     };
     const key = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        if (above(e.target)) return;
         e.stopPropagation();
         onClose();
         anchor.current?.focus();

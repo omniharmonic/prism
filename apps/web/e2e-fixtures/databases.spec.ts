@@ -396,7 +396,14 @@ test("a saved view is renamed and deleted from View settings", async ({ page }) 
   await expect(page.getByRole("tab", { name: "Everything" })).toBeVisible();
   await expect.poll(async () => (await configWrites(page)).at(-1)?.metadata.prism_database.views[0].name).toBe("Everything");
   const before = (await configWrites(page)).at(-1).metadata.prism_database.views.length;
+  // Deleting asks first; "Cancel" keeps the view and its settings.
+  const savesBefore = (await configWrites(page)).length;
   await settings.getByRole("button", { name: "Delete view" }).click();
+  const ask = page.getByRole("alertdialog").or(page.getByRole("dialog", { name: /Delete the view/ }));
+  await ask.getByRole("button", { name: "Cancel" }).click();
+  expect((await configWrites(page)).length).toBe(savesBefore);
+  await settings.getByRole("button", { name: "Delete view" }).click();
+  await ask.getByRole("button", { name: "Delete view" }).click();
   await expect(page.getByRole("tab", { name: "Everything" })).toHaveCount(0);
   await expect.poll(async () => (await configWrites(page)).at(-1).metadata.prism_database.views.length).toBe(before - 1);
   await expect(page.getByRole("tab", { name: "Board" })).toHaveAttribute("aria-selected", "true");
@@ -832,4 +839,120 @@ test("viewer: duplicating or reordering a view stays in this tab", async ({ page
   await expect(page.getByText("You can’t edit this database, so view changes stay in this tab.")).toBeVisible();
   expect(await configWrites(page)).toEqual([]);
   await expect(page.getByRole("tab", { name: "All tasks", exact: true })).toHaveAttribute("draggable", "false");
+});
+
+test("table: a saved cell shows at once and a second quick edit is not a conflict while the rows are still being read again", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  const flagged = row(page, "Write release notes").getByRole("checkbox", { name: "Flagged" });
+  await expect(flagged).not.toBeChecked();
+  // The refetch after each write never answers during this test: only the cache can show the value.
+  await page.evaluate(() => { (window as any).dbFixture.querySlowMs = 600_000; });
+  await flagged.click();
+  await expect(flagged).toBeChecked();
+  await flagged.click();
+  await expect(flagged).not.toBeChecked();
+  await expect(page.getByText(/Changed elsewhere/)).toHaveCount(0);
+  const sent = (await writes(page)).filter((w: any) => w.id === "t2");
+  expect(sent.map((w: any) => w.expect.flagged)).toEqual([null, true]);
+});
+
+test("filter: a condition with no value yet hides nothing, and typing a value is one saved change", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  const table = page.getByRole("table", { name: "All tasks" });
+  await expect(table.getByRole("row")).toHaveCount(1 + 7 + 1 + 1);
+  await page.getByRole("button", { name: "Filter", exact: true }).click();
+  const filter = page.getByRole("dialog", { name: "Filter" });
+  await filter.getByRole("button", { name: "Add filter" }).click();
+  await expect(filter.getByLabel("Condition 1 property")).toBeVisible();
+  // Whatever the first property and operator are, a condition without a value filters nothing.
+  await expect(table.getByRole("row")).toHaveCount(1 + 7 + 1 + 1);
+  await expect(page.getByRole("button", { name: "Filter", exact: true })).toBeVisible();
+  await filter.getByLabel("Condition 1 property").selectOption("$title");
+  await filter.getByLabel("Condition 1 operator").selectOption("contains");
+  await expect(table.getByRole("row")).toHaveCount(1 + 7 + 1 + 1);
+  const before = (await configWrites(page)).length;
+  await filter.getByLabel("Filter value").pressSequentially("release", { delay: 20 });
+  await expect(table.getByRole("row")).toHaveCount(1 + 1 + 1 + 1);
+  await expect(row(page, "Write release notes")).toBeVisible();
+  expect((await configWrites(page)).length - before).toBe(1);
+});
+
+test("table: text that is not a number is refused beside the cell and never clears it", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  const before = (await writes(page)).length;
+  await row(page, "Refine onboarding copy").getByRole("button", { name: "Estimate (h): 5" }).click();
+  const field = page.getByRole("textbox", { name: "Estimate (h)" });
+  await field.fill("$8");
+  await page.keyboard.press("Enter");
+  await expect(row(page, "Refine onboarding copy").getByRole("alert")).toContainText("That isn’t a number");
+  await expect(field).toHaveValue("$8");
+  expect((await writes(page)).length).toBe(before);
+  await field.fill("8");
+  await page.keyboard.press("Enter");
+  expect((await writes(page)).at(-1)).toEqual({ id: "t3", set: { estimate: 8 }, expect: { estimate: 5 } });
+});
+
+test("view settings: the first change to a view that never chose its columns keeps the ones it was showing", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  await page.getByRole("button", { name: "Add a view" }).click();
+  await page.getByRole("menuitem", { name: "List" }).click();
+  await expect(page.getByRole("tab", { name: "List" })).toHaveCount(2);
+  await page.getByRole("button", { name: "View settings" }).click();
+  const list = page.getByRole("dialog", { name: "View settings" }).getByRole("list", { name: "Visible properties" });
+  const ticked = await list.getByRole("checkbox", { checked: true }).count();
+  expect(ticked).toBe(4);
+  await list.getByRole("checkbox", { checked: true }).first().uncheck();
+  const view = (await configWrites(page)).at(-1).metadata.prism_database.views.at(-1);
+  expect(view.visible).toHaveLength(3);
+  expect(view.visible.filter((key: string) => key.startsWith("$"))).toEqual([]);
+});
+
+test("table: a column width set in one view is not shown or saved in another view of the same rows", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  await page.getByRole("button", { name: "View settings" }).click();
+  await page.getByRole("dialog", { name: "View settings" }).getByRole("button", { name: "Duplicate view" }).click();
+  await page.keyboard.press("Escape");
+  const tabs = page.getByRole("tab", { name: /All tasks/ });
+  await expect(tabs).toHaveCount(2);
+  // In the copy (the open view): three steps wider.
+  for (let i = 0; i < 3; i++) { await page.getByRole("separator", { name: "Resize Status" }).focus(); await page.keyboard.press("ArrowRight"); }
+  const views = async () => (await configWrites(page)).at(-1).metadata.prism_database.views;
+  const copyWidth = (await views())[1].widths.status as number;
+  // Back in the first view, whose rows are already loaded: its own width, and a resize of another column saves only that.
+  await tabs.first().click();
+  await page.getByRole("separator", { name: "Resize Priority" }).focus();
+  await page.keyboard.press("ArrowRight");
+  const first = (await views())[0];
+  expect(first.widths?.status).not.toBe(copyWidth);
+  expect((await views())[1].widths.status).toBe(copyWidth);
+});
+
+test("calendar: changing the month keeps the calendar on screen while the new rows load", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  await page.getByRole("tab", { name: "Calendar" }).click();
+  const next = page.getByRole("button", { name: "Next month" });
+  await expect(next).toBeVisible();
+  await next.evaluate((el) => { (window as any).calendarNext = el; });
+  // The next month's rows never arrive during this test.
+  await page.evaluate(() => { (window as any).dbFixture.querySlowMs = 600_000; });
+  await next.click();
+  await expect(page.getByText("Loading pages…")).toHaveCount(0);
+  await expect(next).toBeVisible();
+  // The same button, still holding focus: the calendar was not taken down and rebuilt.
+  expect(await next.evaluate((el) => el === (window as any).calendarNext && el === document.activeElement)).toBe(true);
+});
+
+test("calendar: the pages a full day does not list are one press away", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/e2e-fixtures/databases.html?crowded");
+  await page.getByRole("tab", { name: "Calendar" }).click();
+  const more = page.getByRole("button", { name: "+2 more" });
+  await expect(more).toBeVisible();
+  const cell = page.getByRole("gridcell").filter({ hasText: "Crowded day item 1" });
+  await expect(cell.locator(".db-cal-item")).toHaveCount(3);
+  await more.click();
+  await expect(cell.locator(".db-cal-item")).toHaveCount(5);
+  await expect(cell.getByText("Crowded day item 5")).toBeVisible();
+  await cell.getByRole("button", { name: "Show fewer" }).click();
+  await expect(cell.locator(".db-cal-item")).toHaveCount(3);
 });

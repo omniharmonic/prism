@@ -9,7 +9,7 @@
  */
 import { containerTitle, leafTitle } from "../pages/containerTitle";
 import { useCallback } from "react";
-import { keepPreviousData, useInfiniteQuery, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useInfiniteQuery, useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { PropertyConflictError, VaultRequestError, type PropertyWriteResult, type VaultClient } from "../../data/VaultClient";
 import { useAgentChatStore } from "../agent/chatStore";
@@ -138,6 +138,25 @@ async function fallbackWrite(
 }
 
 /**
+ * Show a saved write in every loaded database page at once. Without it a cell kept the old value
+ * until its list was read again, and a second quick edit compared against that old value and
+ * reported a conflict nobody caused. The refetch that follows settles order and filters.
+ */
+function patchDatabaseRows(qc: QueryClient, id: string, set: Record<string, unknown>, updatedAt?: string | null): void {
+  qc.setQueriesData<InfiniteData<QueryPage>>({
+    predicate: (q) => q.queryKey[0] === "vault" && q.queryKey[1] === "notes" && typeof q.queryKey[2] === "object" && q.queryKey[2] !== null && "database" in q.queryKey[2],
+  }, (old) => {
+    if (!old?.pages?.some((page) => page.rows.some((row) => row.id === id))) return old;
+    return { ...old, pages: old.pages.map((page) => ({ ...page, rows: page.rows.map((row) => {
+      if (row.id !== id) return row;
+      const metadata = { ...row.metadata };
+      for (const [k, v] of Object.entries(set)) { if (v === null) delete metadata[k]; else metadata[k] = v; }
+      return { ...row, updatedAt: updatedAt ?? row.updatedAt, metadata };
+    }) })) };
+  });
+}
+
+/**
  * Write properties of one note. `expect` holds the values the user saw, so a
  * property changed elsewhere fails with {@link PropertyConflictError} instead of
  * being overwritten. Caches are patched in place, then lists refresh.
@@ -173,6 +192,7 @@ export function usePropertyWriter() {
       for (const [k, v] of Object.entries(set)) if (v === null) delete metadata[k];
       return { ...old, updatedAt: result.updatedAt ?? old.updatedAt, metadata };
     });
+    patchDatabaseRows(qc, note.id, Object.fromEntries(Object.entries(set).map(([k, v]) => [k, v === null ? null : result.metadata[k] ?? v])), result.updatedAt);
     void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] === "vault" && q.queryKey[1] === "notes" && typeof q.queryKey[2] !== "string" });
     return result;
   }, [client, qc, scope]);
@@ -233,6 +253,7 @@ export function useStructuredWriter() {
     if (!result) result = await fallbackStructuredWrite(client, id, key, value, expect, scope || undefined);
     const written = result;
     qc.setQueryData<Note>(queryKeys.vault.note(id), (old) => (old ? { ...old, updatedAt: written.updatedAt ?? old.updatedAt, metadata: { ...(old.metadata ?? {}), ...written.metadata, [key]: value } } : old));
+    patchDatabaseRows(qc, id, { [key]: value }, written.updatedAt);
     void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] === "vault" && q.queryKey[1] === "notes" && typeof q.queryKey[2] !== "string" });
     return written;
   }, [client, qc, scope]);
@@ -285,6 +306,8 @@ export function useBatchPropertyWriter() {
     for (const r of results) {
       if (!r.ok) continue;
       qc.setQueryData<Note>(queryKeys.vault.note(r.id), (old) => (old ? { ...old, updatedAt: r.updatedAt ?? old.updatedAt, metadata: { ...(old.metadata ?? {}), ...r.metadata } } : old));
+      const set = items.find((it) => it.id === r.id)?.set;
+      if (set) patchDatabaseRows(qc, r.id, set, r.updatedAt);
     }
     void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] === "vault" && q.queryKey[1] === "notes" && typeof q.queryKey[2] !== "string" });
     return [...results, ...kept];
@@ -342,6 +365,13 @@ export function useDatabaseRows(spec: QuerySpec | null) {
   return useInfiniteQuery({
     queryKey: ["vault", "notes", { database: scope, spec }],
     enabled: !!spec,
+    // A new filter, sort, search or calendar month keeps the rows on screen until its own arrive.
+    // Swapping the whole view for "Loading pages…" each time unmounted it: the calendar lost its
+    // place and focus on every month change. Only rows of the same database and account are kept.
+    placeholderData: (previous, last) => {
+      const was = last?.queryKey[2] as { database?: unknown; spec?: QuerySpec | null } | undefined;
+      return was && was.database === scope && !!spec && was.spec?.tags.join("\n") === spec.tags.join("\n") ? previous : undefined;
+    },
     initialPageParam: null as string | null,
     getNextPageParam: (last: QueryPage) => last.next,
     queryFn: async ({ pageParam }): Promise<QueryPage> => {

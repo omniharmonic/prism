@@ -683,6 +683,7 @@ function CalDay({ k, col, children, ...rest }: { k: string; col: number; childre
 export function CalendarView({ ctx, month, onMonth, onPickDate }: { ctx: ViewContext; month: Date; onMonth: (d: Date) => void; onPickDate: (key: string) => void }) {
   const key = ctx.view.dateKey;
   const [adding, setAdding] = useState<string | null>(null);
+  const [expandedDay, setExpandedDay] = useState<string | null>(null);
   const [problem, setProblem] = useState("");
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
@@ -774,8 +775,9 @@ export function CalendarView({ ctx, month, onMonth, onPickDate }: { ctx: ViewCon
                       {/* Room for this week's multi-day bars, which are laid over the row. */}
                       {lanes > 0 && <div aria-hidden="true" style={{ height: `calc(${lanes} * var(--db-cal-lane, 24px))`, flex: "none" }} />}
                       {adding === k && <NewRowForm label={`New page on ${k}`} onCreate={(t) => ctx.create(t, { [key]: k })} onCancel={() => setAdding(null)} />}
-                      {dayItems.slice(0, 3).map((r) => <CalChip key={r.id} row={r} ctx={ctx} anchorDay={k} className="db-cal-item" editable={canMove(r)} onLocked={whyLocked(r)} />)}
-                      {dayItems.length > 3 && <span className="db-pop-path" style={{ marginLeft: 4 }}>+{dayItems.length - 3} more</span>}
+                      {(expandedDay === k ? dayItems : dayItems.slice(0, 3)).map((r) => <CalChip key={r.id} row={r} ctx={ctx} anchorDay={k} className="db-cal-item" editable={canMove(r)} onLocked={whyLocked(r)} />)}
+                      {/* A button, not a caption: the fourth and later pages of a day could not be reached from the month at all. */}
+                      {dayItems.length > 3 && <button type="button" className="db-ghost db-cal-more focus-ring" aria-expanded={expandedDay === k} onClick={() => setExpandedDay(expandedDay === k ? null : k)}>{expandedDay === k ? "Show fewer" : `+${dayItems.length - 3} more`}</button>}
                     </CalDay>
                   );
                 })}

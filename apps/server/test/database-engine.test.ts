@@ -147,3 +147,14 @@ test("typed task inventory source is validated and cursor-bound", () => {
   const all = runQuery(rows, { ...validated.spec, limit: 50 }, { limited: false });
   assert.deepEqual(all.rows.map(row => row.id).sort(), ["prism", "tagged", "typed"]);
 });
+
+test("conditions: a checkbox that was never set is unchecked", () => {
+  const never = n("never", { title: "Never ticked" });
+  const off = n("off", { flagged: false });
+  const on = n("on", { flagged: true });
+  const is = (row: QueryInput, value: boolean) => evaluateCondition(row, { key: "flagged", op: "eq", value });
+  assert.deepEqual([never, off, on].map((row) => is(row, false)), [true, true, false]);
+  assert.deepEqual([never, off, on].map((row) => is(row, true)), [false, false, true]);
+  assert.equal(evaluateCondition(never, { key: "flagged", op: "ne", value: false }), false);
+  assert.deepEqual(runQuery([never, off, on], { tags: ["task"], filter: { match: "all", conditions: [{ key: "flagged", op: "eq", value: false }] } }, { limited: false }).rows.map((row) => row.id).sort(), ["never", "off"]);
+});

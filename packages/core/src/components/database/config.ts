@@ -115,18 +115,18 @@ function viewOk(v: unknown): v is DatabaseView {
     const entries = Object.entries(v.calculations);
     if (entries.length > MAX_AGGREGATES || !entries.every(([k, fn]) => keyOk(k) && isAggregateFn(fn))) return false;
   }
-  if (v.visible !== undefined && (!Array.isArray(v.visible) || v.visible.length > 60 || !v.visible.every(keyOk))) return false;
+  if (v.visible !== undefined && (!Array.isArray(v.visible) || v.visible.length > VISIBLE_MAX || !v.visible.every(keyOk))) return false;
   if (v.widths !== undefined && (!rec(v.widths) || !Object.entries(v.widths).every(([k, w]) => keyOk(k) && typeof w === "number" && w >= 60 && w <= 1200))) return false;
-  if (v.order !== undefined && (!Array.isArray(v.order) || v.order.length > 10000 || !v.order.every((x) => typeof x === "string"))) return false;
-  if (v.sort !== undefined && (!Array.isArray(v.sort) || v.sort.length > 3 || !v.sort.every((s) => rec(s) && keyOk(s.key) && (s.dir === "asc" || s.dir === "desc")))) return false;
+  if (v.order !== undefined && (!Array.isArray(v.order) || v.order.length > ORDER_MAX || !v.order.every((x) => typeof x === "string"))) return false;
+  if (v.sort !== undefined && (!Array.isArray(v.sort) || v.sort.length > SORT_MAX || !v.sort.every((s) => rec(s) && keyOk(s.key) && (s.dir === "asc" || s.dir === "desc")))) return false;
   if (v.filter !== undefined) {
     const f = v.filter;
-    if (!rec(f) || (f.match !== "all" && f.match !== "any") || !Array.isArray(f.conditions) || f.conditions.length > 25) return false;
+    if (!rec(f) || (f.match !== "all" && f.match !== "any") || !Array.isArray(f.conditions) || f.conditions.length > CONDITIONS_MAX) return false;
     const condOk = (c: unknown) => rec(c) && keyOk(c.key) && (QUERY_OPS as readonly string[]).includes(c.op as string);
     if (!f.conditions.every(condOk)) return false;
     if (f.groups !== undefined) {
-      if (!Array.isArray(f.groups) || f.groups.length > 5) return false;
-      if (!f.groups.every((g) => rec(g) && (g.match === "all" || g.match === "any") && Array.isArray(g.conditions) && g.conditions.length <= 25 && g.conditions.every(condOk) && g.groups === undefined)) return false;
+      if (!Array.isArray(f.groups) || f.groups.length > GROUPS_MAX) return false;
+      if (!f.groups.every((g) => rec(g) && (g.match === "all" || g.match === "any") && Array.isArray(g.conditions) && g.conditions.length <= CONDITIONS_MAX && g.conditions.every(condOk) && g.groups === undefined)) return false;
     }
   }
   return true;
@@ -143,10 +143,51 @@ function extrasOk(raw: Record<string, unknown>): boolean {
   return true;
 }
 
+const VISIBLE_MAX = 60;
+const CONDITIONS_MAX = 25;
+const GROUPS_MAX = 5;
+const ORDER_MAX = 10000;
+const SORT_MAX = 3;
+const cut = <T,>(list: T[], max: number): T[] => (list.length > max ? list.slice(0, max) : list);
+
+/**
+ * A view whose lists are longer than the reader accepts, shortened to fit. A list that only grew
+ * too long (60 columns shown, a 26th filter condition, a board rank that was never pruned) is not
+ * a configuration Prism "does not understand": refusing it left the whole page unreadable with no
+ * way back from inside the app. Anything else about the shape is still judged by {@link viewOk}.
+ * Returns the same object when nothing was too long.
+ */
+function fitView<T>(view: T): T {
+  if (!rec(view)) return view;
+  const v = view as Record<string, unknown>;
+  const next: Record<string, unknown> = {};
+  if (Array.isArray(v.visible) && v.visible.length > VISIBLE_MAX) next.visible = cut(v.visible, VISIBLE_MAX);
+  if (Array.isArray(v.order) && v.order.length > ORDER_MAX) next.order = cut(v.order, ORDER_MAX);
+  if (Array.isArray(v.sort) && v.sort.length > SORT_MAX) next.sort = cut(v.sort, SORT_MAX);
+  const f = v.filter;
+  if (rec(f) && Array.isArray(f.conditions)) {
+    const groups = Array.isArray(f.groups) ? cut(f.groups, GROUPS_MAX).map((g) => (rec(g) && Array.isArray(g.conditions) && g.conditions.length > CONDITIONS_MAX ? { ...g, conditions: cut(g.conditions, CONDITIONS_MAX) } : g)) : undefined;
+    const long = f.conditions.length > CONDITIONS_MAX || (Array.isArray(f.groups) && (f.groups.length > GROUPS_MAX || groups!.some((g, i) => g !== (f.groups as unknown[])[i])));
+    if (long) next.filter = { ...f, conditions: cut(f.conditions, CONDITIONS_MAX), ...(groups ? { groups } : {}) };
+  }
+  return Object.keys(next).length ? ({ ...v, ...next } as T) : view;
+}
+
+/** What is saved is always something the reader accepts (see {@link fitView}). */
+export function fitDatabaseConfig(config: DatabaseConfig): DatabaseConfig {
+  const views = config.views.map(fitView);
+  return views.some((v, i) => v !== config.views[i]) ? { ...config, views } : config;
+}
+
 /** Read `prism_database`; null when the note has none yet; throws on an unknown shape. */
 export function readDatabaseConfig(metadata: Record<string, unknown> | null | undefined): DatabaseConfig | null {
-  const raw = metadata?.prism_database;
+  let raw = metadata?.prism_database;
   if (raw == null) return null;
+  if (rec(raw) && Array.isArray(raw.views)) {
+    const stored: unknown[] = raw.views;
+    const views = stored.map(fitView);
+    if (views.some((v, i) => v !== stored[i])) raw = { ...raw, views };
+  }
   if (
     !rec(raw) || raw.version !== 1 || !rec(raw.source) || !Array.isArray(raw.source.tags) ||
     !raw.source.tags.length || raw.source.tags.length > 5 ||
@@ -275,4 +316,11 @@ export function rowPath(dbPath: string | null, title: string): string {
   const safe = safeTitleLeaf(title);
   const base = (dbPath ?? "").replace(/\.[^./]+$/, "");
   return base ? `${base}/${safe}` : safe;
+}
+
+/** The columns a view shows before anyone has chosen: the first few of the database's own properties
+ *  (never the system ones). The view and its settings must agree, or the first box ticked in View
+ *  settings saved "every property" as the choice. */
+export function defaultVisibleKeys(props: ReadonlyArray<{ key: string; system?: unknown }>, type: ViewType | undefined): string[] {
+  return props.filter((p) => !p.system).slice(0, type === "table" ? 12 : 4).map((p) => p.key);
 }

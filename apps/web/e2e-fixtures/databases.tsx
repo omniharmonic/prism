@@ -190,6 +190,8 @@ if (params.has("relations") && !persisted) {
   notes.push(task("r4", "Unknown-linked task", { status: "todo", project: "Nebula" }));
   notes.push(task("r5", "Empty-linked task", { status: "todo", project: "" }));
 }
+// `?crowded`: five pages due today, more than a calendar day cell lists.
+if (params.has("crowded") && !persisted) for (let i = 1; i <= 5; i++) notes.push(task(`crowd${i}`, `Crowded day item ${i}`, { status: "todo", due: day(0) }));
 if (params.has("tz")) notes.push(task("t7", "Late call", { status: "todo", due: `${day(3)}T05:00:00Z` }));
 if (link) notes = notes.map((n) => ({ ...n, _level: "view" }));
 if (viewer) notes = notes.map((n) => (n.id === "t6" ? n : { ...n, _caps: ["view"] }));
@@ -206,6 +208,8 @@ const controls = {
   /** Every call to the structured route (`VaultClient.updateStructuredProperty`). */
   structuredWrites: [] as Array<{ id: string; key: string; value: unknown; expect: unknown }>,
   slowMs: 0,
+  /** Delay every row query: a real server answers a refetch well after the write that caused it. */
+  querySlowMs: 0,
   listCalls: 0,
   queries: [] as QuerySpec[],
   notes: () => notes,
@@ -377,6 +381,7 @@ if (!legacy) {
   };
   client.queryNotes = async (spec: QuerySpec) => {
     controls.queries.push(clone(spec));
+    if (controls.querySlowMs) await new Promise((r) => setTimeout(r, controls.querySlowMs));
     if (params.has("forbidden")) throw new VaultRequestError(403, "POST /query failed: 403 forbidden");
     const rows = visible().map((n) => ({ ...n, content: "", canEdit: !link && (!viewer || !!n._caps?.includes("edit")) }));
     // "is Me" in a view filter: the server resolves the caller; here the caller is Mira

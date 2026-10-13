@@ -26,14 +26,15 @@ import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { queryKeys } from "../../lib/parachute/queries";
 import { noteAccess, useDatabaseAggregates, useDatabaseRows, usePropertyWriter, useSchemas, useScope, useUpdateSchema } from "../../lib/database/hooks";
-import { filterConditions, noteTitle, QUERY_MAX_LIMIT, type QueryRow, type QuerySpec } from "../../lib/database/query";
+import { activeFilter, filterConditions, noteTitle, QUERY_MAX_LIMIT, type QueryRow, type QuerySpec } from "../../lib/database/query";
 import { deletedKeys, isListableKey, isSystemKey, propertyFromField, resolveProperties, SYSTEM_PROPERTIES, type PropertyDef, type SchemaPatch } from "../../lib/database/schema";
 import { PropertyEditor } from "./PropertyEditor";
 import { BottomSheet } from "../ui/BottomSheet";
 import { Popover } from "./Popover";
+import { askConfirm } from "../ui/ConfirmDialog";
 import { FilterEditor, SortEditor, ViewSettings } from "./ViewControls";
 import { BoardView, CalendarAgenda, CalendarMonthTouch, CalendarView, GalleryView, ListView, TableView, monthGrid, type RowSelection, type ViewContext } from "./views";
-import { defaultConfig, duplicateView, MAX_VIEWS, moveView, newViewId, followConversions, readDatabaseConfig, rowPath, VIEW_LABELS, VIEW_TYPES, type DatabaseConfig, type DatabaseTemplate, type DatabaseView, type OpenMode, type ViewType } from "./config";
+import { defaultConfig, defaultVisibleKeys, duplicateView, fitDatabaseConfig, MAX_VIEWS, moveView, newViewId, followConversions, readDatabaseConfig, rowPath, VIEW_LABELS, VIEW_TYPES, type DatabaseConfig, type DatabaseTemplate, type DatabaseView, type OpenMode, type ViewType } from "./config";
 import { RowPeek } from "./RowPeek";
 import { pageTitle } from "../../lib/pages/model";
 import { BulkBar, UndoToast, type UndoAction } from "./BulkBar";
@@ -133,7 +134,7 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     // request that also asks for the key (a calculation on a hidden "Created by" column).
     for (const k of SYSTEM_META) if (view.visible?.includes(k) || filterConditions(view.filter).some((c) => c.key === k) || view.sort?.some((s) => s.key === k) || view.calculations?.[k] !== undefined) wanted.add(k);
     const fields = hasSchema ? [...wanted].filter((k) => !k.startsWith("$") && (!isSystemKey(k) || ROW_META.includes(k) || SYSTEM_META.includes(k))).slice(0, 40) : undefined;
-    let filter = view.filter;
+    let filter = activeFilter(view.filter);
     if (view.type === "calendar" && view.dateKey && view.dateKey !== "$createdAt" && (!filter || filter.match === "all")) {
       const grid = monthGrid(month);
       const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -172,8 +173,7 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     return [...base, ...SYSTEM_PROPERTIES];
   }, [tags, schemas, rows]);
   const shown = useMemo(() => {
-    if (!view?.visible) return allProps.filter((p) => !p.system).slice(0, view?.type === "table" ? 12 : 4);
-    return view.visible.map((k) => allProps.find((p) => p.key === k)).filter((p): p is PropertyDef => !!p);
+    return (view?.visible ?? defaultVisibleKeys(allProps, view?.type)).map((k) => allProps.find((p) => p.key === k)).filter((p): p is PropertyDef => !!p);
   }, [allProps, view]);
 
   useEffect(() => {
@@ -187,7 +187,8 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
   const calcGroupBy = useMemo(() => (calcGroupDef ? { key: calcGroupDef.key, ...(calcGroupDef.kind === "checkbox" ? { checkbox: true } : {}) } : undefined), [calcGroupDef?.key, calcGroupDef?.kind]);
   const calcQuery = useDatabaseAggregates(spec, calcWanted, calcGroupBy);
 
-  async function saveConfig(next: DatabaseConfig) {
+  async function saveConfig(wanted: DatabaseConfig) {
+    const next = fitDatabaseConfig(wanted);
     setLocal(next);
     if (!canEditDb) {
       setSaveState("local");
@@ -460,10 +461,15 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
                 void saveConfig({ ...config, views: [...config.views, v] });
                 setActiveId(v.id);
               }}
-              onDeleteView={() => {
+              onDeleteView={(done) => {
                 if (config.views.length < 2) return;
-                void saveConfig({ ...config, views: config.views.filter((v) => v.id !== view.id) });
-                setActiveId(config.views.find((v) => v.id !== view.id)!.id);
+                // A view holds work (its filter, sort, columns, widths, card order) and deleting it cannot be undone.
+                void askConfirm({ title: `Delete the view “${view.name}”?`, body: "Its filter, sorting and layout are removed. The pages in this database are not affected.", confirm: "Delete view", danger: true }).then((yes) => {
+                  if (!yes) return;
+                  done();
+                  void saveConfig({ ...config, views: config.views.filter((v) => v.id !== view.id) });
+                  setActiveId(config.views.find((v) => v.id !== view.id)!.id);
+                });
               }}
               onDuplicateView={() => {
                 const next = duplicateView(config, view.id);
@@ -502,10 +508,12 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
             ) : rowsQuery.isError ? (
               <div className="db-state" role="alert"><h2>Pages could not be loaded</h2><p>Check your connection and try again.</p><button type="button" className="db-control" onClick={() => void rowsQuery.refetch()}>Retry</button></div>
             ) : !rows.length && view.type !== "calendar" && view.type !== "board" ? (
-              <EmptyRows ctx={ctx} filtered={!!(view.filter || search.trim())} tag={config.source.tags[0]!} />
+              <EmptyRows ctx={ctx} filtered={!!(activeFilter(view.filter) || search.trim())} tag={config.source.tags[0]!} />
             ) : (
               <>
-                {view.type === "table" && <TableView ctx={ctx} />}
+                {/* Keyed by view: column widths being dragged and collapsed groups are per view, and an
+                    unkeyed table carried one view's widths into the next and saved them there. */}
+                {view.type === "table" && <TableView key={view.id} ctx={ctx} />}
                 {view.type === "board" && isMobile && view.groupBy && (
                   <p className="db-notice db-phone-layout" role="status">
                     {phoneBoard ? "Board layout." : "Shown as a list on this screen."}{" "}
@@ -513,10 +521,10 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
                   </p>
                 )}
                 {view.type === "board" && (isMobile && view.groupBy && !phoneBoard
-                  ? <ListView ctx={ctx} />
-                  : <BoardView ctx={ctx} onPickGroup={(k) => updateView({ groupBy: k })} />)}
-                {view.type === "gallery" && <GalleryView ctx={ctx} />}
-                {view.type === "list" && <ListView ctx={ctx} />}
+                  ? <ListView key={view.id} ctx={ctx} />
+                  : <BoardView key={view.id} ctx={ctx} onPickGroup={(k) => updateView({ groupBy: k })} />)}
+                {view.type === "gallery" && <GalleryView key={view.id} ctx={ctx} />}
+                {view.type === "list" && <ListView key={view.id} ctx={ctx} />}
                 {view.type === "calendar" && isMobile && view.dateKey && (
                   <p className="db-notice db-phone-layout" role="status">
                     {phoneMonth ? "Month: tap a day to see its pages." : "Shown as a week list on this screen."}{" "}
@@ -609,7 +617,7 @@ function SetupDatabase({ canEdit, onPick, onImport }: { canEdit: boolean; onPick
 function Toolbar({ config, view, props, search, onSearch, isMobile, canEditDb, canCreate, canImport, onSelect, onUpdate, onAddView, onDeleteView, onDuplicateView, onMoveView, onNew, onCreateTemplate, onEditTemplate, onSetDefaultTemplate, onRemoveTemplate, onExport, onImport, deleted }: {
   config: DatabaseConfig; view: DatabaseView; props: PropertyDef[]; search: string; onSearch: (s: string) => void; isMobile: boolean;
   canEditDb: boolean; canCreate: boolean; canImport: boolean; onSelect: (id: string) => void; onUpdate: (p: Partial<DatabaseView>) => void;
-  onAddView: (t: ViewType) => void; onDeleteView: () => void; onDuplicateView: () => void; onMoveView: (id: string, to: number) => void; onNew: (templateId: string | null) => void;
+  onAddView: (t: ViewType) => void; /** `done` closes the settings once the person has confirmed. */ onDeleteView: (done: () => void) => void; onDuplicateView: () => void; onMoveView: (id: string, to: number) => void; onNew: (templateId: string | null) => void;
   onCreateTemplate: (name: string) => Promise<void>; onEditTemplate: (t: DatabaseTemplate) => void; onSetDefaultTemplate: (id: string | undefined) => void; onRemoveTemplate: (t: DatabaseTemplate) => void;
   onExport: () => void; onImport: () => void;
   deleted?: { props: PropertyDef[]; onOpen: (def: PropertyDef) => void };
@@ -623,10 +631,10 @@ function Toolbar({ config, view, props, search, onSearch, isMobile, canEditDb, c
   const close = () => setPanel("");
   // Tabs reorder by drag (people who can save) as well as from View settings.
   const dragId = useRef<string | null>(null);
-  const filterCount = filterConditions(view.filter).length;
+  const filterCount = filterConditions(activeFilter(view.filter)).length;
   const body = panel === "filter" ? <FilterEditor filter={view.filter} props={props} onChange={(f) => onUpdate({ filter: f })} />
     : panel === "sort" ? <SortEditor sort={view.sort} props={props} onChange={(s) => onUpdate({ sort: s })} />
-    : panel === "settings" ? <ViewSettings key={view.id} view={view} props={props} canDelete={canEditDb && config.views.length > 1} onChange={onUpdate} onDelete={() => { close(); onDeleteView(); }}
+    : panel === "settings" ? <ViewSettings key={view.id} view={view} props={props} canDelete={canEditDb && config.views.length > 1} onChange={onUpdate} onDelete={() => onDeleteView(close)}
         tabs={{ index: config.views.findIndex((v) => v.id === view.id), count: config.views.length, canDuplicate: config.views.length < MAX_VIEWS, onDuplicate: onDuplicateView, onMove: (to) => onMoveView(view.id, to) }}
         deleted={deleted ? { props: deleted.props, onOpen: (def) => { close(); deleted.onOpen(def); } } : undefined} />
     : null;
