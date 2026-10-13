@@ -201,7 +201,8 @@ export const config = {
     .split(",")
     .map((s) => Number(s.trim()))
     .filter((n) => Number.isInteger(n) && n >= 0 && n <= 23),
-  firefliesTz: process.env.FIREFLIES_TZ ?? "America/Denver",
+  // The machine's own zone unless one is named: the sync hours above are the owner's working day.
+  firefliesTz: process.env.FIREFLIES_TZ || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
   // When Fireflies leaves a recording untranscribed (it stops transcribing over
   // the minutes cap), hand the audio back for transcription rather than letting
   // the recording rot un-ingestable. Recovery only — it never deletes.
