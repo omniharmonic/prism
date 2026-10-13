@@ -23,6 +23,9 @@ export function groupCalendarDays<T extends EventTime>(events: T[], from: Date, 
       day = followingDay(day);
     }
   }
+  // The vault lists meetings in no particular order: every day reads all-day first, then by start.
+  const order = (event: T) => event.start?.dateTime ? calendarDate(event.start.dateTime).getTime() : Number.NEGATIVE_INFINITY;
+  for (const list of result.values()) list.sort((a, b) => { const x = order(a), y = order(b); return x === y ? 0 : x < y ? -1 : 1; });
   return result;
 }
 
