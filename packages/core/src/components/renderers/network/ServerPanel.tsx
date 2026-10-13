@@ -6,6 +6,7 @@
 // integrations card is admin+ and vault-scoped, so it must work even when
 // /acl/server 403s (non-owner admin) — its state comes from the per-kind
 // GET /api/integrations/<kind>, never the owner-only ServerInfo snapshot.
+import { SetupChecklist } from "./SetupChecklist";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   Server,
@@ -1061,6 +1062,8 @@ function ScopedServerPanel({ sharing }: { sharing: CollabSharing | null }) {
 
   return (
     <div className="prism-connections">
+      {/* First-run setup: what is done and what is next, for the server's owner. */}
+      {sharing.getSetupStatus && <SetupChecklist load={sharing.getSetupStatus} origin={info?.appOrigin ?? ""} />}
       {error && (
         <div role="alert" className="connections-error">
           {error}

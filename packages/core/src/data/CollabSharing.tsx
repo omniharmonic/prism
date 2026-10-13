@@ -110,6 +110,17 @@ export interface TunnelIngress {
   /** `cloudflared tunnel route dns …` per missing hostname (DNS is operator-run). */
   routeDnsCommands: string[];
 }
+/** One step of first-run setup. `id` is stable (the setup skill and the checklist both key on it);
+ *  `detail` is a plain sentence about what is missing — never a secret. */
+export interface SetupStep {
+  id: string;
+  group: "core" | "agent" | "devices" | "optional";
+  done: boolean;
+  detail?: string;
+}
+/** `ready` = the core steps are done: the app is usable. */
+export interface SetupStatus { ready: boolean; steps: SetupStep[] }
+
 /** Server settings + status snapshot (server-owner only). Secret VALUES are
  *  never included — only whether each is configured. */
 export interface ServerInfo {
@@ -419,6 +430,8 @@ export interface CollabSharing {
    *  editable-.env allowlist (APP_ORIGIN/MAGIC_FROM — restart-required; no secrets).
    *  Absent → the Server surface hides (desktop / non-server-owner). */
   getServerInfo?(): Promise<ServerInfo>;
+  /** First-run checklist (GET /acl/setup, server owner): which setup steps are done. */
+  getSetupStatus?(): Promise<SetupStatus>;
   /** Per-source ingest health + staleness (server-owner). Absent → card hidden. */
   getWorkerHealth?(): Promise<{ sources: WorkerSourceHealth[]; checkedAt: string }>;
   /** Legacy whole-vault member MCP tokens (WP6.5, server-owner). List active ones; revoke

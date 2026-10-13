@@ -1,0 +1,26 @@
+/* First-run setup checklist (SetupChecklist.tsx): quiet rows on the shared tokens. */
+.prism-setup { border: 1px solid var(--glass-border); border-radius: 12px; padding: 20px; margin-bottom: 20px; background: var(--bg-surface); }
+.prism-setup-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.prism-setup-head h3 { font-size: 15px; font-weight: 600; color: var(--text-primary); }
+.prism-setup-head p, .prism-setup-group > p, .prism-setup-note { margin-top: 4px; font-size: 12.5px; line-height: 1.5; color: var(--text-secondary); }
+.prism-setup-refresh { display: grid; place-items: center; width: var(--control-h-md); height: var(--control-h-md); flex-shrink: 0; border-radius: var(--control-radius); color: var(--text-muted); }
+.prism-setup-refresh:hover { background: var(--glass-hover); color: var(--text-primary); }
+.prism-setup-refresh:disabled { opacity: .5; }
+.prism-setup-group { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--glass-border); }
+.prism-setup-group h4 { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.prism-setup-group h4 span { font-size: 12px; font-weight: 400; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.prism-setup-group ul { margin-top: 10px; display: grid; gap: 2px; }
+.prism-setup-group li { display: flex; gap: 10px; padding: 8px 0; }
+.prism-setup-mark { display: grid; place-items: center; width: 20px; height: 20px; flex-shrink: 0; border-radius: 999px; color: var(--text-muted); }
+.prism-setup-group li[data-done="true"] .prism-setup-mark { background: color-mix(in srgb, var(--color-success) 16%, transparent); color: var(--color-success); }
+.prism-setup-body { min-width: 0; flex: 1; }
+.prism-setup-body strong { font-size: 13px; font-weight: 500; line-height: 20px; color: var(--text-primary); }
+.prism-setup-group li[data-done="true"] strong { color: var(--text-secondary); font-weight: 400; }
+.prism-setup-body p { margin-top: 2px; font-size: 12.5px; line-height: 1.5; color: var(--text-secondary); overflow-wrap: anywhere; }
+.prism-setup-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.prism-setup-actions button { display: inline-flex; align-items: center; gap: 6px; min-height: var(--control-h-sm); padding: 0 var(--control-px-sm); border: 1px solid var(--glass-border); border-radius: var(--control-radius); font-size: 12.5px; color: var(--text-primary); }
+.prism-setup-actions button:hover { background: var(--glass-hover); }
+.prism-setup-group li[data-next] .prism-setup-actions button:first-child { background: var(--action-bg); color: var(--action-fg); border-color: transparent; }
+.prism-setup-group li[data-next] .prism-setup-actions button:first-child:hover { background: var(--action-hover, var(--action-bg)); }
+.prism-setup-hand { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: var(--glass); }
+@media (hover: none) and (pointer: coarse) { .prism-setup-actions button { min-height: var(--touch-target); } .prism-setup-refresh { width: var(--touch-target); height: var(--touch-target); } }
