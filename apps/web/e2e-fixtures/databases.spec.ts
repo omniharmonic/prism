@@ -956,3 +956,24 @@ test("calendar: the pages a full day does not list are one press away", async ({
   await cell.getByRole("button", { name: "Show fewer" }).click();
   await expect(cell.locator(".db-cal-item")).toHaveCount(3);
 });
+
+test("table: a row stays where it is when one of its cells is edited (no sort chosen)", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  await page.getByRole("button", { name: "Add a view" }).click();
+  await page.getByRole("menuitem", { name: "Table" }).click();
+  const table = page.getByRole("table").first();
+  const titles = () => table.locator("tbody tr .db-title-cell, tbody tr th").allInnerTexts().then((all) => all.map((t) => t.trim()).filter(Boolean));
+  await expect.poll(async () => (await titles()).length).toBeGreaterThan(4);
+  const before = await titles();
+  const target = before[3]!;
+  const asked = () => page.evaluate(() => (window as any).dbFixture.queries.length);
+  const saves = (await writes(page)).length;
+  const queries = await asked();
+  await row(page, target).getByRole("checkbox", { name: "Flagged" }).click();
+  await expect.poll(async () => (await writes(page)).length).toBe(saves + 1);
+  await expect(row(page, target).getByRole("checkbox", { name: "Flagged" })).toBeChecked();
+  // The rows were read again after the write: this is the order the server gives now.
+  await expect.poll(asked).toBeGreaterThan(queries);
+  await expect.poll(titles).toEqual(before);
+  expect(await titles()).toEqual(before);
+});

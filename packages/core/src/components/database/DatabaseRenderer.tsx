@@ -26,7 +26,7 @@ import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { queryKeys } from "../../lib/parachute/queries";
 import { noteAccess, useDatabaseAggregates, useDatabaseRows, usePropertyWriter, useSchemas, useScope, useUpdateSchema } from "../../lib/database/hooks";
-import { activeFilter, filterConditions, noteTitle, QUERY_MAX_LIMIT, type QueryRow, type QuerySpec } from "../../lib/database/query";
+import { activeFilter, filterConditions, noteTitle, QUERY_MAX_LIMIT, type QueryRow, type QuerySort, type QuerySpec } from "../../lib/database/query";
 import { deletedKeys, isListableKey, isSystemKey, propertyFromField, resolveProperties, SYSTEM_PROPERTIES, type PropertyDef, type SchemaPatch } from "../../lib/database/schema";
 import { PropertyEditor } from "./PropertyEditor";
 import { BottomSheet } from "../ui/BottomSheet";
@@ -48,6 +48,7 @@ const VIEW_ICONS: Record<ViewType, typeof Table2> = { table: Table2, board: Kanb
 const ROW_META = ["type", "prism_type", "icon", "cover", "coverY"];
 const INTEGRATION_META = ["source", "source_id", "calendarEventId"];
 /** System property keys that live in metadata (the others are note columns). */
+const UNSORTED: QuerySort[] = [{ key: "$createdAt", dir: "desc" }];
 const SYSTEM_META = SYSTEM_PROPERTIES.map((p) => p.key).filter((k) => !k.startsWith("$"));
 
 export default function DatabaseRenderer(props: RendererProps) {
@@ -145,7 +146,10 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     return {
       tags,
       ...(filter ? { filter } : {}),
-      ...(view.sort ? { sort: view.sort } : {}),
+      // A view with no sort of its own lists the newest page first. The engine's own default is
+      // "last edited first", under which a row jumped to the top each time one of its cells was
+      // edited; when a page was made never changes, so rows hold still while they are worked on.
+      sort: view.sort?.length ? view.sort : UNSORTED,
       ...(debouncedSearch.trim() ? { search: debouncedSearch.trim() } : {}),
       ...(fields ? { fields } : {}),
       limit: bulk ? QUERY_MAX_LIMIT : 100,

@@ -217,7 +217,7 @@ export function SortEditor({ sort, props, onChange }: { sort?: QuerySort[]; prop
           <button type="button" className="db-icon-btn" aria-label={`Remove sort ${i + 1}`} onClick={() => set(list.filter((_, j) => j !== i))}><X size={14} /></button>
         </div>
       ))}
-      {!list.length && <p className="db-pop-empty">Sorted by last edited.</p>}
+      {!list.length && <p className="db-pop-empty">Newest pages first.</p>}
       {list.length < 3 && (
         <button type="button" className="db-ghost" onClick={() => set([...list, { key: targets[1]?.key ?? "$title", dir: "asc" }])}><Plus size={13} aria-hidden="true" /> Add sort</button>
       )}
