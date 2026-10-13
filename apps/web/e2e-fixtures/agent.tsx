@@ -76,7 +76,7 @@ const client: AgentClient = {
   createSession: async (params) => { controls.attempts++; await new Promise((resolve) => setTimeout(resolve, 150)); if (controls.reject) throw new Error("Fixture create rejected"); if (retryFixture) acceptRetryRequest("session", params?.requestId); session.note_id = params?.noteId ?? null; if (params?.permissionMode) { session.permission_mode = params.permissionMode; session.profile = policyProfile(params.permissionMode); persistPolicy(); } return { sessionId: session.id, session }; },
   listSessions: async (options) => {
     if (options?.limit === 50 && controls.listFails) throw Error("Fixture session list unavailable");
-    return historyFixture ? [session, { ...session, id: "second-session", title: "Explore the source material" }, ...(visualFixture ? [{ ...session, id: "older-session", title: "Review the weekly plan" }] : [])].filter((s) => !controls.archived.includes(s.id)).map((s) => ({ ...s, turnCount: 1, lastTurnAt: s.id === "older-session" ? Date.now() - 3 * 86400000 : Date.now(), lastTurnStatus: "done" as const })) : [];
+    return historyFixture ? [session, { ...session, id: "second-session", title: "Explore the source material" }, ...(visualFixture ? [{ ...session, id: "older-session", title: "Review the weekly plan" }] : []), ...(location.search.includes("helpers") ? [{ ...session, id: "draft-session", title: "Reply draft: Budget question" }, { ...session, id: "summary-session", title: "Conversation summary: Budget question" }] : [])].filter((s) => !controls.archived.includes(s.id)).map((s) => ({ ...s, turnCount: 1, lastTurnAt: s.id === "older-session" ? Date.now() - 3 * 86400000 : Date.now(), lastTurnStatus: "done" as const })) : [];
   },
   getSession: async () => {
     await sessionReady;

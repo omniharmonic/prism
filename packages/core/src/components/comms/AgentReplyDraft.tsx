@@ -16,7 +16,7 @@ import { queuedText } from "../../lib/agent/failure";
 import { useScopedDraft } from "../../lib/drafts/useScopedDraft";
 import { copyText } from "../../lib/clipboard";
 import { AgentMarkdown } from "../agent/AgentMarkdown";
-import { extractReplyDraft, REPLY_DRAFT_INSTRUCTION } from "../../lib/messages/replyDraft";
+import { extractReplyDraft, REPLY_DRAFT_INSTRUCTION, REPLY_SESSION_TITLE, SUMMARY_SESSION_TITLE } from "../../lib/messages/replyDraft";
 import {
   clearRequestReceipt,
   requestReceipt,
@@ -147,7 +147,7 @@ function ScopedAgentReplyDraft({
     setError(null);
     try {
       const params = {
-        title: `${summary ? "Conversation summary" : "Reply draft"}: ${title}`,
+        title: `${summary ? SUMMARY_SESSION_TITLE : REPLY_SESSION_TITLE}: ${title}`,
         noteId,
         profile,
         permissionMode: "read-only" as const,

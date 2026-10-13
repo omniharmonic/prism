@@ -375,3 +375,23 @@ test("a failed source search never displays cached results and attachments can b
   await expect(picker.getByRole("alert")).toContainText("Couldn't search this vault");
   await expect(picker.getByRole("button", { name: "Reference note", exact: true })).toHaveCount(0);
 });
+
+test("history lists conversations; a message's drafts and summaries stay out of it until asked for", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/e2e-fixtures/agent.html?history&helpers");
+  const list = page.getByRole("complementary", { name: "Conversation history" });
+  const rows = list.getByTestId("agent-session-row");
+  await expect(rows).toHaveCount(2);
+  await expect(list).not.toContainText("Reply draft: Budget question");
+  // One switch brings them in, and takes them out again.
+  const more = list.getByRole("button", { name: "Show 2 drafts and summaries" });
+  await more.click();
+  await expect(rows).toHaveCount(4);
+  await expect(list).toContainText("Conversation summary: Budget question");
+  await list.getByRole("button", { name: "Hide drafts and summaries" }).click();
+  await expect(rows).toHaveCount(2);
+  // Typing a name finds one without the switch.
+  await list.getByRole("textbox", { name: "Filter recent conversations" }).fill("budget");
+  await expect(rows).toHaveCount(2);
+  await expect(list).toContainText("Reply draft: Budget question");
+});
