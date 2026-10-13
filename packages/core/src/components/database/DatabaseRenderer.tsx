@@ -497,7 +497,8 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
               onRemoveTemplate={(t) => {
                 const { defaultTemplate, ...rest } = config;
                 void saveConfig({ ...rest, templates: (config.templates ?? []).filter((x) => x.id !== t.id), ...(defaultTemplate && defaultTemplate !== t.id ? { defaultTemplate } : {}) });
-                if (client.trashPage) void client.trashPage(t.id).catch(() => {});
+                // The template is off the list either way; say so when its page is still there.
+                if (client.trashPage) void client.trashPage(t.id).catch(() => setToast({ message: `“${t.name}” is no longer a template here, but its page could not be moved to Trash.`, undo: null }));
               }}
               onExport={() => void exportCsv()}
               onImport={() => setImporting(true)}
@@ -511,9 +512,15 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
                 onClear={() => setSelected(new Set())}
                 onDone={(message, undo) => setToast({ message, undo })} />
             )}
+            {/* A refresh that failed says so and keeps the pages already here: taking a full table away
+                for an error panel lost the person's place over a blip (and a failure nobody is told
+                about is worse). Only a first load with nothing to show is the error panel. */}
+            {rowsQuery.isError && !!rowsQuery.data && (
+              <p role="status" className="db-refresh-note">These pages could not be refreshed. Showing what was last loaded. <button type="button" className="db-ghost" onClick={() => void rowsQuery.refetch()}>Try again</button></p>
+            )}
             {rowsQuery.isLoading ? (
               <div className="db-state" role="status">Loading pages…</div>
-            ) : rowsQuery.isError ? (
+            ) : rowsQuery.isError && !rowsQuery.data ? (
               <div className="db-state" role="alert"><h2>Pages could not be loaded</h2><p>Check your connection and try again.</p><button type="button" className="db-control" onClick={() => void rowsQuery.refetch()}>Retry</button></div>
             ) : !rows.length && view.type !== "calendar" && view.type !== "board" ? (
               <EmptyRows ctx={ctx} filtered={!!(activeFilter(view.filter) || search.trim())} tag={config.source.tags[0]!} />

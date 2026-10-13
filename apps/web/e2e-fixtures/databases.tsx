@@ -219,6 +219,8 @@ const controls = {
   slowMs: 0,
   /** Delay every row query: a real server answers a refetch well after the write that caused it. */
   querySlowMs: 0,
+  /** Every row query fails (a server or network blip) until turned off. */
+  queryFails: false,
   listCalls: 0,
   queries: [] as QuerySpec[],
   notes: () => notes,
@@ -391,6 +393,7 @@ if (!legacy) {
   client.queryNotes = async (spec: QuerySpec) => {
     controls.queries.push(clone(spec));
     if (controls.querySlowMs) await new Promise((r) => setTimeout(r, controls.querySlowMs));
+    if (controls.queryFails) throw new VaultRequestError(502, "POST /query failed: 502");
     if (params.has("forbidden")) throw new VaultRequestError(403, "POST /query failed: 403 forbidden");
     const rows = visible().map((n) => ({ ...n, content: "", canEdit: !link && (!viewer || !!n._caps?.includes("edit")) }));
     // "is Me" in a view filter: the server resolves the caller; here the caller is Mira

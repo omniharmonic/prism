@@ -999,3 +999,21 @@ for (const [weekStart, first] of [["monday", "Mon"], ["sunday", "Sun"]] as const
     const label = await page.getByRole("grid").getByRole("gridcell").first().getAttribute("aria-label");
     expect(label).toMatch(weekStart === "monday" ? /^Monday/ : /^Sunday/);
   });
+
+test("a refresh that fails keeps the table and says so; trying again clears it", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  const table = page.getByRole("table", { name: "All tasks" });
+  await expect(table.getByRole("row")).toHaveCount(1 + 7 + 1 + 1);
+  await page.evaluate(() => { (window as any).dbFixture.queryFails = true; });
+  // An edit makes the rows be read again; that read fails.
+  await row(page, "Write release notes").getByRole("checkbox", { name: "Flagged" }).click();
+  const note = page.getByText("These pages could not be refreshed. Showing what was last loaded.");
+  await expect(note).toBeVisible();
+  await expect(table.getByRole("row")).toHaveCount(1 + 7 + 1 + 1);
+  await expect(page.getByRole("heading", { name: "Pages could not be loaded" })).toHaveCount(0);
+  // The edit itself was saved and is shown.
+  await expect(row(page, "Write release notes").getByRole("checkbox", { name: "Flagged" })).toBeChecked();
+  await page.evaluate(() => { (window as any).dbFixture.queryFails = false; });
+  await note.getByRole("button", { name: "Try again" }).click();
+  await expect(note).toHaveCount(0);
+});
