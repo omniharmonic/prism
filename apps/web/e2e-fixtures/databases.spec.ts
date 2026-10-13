@@ -986,3 +986,16 @@ test("table: a column the view shows has its values however many properties the 
   // A usual request stays within what an older server accepts.
   expect(asked.length).toBeLessThanOrEqual(40);
 });
+
+for (const [weekStart, first] of [["monday", "Mon"], ["sunday", "Sun"]] as const)
+  test(`calendar: weeks start on the person's first day of the week (${weekStart})`, async ({ page }) => {
+    await page.addInitScript((value) => { localStorage.setItem("prism:region", JSON.stringify({ weekStart: value, at: 1 })); }, weekStart);
+    await page.goto("/e2e-fixtures/databases.html");
+    await page.getByRole("tab", { name: "Calendar" }).click();
+    const heads = page.getByRole("grid").getByRole("columnheader");
+    await expect(heads).toHaveCount(7);
+    await expect(heads.first()).toHaveText(first);
+    // The first cell of the grid is that weekday.
+    const label = await page.getByRole("grid").getByRole("gridcell").first().getAttribute("aria-label");
+    expect(label).toMatch(weekStart === "monday" ? /^Monday/ : /^Sunday/);
+  });

@@ -3,6 +3,7 @@
  * sorted and paged by the query engine) and edits through the same typed
  * PropertyValue, so a cell, a card and the page header behave identically.
  */
+import { weekStartsOn } from "../../lib/datetime/format";
 import { useMemo, useRef, useState, type ReactNode } from "react";
 import {
   DndContext,
@@ -627,10 +628,15 @@ export function ListView({ ctx }: { ctx: ViewContext }) {
 
 const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
-/** The 6-week grid for `month` (Monday-first). */
+/** The weekday names of a calendar row, starting on the person's first day of the week
+ *  (Settings → Language & region; "System" follows the locale). */
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const weekdayNames = (): string[] => Array.from({ length: 7 }, (_, i) => DAY_NAMES[(weekStartsOn() + i) % 7]!);
+
+/** The 6-week grid for `month`, each week starting on the person's first day of the week. */
 export function monthGrid(month: Date): Date[] {
   const first = new Date(month.getFullYear(), month.getMonth(), 1);
-  const offset = (first.getDay() + 6) % 7;
+  const offset = (first.getDay() - weekStartsOn() + 7) % 7;
   return Array.from({ length: 42 }, (_, i) => new Date(first.getFullYear(), first.getMonth(), 1 - offset + i));
 }
 
@@ -756,7 +762,7 @@ export function CalendarView({ ctx, month, onMonth, onPickDate }: { ctx: ViewCon
       <DndContext sensors={sensors} collisionDetection={pointerWithin} onDragEnd={onDragEnd} onDragCancel={noteCalendarDrop}>
         <div className="db-cal" role="grid" aria-label={`${ctx.view.name} calendar`}>
           <div className="db-cal-week db-cal-dows" role="row">
-            {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} className="db-cal-dow" role="columnheader">{d}</div>)}
+            {weekdayNames().map((d) => <div key={d} className="db-cal-dow" role="columnheader">{d}</div>)}
           </div>
           {weeks.map((week) => {
             const keys = week.map(ymd);
@@ -948,7 +954,7 @@ export function CalendarMonthTouch({ ctx, month, onMonth }: { ctx: ViewContext; 
         <button type="button" className="db-control db-agenda-nav" aria-label="Next month" onClick={() => go(new Date(month.getFullYear(), month.getMonth() + 1, 1))}><ChevronRight size={16} aria-hidden="true" /></button>
       </div>
       <div className="db-month-grid" role="group" aria-label={`${ctx.view.name} month`}>
-        {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} className="db-month-dow" aria-hidden="true">{d}</div>)}
+        {weekdayNames().map((d) => <div key={d} className="db-month-dow" aria-hidden="true">{d}</div>)}
         {days.map((d, i) => {
           const k = keys[i]!;
           const count = (byDay.get(k) ?? []).length;
