@@ -190,6 +190,15 @@ if (params.has("relations") && !persisted) {
   notes.push(task("r4", "Unknown-linked task", { status: "todo", project: "Nebula" }));
   notes.push(task("r5", "Empty-linked task", { status: "todo", project: "" }));
 }
+// `?wide`: fifty more properties than a usual request names; the view shows the LAST one.
+if (params.has("wide") && !persisted) {
+  for (let i = 1; i <= 50; i++) schemas.task!.fields[`extra_${String(i).padStart(2, "0")}`] = { type: "string" };
+  const t1 = notes.find((n) => n.id === "t1")!;
+  t1.metadata = { ...t1.metadata, extra_50: "Reached the last column" };
+  const db = notes.find((n) => n.id === "db")!;
+  const config = db.metadata!.prism_database as { views: Array<{ id: string; visible?: string[] }> };
+  db.metadata = { ...db.metadata, prism_database: { ...config, views: config.views.map((v) => (v.id === "table" ? { ...v, visible: [...(v.visible ?? []), "extra_50"] } : v)) } };
+}
 // `?crowded`: five pages due today, more than a calendar day cell lists.
 if (params.has("crowded") && !persisted) for (let i = 1; i <= 5; i++) notes.push(task(`crowd${i}`, `Crowded day item ${i}`, { status: "todo", due: day(0) }));
 if (params.has("tz")) notes.push(task("t7", "Late call", { status: "todo", due: `${day(3)}T05:00:00Z` }));

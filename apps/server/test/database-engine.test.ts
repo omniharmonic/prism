@@ -62,7 +62,9 @@ test("paging: cursors resume and are bound to their query", () => {
 
 test("spec validation bounds every list", () => {
   assert.equal(validateQuerySpec({ tags: ["a", "b", "c", "d", "e", "f"] }).ok, false);
-  assert.equal(validateQuerySpec({ tags: ["a"], fields: Array.from({ length: 41 }, (_, i) => `f${i}`) }).ok, false);
+  // A view shows up to 60 columns and filters, sorts and groups by more: 100 keys are askable, 101 are not.
+  assert.equal(validateQuerySpec({ tags: ["a"], fields: Array.from({ length: 100 }, (_, i) => `f${i}`) }).ok, true);
+  assert.equal(validateQuerySpec({ tags: ["a"], fields: Array.from({ length: 101 }, (_, i) => `f${i}`) }).ok, false);
   assert.equal(validateQuerySpec({ tags: ["a"], filter: { match: "all", conditions: [{ key: "x", op: "in", value: "nope" }] } }).ok, false);
   assert.equal(validateQuerySpec({ tags: ["a"], filter: { match: "xor", conditions: [] } }).ok, false);
   assert.equal(validateQuerySpec({ tags: ["a"], sort: [{ key: "$updatedAt", dir: "desc" }] }).ok, true);

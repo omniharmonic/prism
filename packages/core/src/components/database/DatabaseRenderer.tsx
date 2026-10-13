@@ -26,7 +26,7 @@ import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { queryKeys } from "../../lib/parachute/queries";
 import { noteAccess, useDatabaseAggregates, useDatabaseRows, usePropertyWriter, useSchemas, useScope, useUpdateSchema } from "../../lib/database/hooks";
-import { activeFilter, filterConditions, noteTitle, QUERY_MAX_LIMIT, type QueryRow, type QuerySort, type QuerySpec } from "../../lib/database/query";
+import { activeFilter, filterConditions, MAX_FIELDS, noteTitle, USUAL_FIELDS, QUERY_MAX_LIMIT, type QueryRow, type QuerySort, type QuerySpec } from "../../lib/database/query";
 import { deletedKeys, isListableKey, isSystemKey, propertyFromField, resolveProperties, SYSTEM_PROPERTIES, type PropertyDef, type SchemaPatch } from "../../lib/database/schema";
 import { PropertyEditor } from "./PropertyEditor";
 import { BottomSheet } from "../ui/BottomSheet";
@@ -125,7 +125,9 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
   const spec: QuerySpec | null = useMemo(() => {
     if (!config || !view) return null;
     const schemaKeys = tags.flatMap((t) => Object.keys(schemas[t]?.fields ?? {}));
-    const wanted = new Set<string>([...schemaKeys, ...(view.visible ?? []), ...ROW_META]);
+    // What this view shows or computes with comes first; the tag's other properties fill what room is
+    // left. In schema order alone, a column past the 40th property of a wide database came back empty.
+    const wanted = new Set<string>([...(view.visible ?? []), ...filterConditions(view.filter).map((c) => c.key), ...(view.sort ?? []).map((s) => s.key), ...Object.keys(view.calculations ?? {}), ...ROW_META]);
     for (const k of [view.groupBy, view.dateKey, view.coverKey]) if (k && !k.startsWith("$")) wanted.add(k);
     // The calendar needs to know which rows an integration owns (they are not dragged).
     if (view.type === "calendar") for (const k of INTEGRATION_META) wanted.add(k);
@@ -134,7 +136,9 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     // …or calculates over them: the server answers a figure for an access key only to a
     // request that also asks for the key (a calculation on a hidden "Created by" column).
     for (const k of SYSTEM_META) if (view.visible?.includes(k) || filterConditions(view.filter).some((c) => c.key === k) || view.sort?.some((s) => s.key === k) || view.calculations?.[k] !== undefined) wanted.add(k);
-    const fields = hasSchema ? [...wanted].filter((k) => !k.startsWith("$") && (!isSystemKey(k) || ROW_META.includes(k) || SYSTEM_META.includes(k))).slice(0, 40) : undefined;
+    const askable = (k: string) => !k.startsWith("$") && (!isSystemKey(k) || ROW_META.includes(k) || SYSTEM_META.includes(k));
+    const needed = [...wanted].filter(askable);
+    const fields = hasSchema ? [...new Set([...needed, ...schemaKeys.filter(askable)])].slice(0, Math.min(MAX_FIELDS, Math.max(USUAL_FIELDS, needed.length))) : undefined;
     let filter = activeFilter(view.filter);
     if (view.type === "calendar" && view.dateKey && view.dateKey !== "$createdAt" && (!filter || filter.match === "all")) {
       const grid = monthGrid(month);

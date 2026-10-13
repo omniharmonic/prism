@@ -977,3 +977,12 @@ test("table: a row stays where it is when one of its cells is edited (no sort ch
   await expect.poll(titles).toEqual(before);
   expect(await titles()).toEqual(before);
 });
+
+test("table: a column the view shows has its values however many properties the database has", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?wide");
+  await expect(row(page, "Review workspace navigation")).toContainText("Reached the last column");
+  const asked = await page.evaluate(() => (window as any).dbFixture.queries.at(-1).fields as string[]);
+  expect(asked).toContain("extra_50");
+  // A usual request stays within what an older server accepts.
+  expect(asked.length).toBeLessThanOrEqual(40);
+});

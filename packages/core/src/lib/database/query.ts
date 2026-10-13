@@ -204,7 +204,10 @@ const MAX_TAGS = 5;
 const MAX_CONDITIONS = 25;
 const MAX_GROUPS = 5;
 const MAX_SORTS = 3;
-const MAX_FIELDS = 40;
+/** A view may show 60 columns (config.ts) and filter, sort and group by a few more: every one of them must be askable in one query. */
+export const MAX_FIELDS = 100;
+/** What a request names when it needs no more: older servers refuse a longer list. */
+export const USUAL_FIELDS = 40;
 
 /** Metadata keys a view may read or write. Excludes prototype-pollution names. */
 export const FIELD_KEY = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
