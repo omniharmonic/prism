@@ -351,7 +351,7 @@ a.prism-toc-item { box-sizing: border-box; }
 .prose-editor pre .hljs-strong { font-weight: 700; }
 
 /* ── Find and replace bar ── */
-.prism-find-bar { position: fixed; top: 72px; right: 24px; z-index: 60; display: flex; flex-direction: column; gap: 4px; width: min(420px, calc(100vw - 32px)); padding: 6px 8px; border-radius: var(--radius-md); border: 1px solid var(--glass-border); box-shadow: var(--glass-shadow-elevated); }
+.prism-find-bar { position: fixed; top: 72px; right: calc(24px + var(--workspace-right-inset, 0px)); z-index: 60; display: flex; flex-direction: column; gap: 4px; width: min(420px, calc(100vw - 32px)); padding: 6px 8px; border-radius: var(--radius-md); border: 1px solid var(--glass-border); box-shadow: var(--glass-shadow-elevated); }
 .prism-find-row { display: flex; align-items: center; gap: 4px; }
 .prism-find-input { flex: 1; min-width: 0; height: 28px; padding: 0 8px; border-radius: var(--radius-sm); border: 1px solid var(--glass-border); background: var(--glass); color: var(--text-primary); font-size: 13px; outline: none; }
 .prism-find-input:focus { border-color: var(--color-accent); }
@@ -496,7 +496,7 @@ a.prism-toc-item { box-sizing: border-box; }
 .prism-shortcuts-row kbd { font: 12px/1 var(--font-mono, ui-monospace, monospace); padding: 3px 6px; border-radius: 5px; border: 1px solid var(--glass-border); background: var(--glass); color: var(--text-primary); }
 @media (max-width: 640px) { .prism-shortcuts-body { columns: 1; } .prism-shortcuts-head input { font-size: 16px; } }
 .block-notice {
-  position: fixed; left: 50%; bottom: calc(24px + var(--workspace-bottom-inset, 0px)); transform: translateX(-50%); z-index: 80;
+  position: fixed; left: calc(50% + (var(--workspace-left-inset, 0px) - var(--workspace-right-inset, 0px)) / 2); bottom: calc(24px + var(--workspace-bottom-inset, 0px)); transform: translateX(-50%); z-index: 80;
   max-width: calc(100vw - 32px); padding: 8px 14px; border-radius: var(--radius-md); border: 1px solid var(--glass-border);
   background: var(--bg-surface); color: var(--text-primary); box-shadow: var(--glass-shadow-elevated); font-size: 13px;
 }

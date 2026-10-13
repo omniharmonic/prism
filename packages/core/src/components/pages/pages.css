@@ -132,7 +132,7 @@
 
 /* ── toast ─────────────────────────────────────────────────────────────── */
 .page-toast {
-  position: fixed; z-index: var(--z-toast); left: 50%; bottom: calc(24px + var(--workspace-bottom-inset, 0px));
+  position: fixed; z-index: var(--z-toast); left: calc(50% + (var(--workspace-left-inset, 0px) - var(--workspace-right-inset, 0px)) / 2); bottom: calc(24px + var(--workspace-bottom-inset, 0px));
   transform: translateX(-50%); display: flex; align-items: center; gap: 12px; max-width: min(560px, calc(100vw - 32px));
   padding: 10px 10px 10px 16px; border-radius: var(--radius-lg);
   background: var(--text-primary); color: var(--bg-base); box-shadow: var(--glass-shadow-elevated);

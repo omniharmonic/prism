@@ -1,4 +1,5 @@
 import { flushSync } from "react-dom";
+import { useNavigationPreferences } from "../navigation/NavigationPreferences";
 import { isVaultNoteId } from "../../lib/noteIdentity";
 import { useCallback, useRef, useState, type RefObject } from "react";
 import { useSoftKeyboard } from "../../lib/softKeyboard";
@@ -86,8 +87,10 @@ export function MobileActionBar() {
     openTab("vault-messages", "Messages", "vault-messages" as ContentType);
   };
   const inbox = useUnreadCount();
+  // "Your sidebar" decides this on a phone too: a destination hidden there is not offered here.
+  const showMessages = useNavigationPreferences().value.placement.messages !== "hidden";
   const moreItems: SheetItem[] = [
-    ...(inbox.available ? [{ icon: <MessageSquare size={19} />, label: "Messages", onClick: openMessages }] : []),
+    ...(inbox.available && showMessages ? [{ icon: <MessageSquare size={19} />, label: "Messages", onClick: openMessages }] : []),
     {
       // NP-MB-02: one tap → an "Untitled" page with its title focused.
       icon: <FilePlus size={19} />,
@@ -212,11 +215,11 @@ export function MobileActionBar() {
               onClick={() => { useUIStore.setState({ sidebarOpen: false, contextPanelOpen: false }); onClick(); }}>
               {icon}
             </MobileButton>
-          ) : (
+          ) : showMessages ? (
             <MobileButton label="Messages" active={activeTab?.noteId === "vault-messages"} onClick={openMessages}>
               <MessageSquare size={20} />
             </MobileButton>
-          )}
+          ) : null}
         </InboxNavButton>
         <MobileButton label="Search" onClick={openCommandBar}>
           <Search size={20} />

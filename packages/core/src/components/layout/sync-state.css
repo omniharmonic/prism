@@ -4,7 +4,7 @@
   font-size: 12px; line-height: 1; white-space: nowrap; color: var(--text-muted);
   border-radius: 6px; background: transparent;
 }
-.sync-state-header { height: 30px; padding: 0 8px; }
+.sync-state-header { height: var(--control-h-sm); padding: 0 8px; }
 .sync-state-phone { height: 30px; padding: 0 4px; font-size: 11px; }
 .sync-state-footer { min-height: 32px; padding: 0 8px; font-size: 12px; }
 button.sync-state { cursor: pointer; }

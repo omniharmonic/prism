@@ -429,7 +429,7 @@ function PageActionsTrigger({ page, size = 16 }: { page: PageRef; size?: number 
         aria-haspopup="menu"
         aria-expanded={!!anchor}
         className="interactive focus-ring flex items-center justify-center flex-shrink-0"
-        style={{ width: 30, height: 30, color: "var(--text-muted)" }}
+        style={{ width: "var(--control-h-sm)", height: "var(--control-h-sm)", color: "var(--text-muted)" }}
         onClick={(e) => {
           if (isMobile) {
             usePagesUI.getState().openActions(page);

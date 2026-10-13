@@ -65,7 +65,7 @@ export function OpenDocuments() {
         ref={trigger}
         className="interactive focus-ring flex shrink-0 items-center gap-1 px-2"
         style={{
-          height: 32,
+          height: "var(--control-h-sm)",
           color: "var(--text-secondary)",
           fontSize: "var(--text-xs)",
         }}

@@ -73,6 +73,18 @@ function ShellLayout() {
   // widths stay intact; the companion becomes a dismissible overlay instead.
   const companionOverlay = isMobile || layoutWidth - (sidebarOpen ? sidebarWidth + 4 : 0) - contextPanelWidth - 4 < 480;
 
+  // What the docked panels take from each side of the window, for the pieces that float over the
+  // page from the window's own edges (the find bar, the page agent's proposal, toasts): pinned to
+  // the window they sat on top of the docked panel, or off-centre from the page they speak about.
+  const leftInset = !isMobile && sidebarOpen ? sidebarWidth + 4 : 0;
+  const rightInset = !companionOverlay && contextPanelOpen ? contextPanelWidth + 4 : 0;
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--workspace-left-inset", `${leftInset}px`);
+    root.style.setProperty("--workspace-right-inset", `${rightInset}px`);
+    return () => { root.style.removeProperty("--workspace-left-inset"); root.style.removeProperty("--workspace-right-inset"); };
+  }, [leftInset, rightInset]);
+
   useKeyboardShortcuts();
   // NP-SB-11: remember the desktop sidebar (width + collapsed) on this device.
   // Phones use the same flag for their drawer, which must never be remembered.

@@ -1,6 +1,6 @@
 /* NP-AI-03 — the agent's result for a page / selection, as a proposal (non-modal). */
 .page-agent {
-  position: fixed; z-index: var(--z-popover); right: 24px; bottom: 44px;
+  position: fixed; z-index: var(--z-popover); right: calc(24px + var(--workspace-right-inset, 0px)); bottom: 44px;
   width: min(440px, calc(100vw - 32px)); max-height: min(70dvh, 620px);
   display: flex; flex-direction: column;
   border: 1px solid var(--glass-border-strong); border-radius: var(--radius-xl);
