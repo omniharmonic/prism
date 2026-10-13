@@ -5,6 +5,7 @@
  * from index.ts (process startup: assertConfig + serve + collab) so the full
  * request pipeline can be constructed and tested without binding a port.
  */
+import serverPackage from "../package.json" with { type: "json" };
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { cors } from "hono/cors";
 import { serveStatic } from "@hono/node-server/serve-static";
@@ -34,6 +35,10 @@ import { mountAppSiteAssociation } from "./routes/app-links";
 import { media, map as mapProxy } from "./routes/media";
 import { rateLimit } from "./middleware/ratelimit";
 import { EMBED_FRAME_SOURCES } from "@prism/core/media-embeds";
+
+/** The release this server is, and the version of the wire contract its clients speak. Raise `API_VERSION` when a client built for the previous one can no longer be served correctly. */
+export const SERVER_VERSION: string = serverPackage.version;
+export const API_VERSION = 1;
 
 export function createApp(): Hono {
   const app = new Hono();
@@ -165,6 +170,11 @@ export function createApp(): Hono {
   //   /api/federation/* → peer-signed federation surface (pairing, identity)
   // The human-facing published URL /p/:slug is a CLIENT route (SPA fallback);
   // it fetches /api/p/:slug from here.
+  // Which server this is, for a client to tell when it is talking to an older or newer one
+  // Registered before the signed-in API so it answers anyone.
+  // (a release number and the wire version; nothing about the machine or its configuration).
+  app.get("/api/version", (c) => c.json({ version: SERVER_VERSION, api: API_VERSION }));
+
   app.route("/api/p", publish);
   app.route("/api/federation", federation);
   app.route("/api/federated", federated);
