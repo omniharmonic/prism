@@ -15,7 +15,7 @@ import {
 } from "../../data/LiveActionsContext";
 import { MessageThread } from "../comms/MessageThread";
 import { MessageComposer } from "../comms/MessageComposer";
-import { PlatformBadge } from "../comms/PlatformBadge";
+import { SourceBadge } from "../comms/PeopleConversations";
 
 import {
   TRIAGE_TAGS,
@@ -195,7 +195,7 @@ function ScopedMessageRenderer({
         <div className="prism-conversation-title">
           <h2>{title}</h2>
           <div className="prism-conversation-meta">
-            <PlatformBadge platform={platform} />
+            <SourceBadge platform={platform} />
             <span className="prism-conversation-state">{showLive ? "Live conversation" : "Saved conversation"}</span>
             {roomId && !readOnly && (
               <button

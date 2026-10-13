@@ -1095,22 +1095,8 @@ function PersonCard({
           </div>
           <div className="flex items-center gap-2 mt-1">
             {/* Platform badges */}
-            {p.platforms.map((pl) => {
-              const config = getPlatformConfig(pl);
-              return (
-                <span
-                  key={pl}
-                  className="text-[9px] px-1.5 py-0.5 rounded-full"
-                  style={{
-                    background: config.color,
-                    color: "white",
-                    opacity: 0.85,
-                  }}
-                >
-                  {config.label}
-                </span>
-              );
-            })}
+            {/* The one source label of Messages (dot + name), as in the list and the timeline. */}
+            {p.platforms.map((pl) => <SourceBadge key={pl} platform={pl} />)}
             <span
               className="text-[10px]"
               style={{ color: "var(--text-muted)" }}
