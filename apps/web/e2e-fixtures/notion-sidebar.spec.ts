@@ -70,6 +70,8 @@ test("⌘\\ collapses and width persists", async ({ page }) => {
   await page.keyboard.press("ControlOrMeta+Backslash");
   await expect(nav).toBeVisible();
   // Drag the divider: the new width survives a reload, clamped to 200–400.
+  // (The panel slides in: its edge is where it will stay once that has finished.)
+  await expect.poll(() => nav.evaluate((el) => el.closest(".prism-workspace-dock")!.getAnimations().length)).toBe(0);
   const before = (await nav.boundingBox())!;
   await page.mouse.move(before.x + before.width + 2, 300);
   await page.mouse.down();

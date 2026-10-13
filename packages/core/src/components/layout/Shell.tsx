@@ -25,7 +25,7 @@ import { ImportExportHost } from "../import-export/ImportExportHost";
 import { PageAgentHost } from "../agent/PageAgentPanel";
 import { VaultClientProvider, useOptionalVaultClient } from "../../data/VaultClientContext";
 import { trackVaultWrites } from "../../lib/sync/syncState";
-import { applyReduceMotion } from "../../lib/motion";
+import { applyReduceMotion, prefersReducedMotion, springFrames } from "../../lib/motion";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "../../lib/parachute/queries";
 
@@ -84,6 +84,9 @@ function ShellLayout() {
     root.style.setProperty("--workspace-right-inset", `${rightInset}px`);
     return () => { root.style.removeProperty("--workspace-left-inset"); root.style.removeProperty("--workspace-right-inset"); };
   }, [leftInset, rightInset]);
+
+  const sidebarDock = useDockMotion(!isMobile && sidebarOpen, "left", isMobile);
+  const companionDock = useDockMotion(!companionOverlay && contextPanelOpen, "right", companionOverlay);
 
   useKeyboardShortcuts();
   // NP-SB-11: remember the desktop sidebar (width + collapsed) on this device.
@@ -171,19 +174,20 @@ function ShellLayout() {
       {restoreNotice}
       <a className="workspace-skip-link" href="#workspace-document">Skip to document</a>
       <div ref={layoutRef} key="workspace" className="prism-workspace-layout relative flex flex-1 min-h-0">
-        {!isMobile && sidebarOpen && (
-          <>
+        {!isMobile && sidebarDock.mounted && (
+          <div ref={sidebarDock.ref} className="prism-workspace-dock" data-side="left" data-closing={sidebarDock.closing || undefined} inert={sidebarDock.closing}
+            style={sidebarDock.closing ? { marginRight: -(sidebarWidth + 4) } : undefined}>
             <div style={{ width: sidebarWidth, minWidth: 200, maxWidth: 400 }} className="flex-shrink-0">
               <Navigation />
             </div>
-            <ResizeHandle onResize={setSidebarWidth} initialSize={sidebarWidth} side="left" />
-          </>
+            <ResizeHandle onResize={setSidebarWidth} initialSize={sidebarWidth} side="left" min={200} max={400} onCollapse={() => useUIStore.setState({ sidebarOpen: false })} />
+          </div>
         )}
 
         {/* The pinned sidebar and the peek are mutually exclusive, so there is only
             ever ONE <Navigation/> mounted on desktop. Keyboard: the first tab stop
             after the skip link opens the peek and moves focus into it. */}
-        {!isMobile && !sidebarOpen && !focusMode && (
+        {!isMobile && !sidebarOpen && !focusMode && !sidebarDock.mounted && (
           <div key="sidebar-peek-zone" className="sidebar-peek-zone" data-testid="sidebar-peek-zone" onMouseEnter={peek.enter} onMouseLeave={peek.leave}>
             <button ref={peek.trigger} type="button" className="sidebar-peek-trigger" aria-expanded={peek.open} aria-controls="sidebar-peek" onClick={peek.toggle}>
               {peek.open ? "Hide sidebar preview" : "Show sidebar preview"}
@@ -204,13 +208,14 @@ function ShellLayout() {
           <Canvas />
         </div>
 
-        {!companionOverlay && contextPanelOpen && (
-          <>
-            <ResizeHandle onResize={setContextPanelWidth} initialSize={contextPanelWidth} side="right" />
+        {companionDock.mounted && (
+          <div ref={companionDock.ref} className="prism-workspace-dock" data-side="right" data-closing={companionDock.closing || undefined} inert={companionDock.closing}
+            style={companionDock.closing ? { marginLeft: -(contextPanelWidth + 4) } : undefined}>
+            <ResizeHandle onResize={setContextPanelWidth} initialSize={contextPanelWidth} side="right" min={260} max={480} onCollapse={() => useUIStore.setState({ contextPanelOpen: false })} />
             <div style={{ width: contextPanelWidth, minWidth: 260, maxWidth: 480 }} className="prism-workspace-companion flex-shrink-0">
               <ContextPanel />
             </div>
-          </>
+          </div>
         )}
         {isMobile && <MobileNavigation onReady={navigationReady} restoring={restore.state === "loading"} open={sidebarOpen} dragDistance={sidebarOpen ? undefined : swipe ?? undefined} drawerRef={navigationDrawer} />}
         {companionOverlay && contextPanelOpen && (
@@ -445,48 +450,138 @@ function MobileDrawer({
 }
 
 // Resize handle between panels
+/**
+ * A docked panel that slides. The panel is mounted while it is open or still leaving; `closing`
+ * is the leaving stretch, during which the caller gives the page its room at once (one layout
+ * step) and the panel slides off over it. Opening and closing can interrupt each other: the new
+ * motion starts from where the panel is. Reduced motion (OS or in-app) mounts and unmounts at once.
+ * `still` = the panel is not docked in this layout at all (a phone, or a window too narrow for
+ * it): going to and from that layout is a change of layout, not something the person opened or
+ * closed, so the docked panel appears and goes with the layout, in the same paint.
+ */
+function useDockMotion(open: boolean, side: "left" | "right", still: boolean) {
+  const [mounted, setMounted] = useState(open);
+  const [closing, setClosing] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const running = useRef<Animation | null>(null);
+  const last = useRef(open);
+  const wasStill = useRef(still);
+  const layoutChange = still || wasStill.current;
+  if ((open || layoutChange) && mounted !== open) setMounted(open);
+  if (layoutChange && closing) setClosing(false);
+  useLayoutEffect(() => {
+    const changedLayout = still || wasStill.current;
+    wasStill.current = still;
+    // Only a change moves the panel: not the first paint, and not an effect that is merely run again.
+    if (last.current === open) return;
+    last.current = open;
+    if (changedLayout) { running.current?.cancel(); running.current = null; return; }
+    const node = ref.current;
+    const motionless = !node || typeof node.animate !== "function" || prefersReducedMotion();
+    const at = (): number | null => (running.current && node ? new DOMMatrixReadOnly(getComputedStyle(node).transform).m41 : null);
+    const play = (from: number, to: number, keep: boolean) => {
+      // A panel travels its whole width: a firmer spring than the default lands it within the app's 320 ms.
+      const { values, duration } = springFrames(from, to, { stiffness: 700, damping: 50, maxMs: 300 });
+      const animation = node!.animate(values.map((x) => ({ transform: `translateX(${x}px)` })), { duration, easing: "linear", fill: keep ? "forwards" : "none" });
+      running.current = animation;
+      return animation;
+    };
+    const away = () => (side === "left" ? -1 : 1) * (node?.offsetWidth ?? 0);
+    if (open) {
+      setClosing(false);
+      const from = at();
+      running.current?.cancel();
+      running.current = null;
+      if (motionless) return;
+      const animation = play(from ?? away(), 0, false);
+      animation.onfinish = () => { if (running.current === animation) running.current = null; };
+    } else if (mounted) {
+      const hinted = Number(node?.dataset.leaveFrom);
+      if (node) delete node.dataset.leaveFrom;
+      const from = at() ?? (Number.isFinite(hinted) ? hinted : null);
+      running.current?.cancel();
+      running.current = null;
+      if (motionless) { setMounted(false); setClosing(false); return; }
+      setClosing(true);
+      const animation = play(from ?? 0, away(), true);
+      animation.onfinish = () => { if (running.current !== animation) return; running.current = null; setMounted(false); setClosing(false); };
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, still]);
+  useEffect(() => () => running.current?.cancel(), []);
+  return { mounted: layoutChange ? open : mounted, closing: layoutChange ? false : closing, ref };
+}
+
+/**
+ * The edge of a docked panel. Dragging writes the width straight to the panel (no state per
+ * move); letting go saves it. Pulled in past its smallest width the panel resists, like a
+ * stretched band — and let go well past it, or flicked toward the edge, it closes.
+ */
 function ResizeHandle({
   onResize,
   initialSize,
   side,
+  min,
+  max,
+  onCollapse,
 }: {
   onResize: (size: number) => void;
   initialSize: number;
   side: "left" | "right";
+  min: number;
+  max: number;
+  onCollapse: () => void;
 }) {
-  const startX = useRef(0);
-  const startSize = useRef(initialSize);
-
+  const handle = useRef<HTMLDivElement>(null);
   const onMouseDown = useCallback(
     (e: React.MouseEvent) => {
-      startX.current = e.clientX;
-      startSize.current = initialSize;
-
-      const onMouseMove = (e: MouseEvent) => {
-        const delta = e.clientX - startX.current;
-        const newSize = side === "left"
-          ? startSize.current + delta
-          : startSize.current - delta;
-        onResize(newSize);
+      const panel = (side === "left" ? handle.current?.previousElementSibling : handle.current?.nextElementSibling) as HTMLElement | null;
+      if (!panel) return;
+      const startX = e.clientX;
+      let raw = initialSize;
+      let lastX = e.clientX, lastAt = e.timeStamp, speed = 0; // px/ms toward the panel's own edge = negative
+      const shown = (size: number) => (size >= min ? Math.min(max, size) : min - (min - size) * 0.35);
+      const onMouseMove = (move: MouseEvent) => {
+        const delta = move.clientX - startX;
+        raw = side === "left" ? initialSize + delta : initialSize - delta;
+        const dt = Math.max(1, move.timeStamp - lastAt);
+        const dx = (move.clientX - lastX) * (side === "left" ? 1 : -1);
+        speed = 0.6 * (dx / dt) + 0.4 * speed;
+        lastX = move.clientX; lastAt = move.timeStamp;
+        panel.style.minWidth = "0";
+        panel.style.width = `${Math.max(80, shown(raw))}px`;
       };
-
-      const onMouseUp = () => {
+      const onMouseUp = (up: MouseEvent) => {
+        // A pointer that had come to rest before letting go is not a flick.
+        if (up.timeStamp - lastAt > 90) speed = 0;
         document.removeEventListener("mousemove", onMouseMove);
         document.removeEventListener("mouseup", onMouseUp);
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
+        const saved = Math.max(min, Math.min(max, raw));
+        // Well past the smallest width, or a flick toward the edge from near it: the panel closes.
+        const collapse = raw < min - 56 || (raw < min + 24 && speed < -0.7);
+        const drawn = panel.getBoundingClientRect().width;
+        panel.style.minWidth = `${min}px`;
+        panel.style.width = `${collapse ? initialSize : saved}px`;
+        if (collapse) {
+          // The panel takes its saved width back for next time; it leaves from where its edge was drawn.
+          const dock = panel.parentElement;
+          if (dock) dock.dataset.leaveFrom = String((side === "left" ? -1 : 1) * Math.max(0, initialSize - drawn));
+          onCollapse();
+        } else onResize(saved);
       };
-
       document.addEventListener("mousemove", onMouseMove);
       document.addEventListener("mouseup", onMouseUp);
       document.body.style.cursor = "col-resize";
       document.body.style.userSelect = "none";
     },
-    [initialSize, onResize, side],
+    [initialSize, onResize, onCollapse, side, min, max],
   );
 
   return (
     <div
+      ref={handle}
       onMouseDown={onMouseDown}
       className="w-1 cursor-col-resize hover:bg-accent/30 transition-colors flex-shrink-0"
       style={{ background: "var(--glass-border)" }}

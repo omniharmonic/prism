@@ -13,6 +13,10 @@ html.light {
   --material-edge: rgb(255 255 255 / 95%);
 }
 .prism-workspace-layout { background: var(--workspace-frame); }
+/* A docked panel on its way out: the page already has the room (one layout step), and the panel
+   slides off over it. Only the panel is ever transformed — never the page beside it. */
+.prism-workspace-dock { display: flex; flex-shrink: 0; min-height: 0; }
+.prism-workspace-dock[data-closing] { position: relative; z-index: 1; pointer-events: none; }
 .prism-workspace-canvas { background: var(--bg-document); }
 @media (min-width: 768px) {
   .prism-workspace-layout { padding: 8px 8px 8px 0; }
@@ -30,7 +34,7 @@ html.light {
     border-bottom-left-radius: calc(var(--workspace-radius) - 1px);
     border-bottom-right-radius: calc(var(--workspace-radius) - 1px);
   }
-  .prism-workspace-layout > .prism-workspace-companion {
+  .prism-workspace-layout .prism-workspace-companion {
     border-radius: var(--workspace-radius);
     background: var(--bg-document);
   }
@@ -39,7 +43,7 @@ html.light {
     border-top-left-radius: var(--workspace-radius);
     border-top-right-radius: var(--workspace-radius);
   }
-  .prism-workspace-layout > .cursor-col-resize { background: transparent !important; }
+  .prism-workspace-layout .cursor-col-resize { background: transparent !important; }
   .workspace-navigation { padding: 2px 4px; }
   .workspace-navigation .workspace-nav-row { border-radius: 9px; }
   .workspace-navigation .workspace-nav-row[data-active="true"] { background: var(--bg-surface); }
