@@ -46,6 +46,8 @@
   overflow: auto;
   padding: 8px 24px 24px;
 }
+/* In a conversation, the message that is open (the one a reply answers) carries a quiet accent edge. */
+.prism-email-message[data-current="true"] { box-shadow: inset 2px 0 0 0 var(--color-accent); }
 .prism-email-message {
   padding: 22px 0;
   border-bottom: 1px solid var(--glass-border);

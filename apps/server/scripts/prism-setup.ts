@@ -119,6 +119,10 @@ async function main() {
     const hadEnv = existsSync(ENV_FILE);
     const priorGovSecret = hadEnv ? readEnv(ENV_FILE).GOVERNANCE_SIGNING_SECRET : undefined;
     if (priorGovSecret) GOVERNANCE_SIGNING_SECRET = priorGovSecret;
+    // The key every stored integration credential is encrypted under (src/secrets.ts). Without one
+    // no integration can be connected, so a fresh install gets it. An existing value is ALWAYS
+    // preserved (even with --force): a new key would make every stored credential unreadable.
+    const SECRETS_KEY = (hadEnv ? readEnv(ENV_FILE).SECRETS_KEY : undefined) || randomBytes(32).toString("base64");
     if (DRY_RUN && existsSync(ENV_FILE)) {
       const cur = readEnv(ENV_FILE);
       SESSION_SECRET = cur.SESSION_SECRET ?? SESSION_SECRET;
@@ -136,6 +140,7 @@ async function main() {
       `CAPABILITY_SECRET=${CAPABILITY_SECRET}`,
       `COLLAB_TOKEN=${COLLAB_TOKEN}`,
       `GOVERNANCE_SIGNING_SECRET=${GOVERNANCE_SIGNING_SECRET}`,
+      `SECRETS_KEY=${SECRETS_KEY}`,
       `OWNER_EMAIL=${OWNER_EMAIL}`,
       `RESEND_API_KEY=${RESEND_API_KEY}`,
       `MAGIC_FROM=${MAGIC_FROM}`,
@@ -214,7 +219,7 @@ function readEnv(path: string): Record<string, string> {
 
 /** Mask secret values in a .env preview. */
 function maskSecrets(envBody: string): string {
-  const SECRET_KEYS = new Set(["PARACHUTE_TOKEN", "SESSION_SECRET", "CAPABILITY_SECRET", "COLLAB_TOKEN", "RESEND_API_KEY", "GOVERNANCE_SIGNING_SECRET"]);
+  const SECRET_KEYS = new Set(["PARACHUTE_TOKEN", "SESSION_SECRET", "CAPABILITY_SECRET", "COLLAB_TOKEN", "RESEND_API_KEY", "GOVERNANCE_SIGNING_SECRET", "SECRETS_KEY"]);
   return envBody
     .split("\n")
     .map((line) => {

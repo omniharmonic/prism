@@ -182,7 +182,8 @@ test("query: owner filters, sorts and pages over a lean single-tag listing", asy
   const p2 = (await (await query({ tags: ["task"], filter: { match: "all", conditions: [{ key: "status", op: "ne", value: "done" }] }, sort: [{ key: "due", dir: "asc" }], fields: ["status", "due"], limit: 2, cursor: p1.next }, cookie)).json()) as any;
   assert.deepEqual(p2.rows.map((r: any) => r.id), ["t4"], "missing due sorts last");
   assert.equal(p2.next, null);
-  const listing = fv.calls.filter((call) => call.method === "GET" && call.path.endsWith("/notes"));
+  // The tag's listing only: the query also starts the vault's tree projection (it drops the cache on a change), which reads the vault once itself.
+  const listing = fv.calls.filter((call) => call.method === "GET" && call.path.endsWith("/notes") && /[?&]tag=/.test(call.search));
   assert.equal(listing.length, 1, "the second page reused the coalesced listing");
   assert.match(listing[0]!.search, /include_metadata=/);
   assert.doesNotMatch(listing[0]!.search, /include_content=true/);
@@ -466,4 +467,18 @@ test("L5: GET /schemas says whether the caller may change schemas", async () => 
   grantUser("kai@test.local", "tag", "task", "edit");
   assert.equal(((await (await req("/schemas", { cookie: login(OWNER) })).json()) as any).canEdit, true);
   assert.equal(((await (await req("/schemas", { cookie: login("kai@test.local") })).json()) as any).canEdit, false);
+});
+
+test("a row created or trashed through the page routes is in the next query, not after the listing cache expires", async () => {
+  seedTasks();
+  const cookie = login(OWNER);
+  const total = async () => ((await (await query({ tags: ["task"] }, cookie)).json()) as { total: number }).total;
+  const before = await total();
+  const made = await req("/notes", { method: "POST", cookie, headers: { "content-type": "application/json" }, body: JSON.stringify({ path: "Tasks/Fresh row", tags: ["task"], content: "", metadata: { title: "Fresh row" } }) });
+  assert.ok(made.ok, `create answered ${made.status}`);
+  assert.equal(await total(), before + 1);
+  const { id } = (await made.json()) as { id: string };
+  const gone = await req(`/notes/${id}`, { method: "DELETE", cookie });
+  assert.ok(gone.ok, `delete answered ${gone.status}`);
+  assert.equal(await total(), before);
 });

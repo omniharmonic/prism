@@ -1,7 +1,7 @@
 {
   "name": "prism",
-  "version": "0.2.0",
-  "description": "Prism's Claude Code skills: data skills (classify, extract entities, reconcile, schema-bridge, wikilinks) plus a prism-setup family that walks you through setting up a complete Prism — Parachute vault + token, server, tag schemas, desktop config, and integrations (Matrix, Google, Notion, Anthropic, transcripts) — backed by the Parachute vault MCP server.",
+  "version": "0.3.0",
+  "description": "Prism's Claude Code skills: data skills (classify, extract entities, reconcile, schema-bridge, wikilinks) plus a prism-setup family that sets up a Prism step by step, matching the app's setup checklist: vault and token, server and secure storage, tag schemas, an agent's own access token, reaching the server from other devices (Tailscale or a Cloudflare tunnel), and optional integrations.",
   "author": {
     "name": "Benjamin Life"
   },

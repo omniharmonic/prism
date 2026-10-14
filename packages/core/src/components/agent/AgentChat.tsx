@@ -1,4 +1,5 @@
 import { leafTitle } from "../../lib/pages/containerTitle";
+import { isHelperSession } from "../../lib/messages/replyDraft";
 import { useComposerAutosize } from "../comms/useComposerAutosize";
 import { useSavedNoteHandoff, SavedNoteHandoffNotice } from "./SavedNoteHandoff";
 import "./agent-chat.css";
@@ -307,7 +308,13 @@ function SessionList({ sessions, loading, error, onRetry, activeId, onOpen, onNe
   onArchive: (id: string) => void; mobile: boolean;
 }) {
   const [filter, setFilter] = useState("");
-  const shown = sessions.filter(session => (session.title || "Untitled session").toLocaleLowerCase().includes(filter.trim().toLocaleLowerCase()));
+  // Drafts and summaries made from a message are that message's tools, not conversations: they stay
+  // out of the list until asked for (the switch below, or typing a filter that names one).
+  const [helpers, setHelpers] = useState(false);
+  const hidden = sessions.filter(session => isHelperSession(session.title) && session.id !== activeId).length;
+  const wanted = filter.trim().toLocaleLowerCase();
+  const shown = sessions.filter(session => (session.title || "Untitled session").toLocaleLowerCase().includes(wanted)
+    && (helpers || !!wanted || session.id === activeId || !isHelperSession(session.title)));
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
   const groups = [
@@ -326,7 +333,7 @@ function SessionList({ sessions, loading, error, onRetry, activeId, onOpen, onNe
       {loading && <div role="status" className="flex justify-center gap-2 p-5 text-sm"><Spinner size={18} /> Loading conversations…</div>}
       {error && <div role="alert" className="prism-agent-list-feedback">Couldn’t refresh conversations. <button onClick={onRetry} className="focus-ring underline">Try again</button></div>}
       {!loading && !error && sessions.length === 0 && <p className="prism-agent-list-feedback">Start a conversation about a page or explore your vault.</p>}
-      {!loading && sessions.length > 0 && shown.length === 0 && <p className="prism-agent-list-feedback">No recent conversations match this filter.</p>}
+      {!loading && sessions.length > 0 && shown.length === 0 && <p className="prism-agent-list-feedback">{wanted ? "No recent conversations match this filter." : "No conversations yet."}</p>}
       {groups.filter(group => group.rows.length > 0).map(group => <section key={group.title} aria-label={group.title}>
         <h3 className="prism-agent-list-group">{group.title}</h3>
         {group.rows.map(session => {
@@ -345,6 +352,7 @@ function SessionList({ sessions, loading, error, onRetry, activeId, onOpen, onNe
           </div>;
         })}
       </section>)}
+      {!loading && !wanted && hidden > 0 && <button type="button" className="prism-agent-list-helpers focus-ring" aria-pressed={helpers} onClick={() => setHelpers(!helpers)}>{helpers ? "Hide drafts and summaries" : `Show ${hidden} ${hidden === 1 ? "draft or summary" : "drafts and summaries"}`}</button>}
     </div>
   </div>;
 }

@@ -76,8 +76,8 @@ function IconButton({
       disabled={disabled}
       className="interactive focus-ring flex items-center justify-center flex-shrink-0"
       style={{
-        width: 30,
-        height: 30,
+        width: "var(--control-h-sm)",
+        height: "var(--control-h-sm)",
         color: active ? "var(--text-secondary)" : "var(--text-muted)",
         opacity: disabled ? 0.35 : 1,
         cursor: disabled ? "default" : "pointer",
@@ -315,9 +315,13 @@ export function TabBar() {
                 setDragId(null);
                 setOverId(null);
               }}
-              className="interactive group flex items-center gap-1.5 flex-shrink-0"
+              className="interactive group flex items-center gap-1.5"
               style={{
-                height: 28,
+                height: "var(--control-h-sm)",
+                // Once the breadcrumb has given way, the active tab shortens its title rather than
+                // sliding under the controls beside the strip.
+                flexShrink: active && (!crumbsHere || room === "menu") ? 1 : 0,
+                minWidth: 64,
                 padding: "0 6px 0 10px",
                 fontSize: "var(--text-sm)",
                 color: active ? "var(--text-primary)" : "var(--text-secondary)",
@@ -348,7 +352,7 @@ export function TabBar() {
                 aria-label={`Open ${tab.title}`}
                 aria-current={active ? "page" : undefined}
                 className="focus-ring truncate text-left"
-                style={{ maxWidth: 160, height: 28 }}
+                style={{ maxWidth: 160, minWidth: 0, height: "var(--control-h-sm)" }}
                 onClick={() => setActiveTab(tab.id)}
                 onKeyDown={(event) => {
                   if (

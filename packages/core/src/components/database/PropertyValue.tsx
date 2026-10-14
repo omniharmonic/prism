@@ -356,6 +356,14 @@ export function PropertyValue({
     if (structured) return; // belt and braces: no editor opens for a structured value
     let next = coerceValue(def, raw);
     const unchanged = (v: unknown) => JSON.stringify(v ?? null) === JSON.stringify(value ?? null) && overrideBase === undefined;
+    // Text that is not a number ("$5", "5%", "abc") coerces to "empty": saving that would clear the
+    // cell without a word. It is refused beside the field and what was typed stays there.
+    if (def.kind === "number" && next === null && typeof raw === "string" && raw.trim() !== "") {
+      attempted.current = raw;
+      setInvalid(true);
+      setError("That isn’t a number. Use digits only, like 5 or 12.5.");
+      return;
+    }
     // Email/phone keep any text the person typed, but say when it does not look right.
     if (typeof next === "string" && ((def.kind === "email" && !looksLikeEmail(next)) || (def.kind === "phone" && !looksLikePhone(next)))) {
       attempted.current = raw;

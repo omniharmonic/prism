@@ -115,6 +115,9 @@ import { rowRef } from "../tree";
 import { hashPassword } from "../auth/password";
 import { createInvite } from "../auth/invite";
 import { getSecret, secretsConfigured } from "../secrets";
+import { setupStatus } from "../setup-status";
+import { listLivePats } from "../auth/pat";
+import { listLiveDeviceTokens } from "../db";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile, writeFile, copyFile } from "node:fs/promises";
@@ -1317,6 +1320,27 @@ acl.get("/server", async (c) => {
     // `rotatable` = owner-added (PUT /acl/vaults/:id/token); env vaults rotate in .env.
     tokens: tokenExpiries(getVaultRegistry()).map((t) => ({ ...t, rotatable: !vaultRegistry.some((v) => v.id === t.id) })),
   });
+});
+
+/** First-run checklist (server owner): which setup steps are done. Booleans and plain sentences
+ *  only — never a token, a key or an address beyond APP_ORIGIN (`setup-status.ts`). */
+acl.get("/setup", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const tokens = listLivePats(config.ownerEmail);
+  const integrations: Record<string, boolean> = {};
+  for (const k of ["matrix", "fathom", "fireflies", "clickup", "github", "google", "notion", "proton-bridge"]) {
+    integrations[k] = secretsConfigured() && !!getSecret("primary", config.ownerEmail, k);
+  }
+  return c.json(setupStatus({
+    vaultReachable: await vault.health().catch(() => false),
+    secretsAvailable: secretsConfigured(),
+    emailConfigured: !!config.resendApiKey,
+    appOrigin: config.appOrigin,
+    agentTokens: tokens.length,
+    agentTokenUsed: tokens.some((t) => t.last_used_at !== null),
+    devices: listLiveDeviceTokens(config.ownerEmail).length,
+    integrations,
+  }));
 });
 
 acl.get("/server/tunnel", async (c) => {

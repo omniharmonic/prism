@@ -131,13 +131,21 @@ export function Navigation() {
   };
 
   const activeNoteId = openTabs.find(tab => tab.id === activeTabId)?.noteId;
-  const tools: Record<NavigationTool, { icon: React.ReactNode; onClick: () => void; active: boolean }> = {
+  // Every destination but Home is placed (or hidden) by the person: "Your sidebar". `available: false`
+  // = this workspace or account does not have it, whatever the preference says.
+  const tools: Record<NavigationTool, { icon: React.ReactNode; onClick: () => void; active: boolean; trailing?: React.ReactNode; ariaLabel?: string; available?: boolean }> = {
+    inbox: { icon: <InboxIcon size={15} />, onClick: openInbox, active: activeNoteId === "notifications", available: inbox.available,
+      ariaLabel: inbox.count > 0 ? `Inbox, ${inbox.count} unread` : "Inbox", trailing: <span className="flex items-center" style={{ paddingRight: 8 }}><InboxBadge /></span> },
+    messages: { icon: <MessageSquare size={15} />, onClick: handleOpenMessages, active: activeNoteId === "vault-messages",
+      trailing: <RowAction title="Compose message" onClick={() => setShowCompose(true)} icon={<PenSquare size={13} />} /> },
+    agent: { icon: <Sparkles size={15} />, onClick: () => openAgentChat(), active: activeNoteId === "agent-chat", available: !!agentChat },
     calendar: { icon: <Calendar size={15} />, onClick: handleOpenCalendar, active: activeNoteId === "calendar-dashboard" },
     people: { icon: <Users size={15} />, onClick: () => openTab("people", "People", "people" as ContentType), active: activeNoteId === "people" },
     automations: { icon: <Bot size={15} />, onClick: handleOpenAgentActivity, active: activeNoteId === "agent-activity" },
     map: { icon: <MapPin size={15} />, onClick: handleOpenMap, active: activeNoteId === "map" },
   };
-  const toolRows = (placement: "pinned" | "tools") => preferences.value.order.filter(id => preferences.value.placement[id] === placement).map(id => <NavItem key={id} label={TOOL_NAMES[id]} {...tools[id]} />);
+  const toolRows = (placement: "pinned" | "tools") => preferences.value.order.filter(id => preferences.value.placement[id] === placement && tools[id].available !== false)
+    .map(id => { const { available: _available, ...row } = tools[id]; return <NavItem key={id} label={TOOL_NAMES[id]} {...row} />; });
 
   return (
     <div
@@ -186,26 +194,10 @@ export function Navigation() {
           {/* Quick-access items */}
           <nav aria-label="Workspace destinations" style={{ display: "flex", flexDirection: "column", gap: 1, paddingBottom: 4 }}>
             <NavItem icon={<HomeIcon size={15} />} label="Home" active={activeNoteId === "home"} onClick={() => openTab("home", "Home", "home" as ContentType)} />
-            {inbox.available && (
-              <NavItem icon={<InboxIcon size={15} />} label="Inbox" active={activeNoteId === "notifications"} onClick={openInbox}
-                ariaLabel={inbox.count > 0 ? `Inbox, ${inbox.count} unread` : "Inbox"}
-                trailing={<span className="flex items-center" style={{ paddingRight: 8 }}><InboxBadge /></span>} />
-            )}
-            {!guest && <NavItem
-              icon={<MessageSquare size={15} />}
-              label="Messages"
-              active={openTabs.find((t) => t.id === activeTabId)?.noteId === "vault-messages"}
-              onClick={handleOpenMessages}
-              trailing={
-                <RowAction
-                  title="Compose message"
-                  onClick={() => setShowCompose(true)}
-                  icon={<PenSquare size={13} />}
-                />
-              }
-            />}
-            {!guest && agentChat && <NavItem icon={<Sparkles size={15} />} active={openTabs.find((t) => t.id === activeTabId)?.noteId === "agent-chat"} label="Agent conversations" onClick={() => openAgentChat()} />}
-            {!guest && toolRows("pinned")}
+            {/* A guest has the Inbox only; everyone else places every destination themselves. */}
+            {guest
+              ? inbox.available && <NavItem icon={tools.inbox.icon} label="Inbox" active={tools.inbox.active} onClick={openInbox} ariaLabel={tools.inbox.ariaLabel} trailing={tools.inbox.trailing} />
+              : toolRows("pinned")}
           </nav>
 
           {shortcuts.recoverable && <div className="mx-3 my-3 rounded-lg border border-[var(--border-subtle)] p-3 text-xs text-[var(--text-secondary)]">

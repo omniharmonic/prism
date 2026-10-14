@@ -62,7 +62,9 @@ test("paging: cursors resume and are bound to their query", () => {
 
 test("spec validation bounds every list", () => {
   assert.equal(validateQuerySpec({ tags: ["a", "b", "c", "d", "e", "f"] }).ok, false);
-  assert.equal(validateQuerySpec({ tags: ["a"], fields: Array.from({ length: 41 }, (_, i) => `f${i}`) }).ok, false);
+  // A view shows up to 60 columns and filters, sorts and groups by more: 100 keys are askable, 101 are not.
+  assert.equal(validateQuerySpec({ tags: ["a"], fields: Array.from({ length: 100 }, (_, i) => `f${i}`) }).ok, true);
+  assert.equal(validateQuerySpec({ tags: ["a"], fields: Array.from({ length: 101 }, (_, i) => `f${i}`) }).ok, false);
   assert.equal(validateQuerySpec({ tags: ["a"], filter: { match: "all", conditions: [{ key: "x", op: "in", value: "nope" }] } }).ok, false);
   assert.equal(validateQuerySpec({ tags: ["a"], filter: { match: "xor", conditions: [] } }).ok, false);
   assert.equal(validateQuerySpec({ tags: ["a"], sort: [{ key: "$updatedAt", dir: "desc" }] }).ok, true);
@@ -146,4 +148,15 @@ test("typed task inventory source is validated and cursor-bound", () => {
   assert.throws(() => runQuery(rows, { ...validated.spec, includeTypedTasks: false, cursor: first.next }, { limited: false }), CursorMismatchError);
   const all = runQuery(rows, { ...validated.spec, limit: 50 }, { limited: false });
   assert.deepEqual(all.rows.map(row => row.id).sort(), ["prism", "tagged", "typed"]);
+});
+
+test("conditions: a checkbox that was never set is unchecked", () => {
+  const never = n("never", { title: "Never ticked" });
+  const off = n("off", { flagged: false });
+  const on = n("on", { flagged: true });
+  const is = (row: QueryInput, value: boolean) => evaluateCondition(row, { key: "flagged", op: "eq", value });
+  assert.deepEqual([never, off, on].map((row) => is(row, false)), [true, true, false]);
+  assert.deepEqual([never, off, on].map((row) => is(row, true)), [false, false, true]);
+  assert.equal(evaluateCondition(never, { key: "flagged", op: "ne", value: false }), false);
+  assert.deepEqual(runQuery([never, off, on], { tags: ["task"], filter: { match: "all", conditions: [{ key: "flagged", op: "eq", value: false }] } }, { limited: false }).rows.map((row) => row.id).sort(), ["never", "off"]);
 });

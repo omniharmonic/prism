@@ -59,7 +59,7 @@
         },
         "assigned": {
           "type": "string",
-          "description": "Who owns the task (default 'Benjamin')"
+          "description": "Who owns the task (default: the vault's owner)"
         },
         "due": {
           "type": "string",
@@ -434,7 +434,7 @@
       }
     },
     "person": {
-      "description": "A person Benjamin interacts with. Store contact info, role, and relationship context. Link to their organizations and projects.",
+      "description": "A person the vault's owner interacts with. Store contact info, role, and relationship context. Link to their organizations and projects.",
       "contentType": "document",
       "precedence": 19,
       "fields": {
@@ -501,7 +501,7 @@
         },
         "relationship_type": {
           "type": "string",
-          "description": "Relationship to Benjamin. Enum order matters: Parachute default-fills omitted schema'd enum fields with the FIRST value, so the neutral 'contact' leads — an auto-created person stub must never default to 'collaborator' (it inflates triage importance boosts).",
+          "description": "Relationship to the vault's owner. Enum order matters: Parachute default-fills omitted schema'd enum fields with the FIRST value, so the neutral 'contact' leads — an auto-created person stub must never default to 'collaborator' (it inflates triage importance boosts).",
           "enum": [
             "contact",
             "collaborator",
@@ -707,7 +707,7 @@
       }
     },
     "project": {
-      "description": "A project Benjamin is involved in. Contains goals, status, collaborators, and links to related meetings and tasks.",
+      "description": "A project the vault's owner is involved in. Contains goals, status, collaborators, and links to related meetings and tasks.",
       "contentType": "project",
       "precedence": 27,
       "fields": {
@@ -728,7 +728,7 @@
         },
         "role": {
           "type": "string",
-          "description": "Benjamin's role in this project, in his words (e.g. Lead, Co-Founder and Network Steward)"
+          "description": "The owner's role in this project, in their own words (e.g. Lead, Co-Founder and Network Steward)"
         },
         "collaborators": {
           "type": "array",

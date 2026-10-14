@@ -47,7 +47,7 @@ import { fetchVault, vaultClient, VaultConflictError, VaultError, type Note } fr
 import { resolveActor, requestVia, type Actor } from "../auth/actor";
 import { effectiveCaps, grantedTags, type Cap, type NoteRef } from "../permissions";
 import { roleAtLeast, roleFloor } from "../roles";
-import { ensureTree, rowRef, treeUpsertNote } from "../tree";
+import { ensureTree, rowRef, subscribeTreeChanges, treeUpsertNote } from "../tree";
 import { docNameFor, isDocLive, isNoteId, markReconciled } from "../collab";
 import { tellPagesChanged } from "../page-notice";
 import { consumeRateLimit } from "../middleware/ratelimit";
@@ -201,6 +201,7 @@ export function resetDatabaseCachesForTests(): void {
   schemaCache.clear();
   listCache.clear();
   listRows = 0;
+  watchedListings.clear();
 }
 
 const hintKey = (vaultId: string, tag: string) => `schema-ui:${vaultId}:${tag}`;
@@ -1039,7 +1040,21 @@ function evictListing(k: string) {
   listCache.delete(k);
 }
 
+/**
+ * Any change in a vault drops its cached listings. A row created, trashed, restored, renamed or
+ * edited through another route (or outside Prism) was otherwise served from the cache until the
+ * TTL ran out — and nothing read it again afterwards. The same feed tells clients to read again
+ * (`/api/events`), so the read that follows a change always finds the cache already empty.
+ */
+const watchedListings = new Set<string>();
+function watchListings(entry: VaultEntry): void {
+  if (watchedListings.has(entry.id)) return;
+  watchedListings.add(entry.id);
+  subscribeTreeChanges(entry, () => evictVaultListings(entry)).catch(() => { watchedListings.delete(entry.id); });
+}
+
 async function canonicalListing(entry: VaultEntry, tag: string | null): Promise<Note[]> {
+  watchListings(entry);
   const k = JSON.stringify([entry.id, tag]);
   const hit = listCache.get(k);
   if (hit && hit.expires > Date.now()) {

@@ -1,5 +1,5 @@
 import { ProjectSections } from "@prism/core";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { persistLocalDocument, localDocumentKey, type LocalSaveState } from "./localDocument";
@@ -29,16 +29,26 @@ import { ReplacedNotice } from "@prism/core";
 import { httpVaultClient } from "../parachute/HttpVaultClient";
 import { reportSyncSource, NOT_SAVED_TO_PAGE, unsavedExplanation, BacklinksPill, EmptyPageStarters, notePageIconChanged, pageIconWriteConfirmed, pageIconWriteFailed, PageDiscussion } from "@prism/core";
 
-/** Track a CSS breakpoint without per-render layout thrash. */
-function useIsNarrow(): boolean {
+/**
+ * Whether the room this page has is narrow — the column it is laid out in, not the window. Inside
+ * the workspace the two side panels take their share first: a wide window with both open left the
+ * page a narrow column that still got the wide layout, comments beside the text and all.
+ * Returns the ref to put on the page's own layout element; its parent's width is what is measured.
+ */
+function useIsNarrow(): [boolean, (node: HTMLDivElement | null) => void] {
+  // A callback ref: the page shows "Opening document…" first, so the layout element arrives later.
+  const [node, setNode] = useState<HTMLDivElement | null>(null);
   const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.innerWidth <= 820);
-  useEffect(() => {
-    const mq = window.matchMedia("(max-width: 820px)");
-    const on = () => setNarrow(mq.matches);
-    mq.addEventListener("change", on);
-    return () => mq.removeEventListener("change", on);
-  }, []);
-  return narrow;
+  useLayoutEffect(() => {
+    const room = node?.parentElement ?? node;
+    if (!room) return;
+    const measure = (width: number) => setNarrow(width <= 820);
+    measure(room.getBoundingClientRect().width);
+    const observer = new ResizeObserver(([entry]) => { if (entry) measure(entry.contentRect.width); });
+    observer.observe(room);
+    return () => observer.disconnect();
+  }, [node]);
+  return [narrow, setNode];
 }
 
 /** How many times a `busy` refusal of an open is retried automatically (0.6 s, 1.2 s, 2.4 s) before asking. */
@@ -220,7 +230,7 @@ function ScopedCollabDoc({
   const [kind, setKind] = useState<CollabKind>("document");
   const [language, setLanguage] = useState("plaintext");
   const [suggesting, setSuggesting] = useState(false);
-  const narrow = useIsNarrow();
+  const [narrow, layoutRef] = useIsNarrow();
   // Comments shown by default on desktop, collapsed on mobile (doc gets full width).
   const [commentsOpen, setCommentsOpen] = useState(false); // closed by default; toggle in the header
   // The phone drawer takes the focus when it opens: the document under it must not keep the caret
@@ -823,7 +833,7 @@ function ScopedCollabDoc({
         </p>
       )}
       {/* Extra bottom padding on narrow viewports clears the floating command pill. */}
-      <div className={isDocument ? "collab-page-layout" : undefined} style={{ maxWidth: "var(--page-max-width, 1080px)", margin: "0 auto", padding: narrow ? "12px 14px 124px" : "16px 20px 96px" }}>
+      <div ref={layoutRef} className={isDocument ? "collab-page-layout" : undefined} style={{ maxWidth: "var(--page-max-width, 1080px)", margin: "0 auto", padding: narrow ? "12px 14px 124px" : "16px 20px 96px" }}>
         {/* Cover band — same component and metadata as the non-collab view */}
         {isDocument && <div className="collab-cover-bleed"><PageCover
           cover={cover}
@@ -957,7 +967,8 @@ function ScopedCollabDoc({
               <div style={{ maxWidth: "var(--content-measure)", margin: "0 auto" }}><EmptyPageStarters editor={editor} noteId={noteId} title={title} /></div>
             )}
           </div>
-          {showComments && !narrow && commentsOpen && <div style={{ width: 320, flexShrink: 0 }}><PageDiscussion composeOnly ydoc={ydoc} user={user} canComment={canComment} editor={editor} actions={commentActions} />{sidebar}</div>}
+          {/* The column stays beside the text being read and scrolls on its own: left at the top of a long page it was out of sight by the second screen. */}
+          {showComments && !narrow && commentsOpen && <div className="collab-comments-column" style={{ width: 320, flexShrink: 0, position: "sticky", top: 12, alignSelf: "flex-start", maxHeight: "calc(100dvh - 140px)", overflowY: "auto" }}><PageDiscussion composeOnly ydoc={ydoc} user={user} canComment={canComment} editor={editor} actions={commentActions} />{sidebar}</div>}
         </div>
       </div>
 

@@ -29,3 +29,29 @@ for(const width of [390,1024,1440]){
   await nav.getByRole('button',{name:'Cancel folder'}).click();await expect(input).toHaveCount(0);await context.close();
  });
 }
+test('comments follow the room the page has, not the window: a narrow column in a wide window keeps its text width',async({browser})=>{
+ const context=await browser.newContext({viewport:{width:1440,height:900}});const page=await context.newPage();
+ await connect(page,context,server,'owner');await page.goto('/e2e-fixtures/collab-route.html?target=plan');
+ const text=page.locator('.tiptap').first();await expect(text).toContainText('Alpha');
+ // Both side panels open in the workspace leave the page a column like this one.
+ await page.addStyleTag({content:'#root{width:700px}'});
+ await expect.poll(async()=>(await page.locator('.collab-page-layout').boundingBox())!.width).toBeLessThanOrEqual(700);
+ const before=(await text.boundingBox())!.width;
+ await page.locator('.document-formatting-bar[data-chrome="row"]').getByRole('button',{name:/^Comments/}).click();
+ await expect(page.getByRole('button',{name:'Add comment',exact:true})).toBeVisible();
+ expect((await text.boundingBox())!.width).toBe(before);
+ await context.close();
+});
+test('the comments column stays in view while a long page scrolls',async({browser})=>{
+ const context=await browser.newContext({viewport:{width:1440,height:700}});const page=await context.newPage();
+ await connect(page,context,server,'owner');await page.goto('/e2e-fixtures/collab-route.html?target=plan');
+ const text=page.locator('.tiptap').first();await expect(text).toContainText('Alpha');
+ await page.locator('.document-formatting-bar[data-chrome="row"]').getByRole('button',{name:/^Comments/}).click();
+ const add=page.getByRole('button',{name:'Add comment',exact:true});await expect(add).toBeVisible();
+ // Make the page several screens long, then go to its end.
+ await text.evaluate(el=>{const pad=document.createElement('div');pad.style.height='3000px';el.parentElement!.appendChild(pad);});
+ await page.mouse.move(400,400);await page.mouse.wheel(0,2400);
+ await expect.poll(()=>page.evaluate(()=>{let n:Element|null=document.querySelector('.collab-page-layout');let top=window.scrollY;while(n){top=Math.max(top,(n as HTMLElement).scrollTop);n=n.parentElement;}return top;})).toBeGreaterThan(1000);
+ await expect(add).toBeInViewport();
+ await context.close();
+});

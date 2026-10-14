@@ -3,11 +3,11 @@
  * a draft of the view and hands it back through `onChange`; the renderer decides
  * whether that is saved to the database note or kept for this session only.
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Copy, Plus, Trash2, X } from "lucide-react";
 import { ME_TOKEN, type QueryCondition, type QueryFilter, type QueryFilterGroup, type QueryOp, type QuerySort } from "../../lib/database/query";
 import { STATUS_GROUP_LABELS, STATUS_GROUPS, SYSTEM_PROPERTIES, type PropertyDef } from "../../lib/database/schema";
-import { CARD_SIZES, VIEW_LABELS, VIEW_TYPES, type CardSize, type DatabaseView, type ViewType } from "./config";
+import { CARD_SIZES, defaultVisibleKeys, VIEW_LABELS, VIEW_TYPES, type CardSize, type DatabaseView, type ViewType } from "./config";
 import { CalcSettings } from "./Calculations";
 import { useVaultClient } from "../../data/VaultClientContext";
 
@@ -90,10 +90,26 @@ function ValueInput({ def, cond, onChange }: { def?: PropertyDef; cond: QueryCon
     );
   }
   const date = def?.kind === "date" || cond.key === "$createdAt" || cond.key === "$updatedAt";
-  return (
-    <input aria-label="Filter value" type={date ? "date" : def?.kind === "number" ? "number" : "text"}
-      value={String(cond.value ?? "")} onChange={(e) => onChange(def?.kind === "number" && e.target.value !== "" ? Number(e.target.value) : e.target.value)} />
-  );
+  const number = def?.kind === "number";
+  return <TypedValue key={`${cond.key}:${cond.op}`} type={date ? "date" : number ? "number" : "text"} value={String(cond.value ?? "")} onChange={(text) => onChange(number && text !== "" ? Number(text) : text)} />;
+}
+
+/** A typed filter value. Every change of a view is a saved write and a new query, so typing is
+ *  held here and passed on when it pauses, on Enter, or when the field is left. */
+function TypedValue({ type, value, onChange }: { type: "date" | "number" | "text"; value: string; onChange: (text: string) => void }) {
+  const [text, setText] = useState(value);
+  const sent = useRef(value);
+  const latest = useRef(onChange);
+  latest.current = onChange;
+  // A value changed elsewhere (another device, a reset) replaces what is shown; our own echo does not.
+  useEffect(() => { if (value !== sent.current) { sent.current = value; setText(value); } }, [value]);
+  const commit = (next: string) => { if (next === sent.current) return; sent.current = next; latest.current(next); };
+  useEffect(() => {
+    if (text === sent.current) return;
+    const timer = setTimeout(() => commit(text), type === "date" ? 0 : 350);
+    return () => clearTimeout(timer);
+  }, [text, type]);
+  return <input aria-label="Filter value" type={type} value={text} onChange={(e) => setText(e.target.value)} onBlur={() => commit(text)} onKeyDown={(e) => { if (e.key === "Enter") commit(text); }} />;
 }
 
 function ConditionRow({ c, i, prefix, targets, onChange, onRemove }: {
@@ -201,7 +217,7 @@ export function SortEditor({ sort, props, onChange }: { sort?: QuerySort[]; prop
           <button type="button" className="db-icon-btn" aria-label={`Remove sort ${i + 1}`} onClick={() => set(list.filter((_, j) => j !== i))}><X size={14} /></button>
         </div>
       ))}
-      {!list.length && <p className="db-pop-empty">Sorted by last edited.</p>}
+      {!list.length && <p className="db-pop-empty">Newest pages first.</p>}
       {list.length < 3 && (
         <button type="button" className="db-ghost" onClick={() => set([...list, { key: targets[1]?.key ?? "$title", dir: "asc" }])}><Plus size={13} aria-hidden="true" /> Add sort</button>
       )}
@@ -219,7 +235,7 @@ export function ViewSettings({ view, props, canDelete, onChange, onDelete, tabs,
   deleted?: { props: PropertyDef[]; onOpen: (def: PropertyDef) => void };
 }) {
   const [name, setName] = useState(view.name);
-  const visible = view.visible ?? props.map((p) => p.key);
+  const visible = view.visible ?? defaultVisibleKeys(props, view.type);
   const groupable = props.filter((p) => !p.system && (p.kind === "select" || p.kind === "status" || p.kind === "checkbox" || p.kind === "person" || (view.type !== "board" && p.kind === "multi_select")));
   const dates = props.filter((p) => p.kind === "date");
   const urls = props.filter((p) => p.kind === "url" || /cover|image|thumbnail/i.test(p.key));

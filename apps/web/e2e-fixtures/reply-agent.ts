@@ -1,6 +1,7 @@
 import type {
   AgentClient,
   AgentSessionDetail,
+  AgentStreamMessage,
   AgentTurn,
   CreateSessionParams,
 } from "../../../packages/core/src/lib/agent/sessions";
@@ -13,6 +14,8 @@ export const agentControls = {
   unsubscribes: 0,
   cancellations: 0,
   deferred: [] as Array<() => void>,
+  /** Deliver one stream message to the open panel (set while a stream is subscribed). */
+  emit: null as null | ((message: AgentStreamMessage) => void),
   /** The NEXT new turn ends the way the 2026-10 incident's did: the CLI could not sign in
    *  (status error + errorCode auth, no reply text). `?authfail` arms it for the first turn. */
   failNext: location.search.includes("authfail"),
@@ -112,6 +115,7 @@ export function replyAgent(scope: () => string): AgentClient {
           started_at: 1,
           ended_at: 2,
           finalText: failed ? "" : detail.session.title?.startsWith("Conversation summary:") ? "The team agreed to meet Tuesday. The agenda is still an open question." :
+            location.search.includes("chatty") ? "Here is a draft that confirms Tuesday:\n\n<reply>\nThanks, Morgan. Tuesday afternoon works well. I’ll send the agenda beforehand.\n</reply>\n\nTell me if you would like it warmer." :
             "Thanks, Morgan. Tuesday afternoon works well. I’ll send the agenda beforehand.",
           tools: [],
           touched: [],
@@ -129,8 +133,10 @@ export function replyAgent(scope: () => string): AgentClient {
         );
       return { turnId: turn.id, status: turn.status };
     },
-    streamSession: () => {
+    streamSession: (_sessionId, _afterSeq, handlers) => {
       agentControls.streams++;
+      // A test writes the answer piece by piece, as the server's stream does.
+      agentControls.emit = (message) => handlers.onEvent(message);
       return () => {
         agentControls.unsubscribes++;
       };

@@ -1,64 +1,76 @@
 ---
 name: Prism Setup (orchestrator)
-description: "Set up a complete Prism end to end — Parachute vault + token, Prism Server, tag schemas, desktop config, and chosen integrations (Matrix, Google, Notion, Anthropic, transcripts). Runs the per-domain prism-setup-* skills in dependency order and prints a final status table. Idempotent: safe to re-run."
-version: 0.1.0
+description: "Set up Prism end to end, or finish one step of it. The steps are the ones the app's setup checklist shows (Workspace settings → Server): vault, server, secure storage, agent token, reachability, devices, and optional integrations. Each step id maps to one prism-setup-* skill. Idempotent: safe to re-run."
+version: 0.3.0
 ---
 
 # Prism Setup — orchestrator
 
-You guide a user from nothing to a fully working Prism. You do **not** do the
-work inline — you run the per-domain skills in the right order, detect what's
-already done, and report. Each domain skill is conversational, drives existing
-machinery, writes a concrete config artifact, and ends in a pass/fail verify.
+You take a person from nothing to a working Prism, or finish the one step they
+hand you. You do not do the work inline: each step belongs to a domain skill
+that detects what is already done, changes only what is missing, and ends in a
+check that passes or fails.
 
-## When to use
+## How you are usually called
 
-A user says "set up Prism", "get me started", "configure my Prism", or runs
-`/prism-setup`. Also use it to re-check an existing install (it's idempotent).
+The app shows a setup checklist. A person presses **Have your agent do it** on a
+step and pastes you a prompt like:
 
-## The domains (hard dependency order)
+```
+Help me finish setting up Prism. Use the prism-setup skill.
+Step: reachable — Reachable from other devices.
+Where it stands: This server answers on this computer only. …
+My Prism server: http://localhost:8787
+```
 
-1. **`prism-setup-vault`** — a running Parachute vault + a minted write token.
-   Everything else needs this. (token → `PARACHUTE_TOKEN`)
-2. **`prism-setup-server`** — `apps/server/.env` + secrets; build web; run the
-   server. Needs the vault + token from step 1.
-3. **`prism-setup-schema`** — seed the canonical tag schemas into the vault.
-   Needs a reachable vault + token. (Often already done by step 2's script.)
-4. **`prism-setup-desktop`** — write `prism-config.json` + render `.mcp.json`.
-   Needs the token; independent of the server otherwise.
-5. **`prism-setup-integrations`** — Matrix / Google / Anthropic / Notion /
-   transcripts. Each is optional; only do the ones the user wants.
+Do **that step only**. Say what you are about to change before you change it,
+and say when it is done. The checklist reads the server again every few seconds
+and ticks the step by itself — you do not need to tell the app anything.
 
-## Procedure
+With no step named ("set up Prism"), work through the steps in the order below
+and stop at the first one that needs the person.
 
-1. **Detect state first.** Before running a domain, check its verify (e.g. is
-   `apps/server/.env` present and does the server answer on `:8787`? does
-   `mcp__parachute-vault__vault-info` work?). Skip a domain whose verify already
-   passes and report it "already configured".
-2. **Ask which integrations** the user wants (step 5 is à la carte). Don't
-   configure services they didn't ask for — background services are config-gated.
-3. **Run the domains in order 1→5**, invoking each `prism-setup-*` skill.
-4. **Print a final status table**: domain · state (configured / skipped /
-   failed) · the verify result.
+## Step ids → skill
 
-## Idempotency contract (must hold)
+| Step id | What it means | Skill |
+|---|---|---|
+| `vault` | Parachute is running and the server holds a working vault token | `prism-setup-vault` |
+| `server` | Prism Server is running | `prism-setup-server` |
+| `owner` | The owner can sign in | `prism-setup-server` (§ First sign-in) |
+| `secrets` | `SECRETS_KEY` is set, so connection details can be stored | `prism-setup-server` (§ Secure storage) |
+| `agent-token`, `agent-connected` | An agent has its own access token and has used it | `prism-setup-agent` |
+| `reachable` | The server has an https address other devices can open | `prism-setup-reach` |
+| `device` | A phone or another computer is signed in | `prism-setup-reach` (§ Sign in a device) |
+| `email` | Sign-in links and invitations are emailed | `prism-setup-server` (§ Email) |
+| `integration:<kind>` | One optional connection (matrix, proton-bridge, google, fireflies, fathom, clickup, notion, github) | `prism-setup-integrations` |
 
-Running this orchestrator twice in a row is safe. The second run writes nothing
-new and reports every domain "already configured / unchanged". Never rotate
-secrets unless the user explicitly passes `--force` to `prism-setup-server`.
+Tag schemas are seeded by `prism-setup-server`; `prism-setup-schema` re-seeds or
+checks them on their own.
 
-## Honest limitations (state these up front — don't pretend to solve)
+## Order when doing everything
 
-- It cannot **install** Parachute, a Matrix homeserver, or the `gog`/`claude`
-  CLIs — it instructs, then re-checks.
-- OAuth/consent (Google) and dashboard key creation (Notion, Fathom, …) are
-  human actions; the skill collects + verifies, it does not magic credentials.
-- Federation (`PEER_SIGNING_KEY`, peer pairing) is off by default and only
-  touched on explicit opt-in — see `docs/roadmap/handoff/FEDERATION-TWO-HUB-HANDOFF.md`.
+`vault` → `server` → `owner` → `secrets` → `agent-token` → `agent-connected` →
+`reachable` → `device` → then only the optional steps the person asks for.
 
-## Final acceptance
+The first four are the **core**: when they are done the app is usable and the
+checklist says "Prism is ready to use". Nothing after them is required.
 
-The user reaches: vault reachable + authed · server up + owner can sign in ·
-tag schemas seeded (idempotent) · `prism-config.json` + `.mcp.json` valid
-(`vault-info` MCP works) · every chosen integration green in Settings → Service
-Status. A second orchestrator run is a no-op.
+## Rules that hold for every step
+
+- **Detect first.** Run the step's check before changing anything. A step that
+  already passes is reported "already done" and left alone.
+- **Never rotate a secret that exists.** `SESSION_SECRET`, `CAPABILITY_SECRET`,
+  `GOVERNANCE_SIGNING_SECRET` and above all `SECRETS_KEY` are kept as they are.
+  A new `SECRETS_KEY` makes every stored connection unreadable.
+- **Credentials go into the app, not into this conversation.** For an
+  integration, prepare what it needs and then point the person at the field in
+  the app. Do not ask them to paste a password or API key to you.
+- **Say what you cannot do.** You cannot complete an OAuth consent screen, buy a
+  domain, approve a device on someone's phone, or create a key in a vendor's
+  dashboard. Do what leads up to it, say exactly what the person must do, then
+  check again.
+
+## Finished
+
+Every core step passes its check, and a second run of this skill changes
+nothing and reports each step "already done".

@@ -375,3 +375,37 @@ test("dark phone draft panel remains readable and keyboard escape returns focus"
     page.getByRole("button", { name: "Draft with agent", exact: true }),
   ).toBeFocused();
 });
+
+test("only the drafted message is inserted; the agent's remarks stay in the panel", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openReply(page, "&chatty");
+  await generate(page);
+  const preview = page.getByRole("region", { name: "Agent draft preview" });
+  await expect(preview.locator(".prism-agent-draft-text")).toHaveText(response);
+  await expect(preview.locator(".prism-agent-draft-note")).toHaveText("Here is a draft that confirms Tuesday:\n\nTell me if you would like it warmer.");
+  await expect(preview).not.toContainText("<reply>");
+  expect(await page.evaluate(() => (window as any).prismReplyAgent.sends[0].prompt)).toContain("between <reply> and </reply>");
+  await page.getByRole("button", { name: "Insert into reply", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Message", exact: true })).toHaveValue(response);
+});
+
+test("the reply is written into the panel as it arrives; it can be inserted only once it is saved", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openReply(page, "&pending");
+  await generate(page);
+  const live = page.getByRole("region", { name: "Reply in progress" });
+  await expect(live).toContainText("The agent is preparing your reply.");
+  await expect(page.getByText("return later")).toHaveCount(0);
+  const turnId = await page.evaluate(() => (window as any).prismReplyAgent.sends.at(-1).requestId).then((id) => `turn-${id}`);
+  const say = (text: string) => page.evaluate(([turn, piece]) => (window as any).prismReplyAgent.emit({ t: "text_delta", blockId: "b1", text: piece, turnId: turn }), [turnId, text]);
+  await say("<reply>\nThanks, Morgan. ");
+  await say("Tuesday afternoon works well.");
+  await expect(live).toContainText("The agent is writing your reply…");
+  await expect(live.locator(".prism-agent-draft-text")).toHaveText("Thanks, Morgan. Tuesday afternoon works well.");
+  // Still being written: nothing to insert yet.
+  await expect(page.getByRole("button", { name: "Insert into reply", exact: true })).toHaveCount(0);
+  // The answer sits above the instructions, as in a chat.
+  const answer = (await live.boundingBox())!;
+  const box = (await page.getByRole("textbox", { name: "Agent draft instructions" }).boundingBox())!;
+  expect(answer.y).toBeLessThan(box.y);
+});

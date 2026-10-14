@@ -22,9 +22,9 @@
 .document-properties-control span { font-size: 18px; line-height: 1; }
 .document-writing-measure .tiptap > :first-child { margin-top: 0; }
 .document-save-footer { min-height: 24px; background: var(--bg-document, var(--bg-base)); }
-.document-companion-header { display: flex; align-items: center; justify-content: space-between; gap: 4px; flex-shrink: 0; min-height: 52px; padding: 0 10px 0 14px; border-bottom: 1px solid var(--glass-border); }
+.document-companion-header { display: flex; align-items: center; justify-content: space-between; gap: 4px; flex-shrink: 0; min-height: calc(var(--tab-bar-height) + 1px); padding: 0 10px 0 14px; border-bottom: 1px solid var(--glass-border); }
 .document-companion-tabs { gap: 16px; min-width: 0; }
-.document-companion-tabs > [role="tab"] { min-height: 51px; padding: 0 1px; border-radius: 0; border-bottom: 2px solid transparent; background: transparent; font-size: 13px; font-weight: 500; color: var(--text-secondary); }
+.document-companion-tabs > [role="tab"] { min-height: var(--tab-bar-height); padding: 0 1px; border-radius: 0; border-bottom: 2px solid transparent; background: transparent; font-size: 13px; font-weight: 500; color: var(--text-secondary); }
 .document-companion-tabs > [role="tab"][aria-selected="true"] { border-bottom-color: var(--text-primary); background: transparent; color: var(--text-primary); font-weight: 600; }
 .document-companion-tabs > [role="tab"]:hover { background: transparent; color: var(--text-primary); }
 .document-companion-close { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 34px; height: 34px; border-radius: 6px; color: var(--text-muted); }

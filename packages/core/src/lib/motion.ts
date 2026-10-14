@@ -39,4 +39,30 @@ export function prefersReducedMotion(): boolean {
     || !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 }
 
+/**
+ * The positions of a damped spring travelling from `from` to `to`, one per display frame, with the
+ * time they span. Hand the values to the Web Animations API as linear keyframes: the spring is in
+ * the values, so a release carries its `velocity` (px/s) into the motion instead of restarting an
+ * easing curve from rest. The defaults settle without overshoot in roughly a fifth of a second;
+ * `maxMs` bounds it (the app's entrances stay within 320 ms).
+ */
+export function springFrames(from: number, to: number, options: { stiffness?: number; damping?: number; velocity?: number; maxMs?: number } = {}): { values: number[]; duration: number } {
+  const stiffness = options.stiffness ?? 420;
+  const damping = options.damping ?? 38;
+  const maxMs = options.maxMs ?? 320;
+  const step = 1 / 240; // four solver steps per 60 Hz frame keeps the integration stable
+  const values = [from];
+  let x = from;
+  let v = options.velocity ?? 0;
+  for (let i = 1; (i * step * 1000) <= maxMs; i++) {
+    v += (-stiffness * (x - to) - damping * v) * step;
+    x += v * step;
+    if (i % 4) continue;
+    if (Math.abs(x - to) < 0.5 && Math.abs(v) < 12) break;
+    values.push(x);
+  }
+  values.push(to);
+  return { values, duration: Math.min(maxMs, Math.max(100, Math.round((values.length - 1) * (1000 / 60)))) };
+}
+
 if (typeof document !== "undefined") applyReduceMotion();

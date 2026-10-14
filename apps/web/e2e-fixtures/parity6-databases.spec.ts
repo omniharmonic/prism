@@ -19,6 +19,8 @@ test.describe("phone month grid", () => {
   for (const [width, height] of [[390, 844], [320, 568]] as const) {
     test(`NP-AX-07: a database calendar's month is finger-sized at ${width} px — a day is one target, its pages are listed under the grid`, async ({ page }) => {
       await page.setViewportSize({ width, height });
+      // The grid starts on the person's first day of the week; this account chose Monday.
+      await page.addInitScript(() => { localStorage.setItem("prism:region", JSON.stringify({ weekStart: "monday", at: 1 })); });
       await page.goto("/e2e-fixtures/databases.html");
       await ready(page);
       const dates = await page.evaluate(() => {
@@ -44,7 +46,7 @@ test.describe("phone month grid", () => {
       await expect(cells).toHaveCount(42);
       // The desktop grid's small "+" and page chips are not here at all (nothing to drag on a phone).
       await expect(page.locator(".db-cal, .db-cal-add, .db-cal-item")).toHaveCount(0);
-      // Every day is one target of at least 44 × 44 px; Monday first; nothing scrolls sideways.
+      // Every day is one target of at least 44 × 44 px; the chosen first day (Monday) first; nothing scrolls sideways.
       const sizes = await cells.evaluateAll((els) => els.map((el) => { const r = el.getBoundingClientRect(); return { day: el.getAttribute("data-day"), w: r.width, h: r.height, left: r.left, right: r.right }; }));
       expect(sizes.filter((s) => s.w < 44 || s.h < 44)).toEqual([]);
       expect(sizes.every((s) => s.left >= -0.5 && s.right <= width + 0.5)).toBe(true);

@@ -1,20 +1,25 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, X } from "lucide-react";
 
-export const TOOL_NAMES = { calendar: "Calendar", people: "People", automations: "Automations", map: "Map" } as const;
+/** Every destination a person may place or hide. Home is not here: it is always the first row. */
+export const TOOL_NAMES = { inbox: "Inbox", messages: "Messages", agent: "Agent conversations", calendar: "Calendar", people: "People", automations: "Automations", map: "Map" } as const;
 export type NavigationTool = keyof typeof TOOL_NAMES;
 type Placement = "pinned" | "tools" | "hidden";
 type Preferences = { version: 1; order: NavigationTool[]; placement: Record<NavigationTool, Placement>; density: "comfortable" | "compact" };
 const KEY = "prism:navigation-preferences:v1";
 const TOOL_IDS = Object.keys(TOOL_NAMES) as NavigationTool[];
-const DEFAULT: Preferences = { version: 1, order: TOOL_IDS, placement: { calendar: "tools", people: "tools", automations: "tools", map: "tools" }, density: "comfortable" };
+/** These three were fixed rows under Home before they could be placed; that stays their default. */
+const TOP: NavigationTool[] = ["inbox", "messages", "agent"];
+const DEFAULT: Preferences = { version: 1, order: TOOL_IDS, placement: { inbox: "pinned", messages: "pinned", agent: "pinned", calendar: "tools", people: "tools", automations: "tools", map: "tools" }, density: "comfortable" };
 function read(): Preferences {
   try {
     const value = JSON.parse(localStorage.getItem(KEY) || "null");
     if (value?.version !== 1) return DEFAULT;
     const order = Array.isArray(value.order) ? value.order.filter((id: unknown): id is NavigationTool => typeof id === "string" && TOOL_IDS.includes(id as NavigationTool)) : [];
-    return { version: 1, order: [...new Set<NavigationTool>([...order, ...TOOL_IDS])], density: value.density === "compact" ? "compact" : "comfortable",
-      placement: Object.fromEntries(TOOL_IDS.map(id => [id, ["pinned", "tools", "hidden"].includes(value.placement?.[id]) ? value.placement[id] : "tools"])) as Preferences["placement"] };
+    // Preferences saved before a destination could be placed keep their order: the former fixed rows go first, as they were.
+    const added = TOOL_IDS.filter(id => !order.includes(id));
+    return { version: 1, order: [...new Set<NavigationTool>([...added.filter(id => TOP.includes(id)), ...order, ...added])], density: value.density === "compact" ? "compact" : "comfortable",
+      placement: Object.fromEntries(TOOL_IDS.map(id => [id, ["pinned", "tools", "hidden"].includes(value.placement?.[id]) ? value.placement[id] : DEFAULT.placement[id]])) as Preferences["placement"] };
   } catch { return DEFAULT; }
 }
 

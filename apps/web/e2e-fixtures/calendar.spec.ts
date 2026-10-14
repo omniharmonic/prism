@@ -57,7 +57,7 @@ test("editing an all-day event title preserves timing, guests, and occurrence no
   await page.getByRole("button", { name: "Edit", exact: true }).click();
   await page.getByPlaceholder("Event title").fill("Revised workshop");
   await expect(page.getByText("Changes apply to this occurrence only.", { exact: false })).toBeVisible();
-  await page.getByRole("button", { name: "Update Event", exact: true }).click();
+  await page.getByRole("button", { name: "Update event", exact: true }).click();
   expect(await page.evaluate(() => (window as any).prismCalendarFixture.updates)).toEqual([{ eventId: "all-day-event", notify: true, title: "Revised workshop" }]);
 });
 
@@ -89,4 +89,22 @@ test("desktop separates concurrent meetings and clips overnight blocks to the lo
   const overnight = page.getByRole("button", { name: /^Overnight handoff/ });
   await expect(overnight).toHaveCSS("height", "48px"); // midnight → 1am, not a negative duration
   await page.screenshot({ path: testInfo.outputPath("calendar-overlap-desktop.png") });
+});
+
+test("the selected day lists all-day events first, then by start time", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/e2e-fixtures/calendar.html?layout");
+  await page.getByRole("button", { name: "Select October 5, 2026", exact: true }).click();
+  const panel = page.locator("aside", { hasText: "Monday, October 5" });
+  await expect(panel.getByRole("button", { name: /Design review/ })).toHaveCount(2);
+  const titles = await panel.locator(".space-y-2 > button").evaluateAll(rows => rows.map(row => row.textContent ?? ""));
+  const at = (title: string) => titles.findIndex(text => text.includes(title));
+  const order = ["Overnight handoff", "Overlapping A", "Overlapping B"].map(at);
+  expect(order.every(index => index >= 0)).toBe(true);
+  expect(Math.max(at("All-day workshop"), at("Multi-day offsite"))).toBeLessThan(order[0]);
+  expect(order).toEqual([...order].sort((a, b) => a - b));
+  const reviews = titles.flatMap((text, index) => text.includes("Design review") ? [index] : []);
+  expect(reviews[0]).toBeGreaterThan(order[0]);
+  expect(reviews[0]).toBeLessThan(order[1]);
+  expect(reviews[1]).toBeGreaterThan(order[2]);
 });

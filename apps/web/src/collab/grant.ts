@@ -182,6 +182,9 @@ export const webCollabSharing: CollabSharing = {
   async getServerInfo(): Promise<ServerInfo> {
     return (await acl(`/server`)).json();
   },
+  async getSetupStatus() {
+    return (await acl(`/setup`)).json();
+  },
   async getWorkerHealth() {
     return (await acl(`/workers`)).json();
   },

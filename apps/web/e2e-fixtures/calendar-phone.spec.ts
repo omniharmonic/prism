@@ -318,7 +318,7 @@ for (const [width, height] of [[390, 844], [320, 568]] as const) {
       const box = (await dialog.boundingBox())!;
       expect(box.y).toBe(0);
       expect(box.y + box.height).toBeLessThanOrEqual(height);
-      const submit = dialog.getByRole("button", { name: "Create Event" });
+      const submit = dialog.getByRole("button", { name: "Create event", exact: true });
       await submit.scrollIntoViewIfNeeded();
       await expect(submit).toBeInViewport({ ratio: 1 });
       expect(await overflow(page)).toBeLessThanOrEqual(0);
@@ -533,12 +533,12 @@ test.describe("desktop is unchanged", () => {
     await expect(aside).toContainText("Monday, October 5");
     // The form keeps its own header and close button there.
     await page.getByRole("button", { name: "Create event" }).click();
-    await expect(aside.getByRole("heading", { name: "New Event" })).toBeVisible();
+    await expect(aside.getByRole("heading", { name: "New event" })).toBeVisible();
     await expect(aside.getByRole("button", { name: "Close event details" })).toBeVisible();
     await expect(aside.getByLabel("Event date")).toHaveValue("2026-10-05");
     const sizes = await aside.locator("input:not([type=checkbox]), textarea, button").evaluateAll((els) => els.map((el) => `${el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.textContent}: ${Math.round(el.getBoundingClientRect().height)}`));
-    // Measured on the code before the phone pass: the touch sizes are `coarse:` only.
-    expect(sizes).toEqual(["Close event details: 30", "Event title: 35", "Event date: 39", "Start time: 39", "End time: 39", "Location: 35", "Attendees (comma-separated emails): 35", "Description (optional): 77", "Create Event: 37"]);
+    // Every control is the shared desktop control height (--control-h-md); the touch sizes are `coarse:` only.
+    expect(sizes).toEqual(["Close event details: 32", "Event title: 32", "Event date: 32", "Start time: 32", "End time: 32", "Location: 32", "Attendees (comma-separated emails): 32", "Description (optional): 62", "Create event: 32"]);
   });
 
   test("time grids keep their short hour labels on System; week and day titles as before", async ({ page }) => {

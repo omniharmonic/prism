@@ -21,6 +21,7 @@ import type { RendererProps } from "../renderers/RendererProps";
 import { formatDate as fmtDate, formatTime as fmtTime, relativeDay, usesSystemTime, weekColumn, weekdayOrder, weekStartsOn } from "../../lib/datetime/format";
 import { useRegionPrefs } from "../../lib/datetime/useRegionPrefs";
 import { askConfirm } from "../ui/ConfirmDialog";
+import { Button } from "../ui/Button";
 type CalEvent = {
   id?: string;
   vaultNoteId?: string;
@@ -428,7 +429,7 @@ function ScopedCalendarDashboard() {
                 <EmptyDay load={load} className="text-xs">No events</EmptyDay>
               ) : (
                 <div className="space-y-2">{selectedEvents.map((ev, i) => (
-                  <button key={i} className="w-full text-left" onClick={(e) => { e.currentTarget.focus({ preventScroll: true }); handleEventClick(ev); }}>
+                  <button key={ev.vaultNoteId ?? ev.id ?? i} className="w-full text-left" onClick={(e) => { e.currentTarget.focus({ preventScroll: true }); handleEventClick(ev); }}>
                     <EventCard event={ev} />
                   </button>
                 ))}</div>
@@ -952,7 +953,9 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
   // A recurring SERIES id is refused unless "ALL occurrences" is confirmed (H1).
   const [seriesEdit, setSeriesEdit] = useState(false);
   const isEdit = !!event;
-  const dateStr = defaultDate ? `${defaultDate.getFullYear()}-${String(defaultDate.getMonth() + 1).padStart(2, "0")}-${String(defaultDate.getDate()).padStart(2, "0")}` : dateKey(new Date());
+  // No date handed in means today, in the form a date field accepts (`dateKey` is a map key: month from zero, no padding).
+  const startDay = defaultDate ?? new Date();
+  const dateStr = `${startDay.getFullYear()}-${String(startDay.getMonth() + 1).padStart(2, "0")}-${String(startDay.getDate()).padStart(2, "0")}`;
 
   const [summary, setSummary] = useState(event?.summary || "");
   // Date and time both in the browser's local zone (security review L8): the
@@ -1024,61 +1027,61 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
     }
   };
 
+  // One field look for the whole form, from the shared control tokens: the same height, radius,
+  // text size and focus ring as every other form in the app (it used three sizes and no focus ring).
+  const field = "focus-ring w-full min-w-0 min-h-control rounded-[var(--control-radius)] px-3 text-sm outline-none placeholder:text-[var(--text-muted)]";
+  const fieldStyle = { background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" } as const;
+  const label = "flex min-w-0 flex-col gap-1 text-xs font-medium";
+  const labelStyle = { color: "var(--text-secondary)" } as const;
+  const check = "flex items-center gap-2 text-xs coarse:min-h-[var(--touch-target)] coarse:gap-3 coarse:text-sm";
   return (
-    <div className="p-3 space-y-3 max-md:px-0">
+    <div className="p-4 space-y-4 max-md:px-0">
       {/* Phone: the sheet's own header names the form and closes it. */}
       <div className="hidden md:flex items-center justify-between">
-        <h3 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{isEdit ? "Edit Event" : "New Event"}</h3>
-        <button aria-label="Close event details" onClick={onClose} className="p-2 rounded hover:bg-[var(--glass-hover)]">
-          <X size={14} style={{ color: "var(--text-muted)" }} />
+        <h3 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{isEdit ? "Edit event" : "New event"}</h3>
+        <button type="button" aria-label="Close event details" onClick={onClose} className="focus-ring size-control flex items-center justify-center rounded-[var(--control-radius)] hover:bg-[var(--glass-hover)]">
+          <X size={16} style={{ color: "var(--text-muted)" }} />
         </button>
       </div>
 
-      <div className="space-y-2">
-        <input
-          value={summary}
-          onChange={(e) => setSummary(e.target.value)}
-          placeholder="Event title"
-          className="w-full rounded px-2 py-1.5 text-xs outline-none coarse:min-h-[var(--touch-target)]"
-          style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
-          autoFocus
-        />
+      <div className="space-y-3">
+        <label className={label} style={labelStyle}>
+          Title
+          <input value={summary} onChange={(e) => setSummary(e.target.value)} placeholder="Event title" className={field} style={fieldStyle} autoFocus />
+        </label>
 
         <div className="grid grid-cols-2 gap-2">
-          <input aria-label="Event date" type="date" value={date} onChange={(e) => setDate(e.target.value)}
-            className="col-span-2 min-w-0 rounded px-2 py-2 text-base outline-none coarse:min-h-[var(--touch-target)]"
-            style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }} />
-          <input aria-label="Start time" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)}
-            className="min-w-0 rounded px-2 py-2 text-base outline-none coarse:min-h-[var(--touch-target)]"
-            style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }} />
-          <input aria-label="End time" type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)}
-            className="min-w-0 rounded px-2 py-2 text-base outline-none coarse:min-h-[var(--touch-target)]"
-            style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }} />
+          <label className={`${label} col-span-2`} style={labelStyle}>
+            Date
+            <input aria-label="Event date" type="date" value={date} onChange={(e) => setDate(e.target.value)} className={field} style={fieldStyle} />
+          </label>
+          <label className={label} style={labelStyle}>
+            Starts
+            <input aria-label="Start time" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} className={field} style={fieldStyle} />
+          </label>
+          <label className={label} style={labelStyle}>
+            Ends
+            <input aria-label="End time" type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} className={field} style={fieldStyle} />
+          </label>
         </div>
 
-        <input
-          value={locationVal}
-          onChange={(e) => setLocationVal(e.target.value)}
-          placeholder="Location"
-          className="w-full rounded px-2 py-1.5 text-xs outline-none coarse:min-h-[var(--touch-target)]"
-          style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
-        />
+        <label className={label} style={labelStyle}>
+          Location
+          <input value={locationVal} onChange={(e) => setLocationVal(e.target.value)} placeholder="Location" className={field} style={fieldStyle} />
+        </label>
 
-        <input
-          value={attendeesVal}
-          onChange={(e) => setAttendeesVal(e.target.value)}
-          placeholder="Attendees (comma-separated emails)"
-          className="w-full rounded px-2 py-1.5 text-xs outline-none coarse:min-h-[var(--touch-target)]"
-          style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
-        />
+        <label className={label} style={labelStyle}>
+          Guests
+          <input value={attendeesVal} onChange={(e) => setAttendeesVal(e.target.value)} placeholder="Attendees (comma-separated emails)" className={field} style={fieldStyle} />
+        </label>
         {live && !isEdit && attendeesVal.trim() && (
-          <label className="flex items-center gap-1.5 text-xs coarse:min-h-[var(--touch-target)] coarse:gap-3 coarse:text-sm" style={{ color: "var(--text-secondary)" }}>
+          <label className={check} style={labelStyle}>
             <input type="checkbox" className="coarse:h-5 coarse:w-5 flex-shrink-0" checked={notifyAttendees} onChange={(e) => setNotifyAttendees(e.target.checked)} />
             {notifyAttendees ? "Attendees will be emailed an invite" : "Don't email attendees an invite"}
           </label>
         )}
         {live && isEdit && ((event?.attendees?.length ?? 0) > 0 || attendeesVal.trim()) && (
-          <label className="flex items-center gap-1.5 text-xs coarse:min-h-[var(--touch-target)] coarse:gap-3 coarse:text-sm" style={{ color: "var(--text-secondary)" }}>
+          <label className={check} style={labelStyle}>
             <input type="checkbox" className="coarse:h-5 coarse:w-5 flex-shrink-0" checked={notifyAttendees} onChange={(e) => setNotifyAttendees(e.target.checked)} />
             {notifyAttendees ? "Guests will be emailed about the change" : "Don't email guests about the change"}
           </label>
@@ -1089,35 +1092,27 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
           </div>
         )}
 
-        <textarea
-          value={descVal}
-          onChange={(e) => setDescVal(e.target.value)}
-          placeholder="Description (optional)"
-          rows={3}
-          className="w-full rounded px-2 py-1.5 text-xs outline-none resize-none"
-          style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
-        />
+        <label className={label} style={labelStyle}>
+          Description
+          <textarea value={descVal} onChange={(e) => setDescVal(e.target.value)} placeholder="Description (optional)" rows={3} className={`${field} resize-none py-2`} style={fieldStyle} />
+        </label>
       </div>
 
-      <button
-        onClick={() => void handleSave()}
-        disabled={!summary.trim() || saving || !canSave}
-        className="w-full py-2 rounded text-xs font-medium transition-colors disabled:opacity-50 coarse:min-h-[var(--touch-target)] coarse:text-sm"
-        style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}
-      >
-        {saving ? "Saving..." : isEdit ? "Update Event" : "Create Event"}
-      </button>
+      <Button variant="primary" className="w-full" loading={saving} disabled={!summary.trim() || !canSave} onClick={() => void handleSave()}>
+        {isEdit ? "Update event" : "Create event"}
+      </Button>
       {!canSave && <p role="status" className="text-xs">Calendar editing is unavailable. Reconnect to your server and try again.</p>}
       {saveError && <div role="alert" className="text-xs" style={{ color: "var(--color-danger)" }}>{saveError}</div>}
       {seriesEdit && live && isEdit && (
         <button
+          type="button"
           onClick={() => void handleSave(true)}
           disabled={saving}
-          className="w-full py-1.5 rounded text-xs font-medium disabled:opacity-50 coarse:min-h-[var(--touch-target)] coarse:text-sm"
+          className="focus-ring w-full min-h-control rounded-[var(--control-radius)] px-3 text-sm font-medium disabled:opacity-50"
           style={{ background: "var(--danger-bg, var(--color-danger))", color: "#fff" }}
           data-testid="update-all-occurrences"
         >
-          Apply to ALL occurrences of the series
+          Apply to all occurrences of the series
         </button>
       )}
     </div>

@@ -204,7 +204,10 @@ const MAX_TAGS = 5;
 const MAX_CONDITIONS = 25;
 const MAX_GROUPS = 5;
 const MAX_SORTS = 3;
-const MAX_FIELDS = 40;
+/** A view may show 60 columns (config.ts) and filter, sort and group by a few more: every one of them must be askable in one query. */
+export const MAX_FIELDS = 100;
+/** What a request names when it needs no more: older servers refuse a longer list. */
+export const USUAL_FIELDS = 40;
 
 /** Metadata keys a view may read or write. Excludes prototype-pollution names. */
 export const FIELD_KEY = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
@@ -332,6 +335,23 @@ function parseConditions(raw: unknown[]): QueryCondition[] | string {
     conditions.push({ key: c.key as string, op, ...(op === "exists" || op === "not_exists" ? {} : { value: v }) });
   }
   return conditions;
+}
+
+/** A condition still being written: it compares against nothing yet. "Is empty" has its own operators. */
+const unfinished = (c: QueryCondition): boolean =>
+  c.op !== "exists" && c.op !== "not_exists" && (c.value === undefined || c.value === null || c.value === "" || (Array.isArray(c.value) && !c.value.length));
+
+/**
+ * The part of a saved filter that is ready to apply. A condition with no value yet stays in the
+ * view (its row is still in the editor) but filters nothing: `contains ""` used to hide every row
+ * with an empty value, and `is ""` showed only those, the moment "Add filter" was pressed.
+ */
+export function activeFilter(f: QueryFilter | undefined): QueryFilter | undefined {
+  if (!f) return undefined;
+  const conditions = f.conditions.filter((c) => !unfinished(c));
+  const groups = (f.groups ?? []).map((g) => ({ ...g, conditions: g.conditions.filter((c) => !unfinished(c)) })).filter((g) => g.conditions.length);
+  if (!conditions.length && !groups.length) return undefined;
+  return { match: f.match, conditions, ...(groups.length ? { groups } : {}) };
 }
 
 /** Every condition of a filter, top level and groups (for lean key lists). */
@@ -508,9 +528,11 @@ export function evaluateCondition(n: QueryInput, c: QueryCondition, now = new Da
   const actual = readKey(n, c.key);
   const value = resolveRelative(c.value, now, tzOffset);
   const tz = tzOffset;
+  // A checkbox nobody ever ticked has no stored value: it is unchecked, as grouping and calculations already count it.
+  const unchecked = value === false && isEmpty(actual);
   switch (c.op) {
-    case "eq": return equalsOne(actual, value, tz);
-    case "ne": return !equalsOne(actual, value, tz);
+    case "eq": return unchecked || equalsOne(actual, value, tz);
+    case "ne": return !(unchecked || equalsOne(actual, value, tz));
     case "in": return (value as unknown[]).some((v) => equalsOne(actual, resolveRelative(v, now, tz), tz));
     case "nin": return !(value as unknown[]).some((v) => equalsOne(actual, resolveRelative(v, now, tz), tz));
     case "contains": return contains(actual, value);

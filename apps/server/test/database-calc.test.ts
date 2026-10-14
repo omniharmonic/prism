@@ -12,7 +12,7 @@ import { api } from "../src/routes/api";
 import { resetTreeForTests } from "../src/tree";
 import { resetDatabaseCachesForTests } from "../src/routes/databases";
 import { AGGREGATE_BUDGET, AGGREGATE_FNS, MAX_GROUPS_PER_ROW, MAX_VALUES_PER_CELL, computeAggregates, groupValuesOf, numericValue, runQuery, validateQuerySpec, type AggregateFn, type QueryInput } from "@prism/core/database";
-import { readDatabaseConfig } from "../../../packages/core/src/components/database/config";
+import { fitDatabaseConfig, readDatabaseConfig } from "../../../packages/core/src/components/database/config";
 import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, makeCapability, type FakeVault } from "./helpers";
 
 let fv: FakeVault;
@@ -267,6 +267,30 @@ test("config: a view's calculations are validated; an unknown function fails clo
   for (const bad of [{ calculations: { amount: "total" } }, { calculations: ["sum"] }, { calculations: { "a b": "sum" } }, { calculations: { amount: 1 } }, { calculations: Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`k${i}`, "sum"])) }, { wrap: "yes" }]) {
     assert.throws(() => readDatabaseConfig(cfg(bad)), /does not understand/, JSON.stringify(bad));
   }
+});
+
+test("config: a view whose lists only grew too long is shortened, on read and before a save, not refused", () => {
+  const cond = (i: number) => ({ key: "amount", op: "gt", value: i });
+  const view = {
+    id: "t", name: "Table", type: "table",
+    visible: Array.from({ length: 75 }, (_, i) => `field_${i}`),
+    order: Array.from({ length: 10_500 }, (_, i) => `row-${i}`),
+    filter: { match: "all", conditions: Array.from({ length: 30 }, (_, i) => cond(i)), groups: Array.from({ length: 7 }, () => ({ match: "any", conditions: Array.from({ length: 28 }, (_, i) => cond(i)) })) },
+  };
+  const read = readDatabaseConfig({ prism_database: { version: 1, source: { tags: ["deal"] }, views: [view] } })!.views[0]!;
+  assert.equal(read.visible!.length, 60);
+  assert.deepEqual(read.visible!.slice(0, 2), ["field_0", "field_1"], "the first columns are the ones kept");
+  assert.equal(read.order!.length, 10_000);
+  assert.equal(read.filter!.conditions.length, 25);
+  assert.deepEqual(read.filter!.groups!.map((g) => g.conditions.length), [25, 25, 25, 25, 25]);
+  const config = { version: 1 as const, source: { tags: ["deal"] }, views: [view as never] };
+  const fitted = fitDatabaseConfig(config);
+  assert.doesNotThrow(() => readDatabaseConfig({ prism_database: fitted }));
+  assert.equal(fitted.views[0]!.visible!.length, 60);
+  const fine = { version: 1 as const, source: { tags: ["deal"] }, views: [{ id: "t", name: "Table", type: "table" as const, visible: ["amount"] }] };
+  assert.equal(fitDatabaseConfig(fine), fine, "a config that fits is returned as it is");
+  // A shape that is wrong, not long, still fails closed.
+  assert.throws(() => readDatabaseConfig({ prism_database: { version: 1, source: { tags: ["deal"] }, views: [{ ...view, visible: "all" }] } }), /does not understand/);
 });
 
 // ── POST /api/query ──────────────────────────────────────────────────────────

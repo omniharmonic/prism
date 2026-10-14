@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, FileText, X } from "lucide-react";
+import { FileText, X } from "lucide-react";
 import { useDocumentSnapshots } from "../../lib/agent/documentSnapshots";
 import {
   SNAPSHOT_MAX_CHARACTERS,
@@ -90,48 +90,51 @@ export function AgentSnapshotAttachments({
   return (
     <div className="prism-agent-snapshots text-xs" data-testid="agent-snapshot-attachments">
       <div className="flex flex-wrap gap-1">
+        {/* Two plain actions sit beside "Attach notes": files always, and what the open page offers
+            only while it offers it. A menu of permanently greyed rows read as something broken. */}
         {available && (
-          <details className="rounded-lg">
-            <summary className="prism-agent-context-control interactive focus-ring cursor-pointer">
-              <FileText size={14} />Capture text<ChevronDown size={12} />
-            </summary>
-            <div className="flex flex-wrap gap-1 rounded-lg border border-[var(--glass-border)] p-2">
+          <>
+            <button
+              className="prism-agent-context-control interactive focus-ring"
+              disabled={locked}
+              title="A text or code file, up to 256 KB"
+              onClick={() => fileRef.current?.click()}
+            >
+              <FileText size={14} />Attach files
+            </button>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".txt,.md,.markdown,.csv,.json,.log,.js,.ts,.tsx,.jsx,.py,.rs,.css,.html,.yaml,.yml,text/*"
+              aria-label="Choose context text file"
+              className="sr-only"
+              tabIndex={-1}
+              disabled={locked}
+              onChange={(e) => {
+                const picked = e.target.files?.[0];
+                e.target.value = "";
+                if (picked) void file(picked);
+              }}
+            />
+            {capture?.selection?.text.trim() && (
               <button
-                className={control}
-                disabled={locked || !capture?.selection?.text.trim()}
+                className="prism-agent-context-control interactive focus-ring"
+                disabled={locked}
                 onClick={() => capture?.selection && add(capture.selection)}
               >
                 Attach selection
               </button>
+            )}
+            {capture?.document.text.trim() && (
               <button
-                className={control}
-                disabled={locked || !capture?.document.text.trim()}
+                className="prism-agent-context-control interactive focus-ring"
+                disabled={locked}
                 onClick={() => capture && add(capture.document)}
               >
-                Attach document snapshot
+                Attach this page
               </button>
-              <button
-                className={control}
-                disabled={locked}
-                onClick={() => fileRef.current?.click()}
-              >
-                Attach text file
-              </button>
-              <input
-                ref={fileRef}
-                type="file"
-                aria-label="Choose context text file"
-                className="sr-only"
-                tabIndex={-1}
-                disabled={locked}
-                onChange={(e) => {
-                  const picked = e.target.files?.[0];
-                  e.target.value = "";
-                  if (picked) void file(picked);
-                }}
-              />
-            </div>
-          </details>
+            )}
+          </>
         )}
         {snapshots.map((s, index) => (
           <span
