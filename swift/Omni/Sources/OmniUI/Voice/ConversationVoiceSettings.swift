@@ -64,7 +64,7 @@ struct ConversationVoiceSettings: View {
                         }
                     }
                 } header: { Text("Experimental") } footer: {
-                    Text("Listen for your voice while Omni speaks, using on-device echo cancellation. Sustained requires longer speech to interrupt and may reduce interruptions from brief noises; continuous noise can still interrupt. Quick responds sooner. If playback interrupts itself, turn this off and use Interrupt and speak. Responsiveness changes apply to the next reply.")
+                    Text("Listen for your voice while Omni speaks, using on-device echo cancellation. Omni starts listening about a second into each reply, ignores captured speech that matches what it just said, and pauses automatic sending if it seems to be answering itself. Sustained requires longer speech to interrupt and may reduce interruptions from brief noises; continuous noise can still interrupt. Quick responds sooner. If playback still interrupts itself, turn this off and use Interrupt and speak. Responsiveness changes apply to the next reply.")
                 }
                 Section {
                     Picker("Speech provider", selection: Binding(get: { device.replyPreferences.provider }, set: {
