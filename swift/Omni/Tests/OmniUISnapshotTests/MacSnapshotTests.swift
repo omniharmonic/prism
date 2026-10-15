@@ -200,7 +200,7 @@ struct Walk {
     }
 
     /// The signed-in window on `destination`.
-    mutating func screen(_ name: String, service: SampleService, _ destination: Destination?, search: String = "", settle: Duration = .milliseconds(900), then act: (@MainActor (AppModel) async -> Void)? = nil) async throws {
+    mutating func screen(_ name: String, service: SampleService, _ destination: Destination?, search: String = "", height: CGFloat? = nil, settle: Duration = .milliseconds(900), then act: (@MainActor (AppModel) async -> Void)? = nil) async throws {
         let app = model(service: service, diagnostics: DiagnosticsLog())
         await app.start()
         app.session?.threads.searchText = search
@@ -208,7 +208,7 @@ struct Walk {
         var after: (@MainActor () async -> Void)?
         if let act { after = { await act(app) } }
         guard let session = app.session else { return XCTFail("the sample did not sign in") }
-        try await draw(name, settle: settle, SampleWindow(session: session).environment(\.cardsNow, CardingSampleService.t0), then: after)
+        try await draw(name, size: height.map { CGSize(width: variant.size.width, height: $0) }, settle: settle, SampleWindow(session: session).environment(\.cardsNow, CardingSampleService.t0), then: after)
         app.session?.stop()
     }
 
@@ -268,7 +268,7 @@ struct Walk {
 
         // Approvals: the queue, and each kind in its thread.
         try await screen("needs-you-list", service: service, .needsYou)
-        try await screen("needs-you-sections", service: CardingSampleService.carding(), .needsYou)
+        try await screen("needs-you-sections", service: CardingSampleService.carding(), .needsYou, height: 2600)
         let clear = CardingSampleService()
         clear.cardItems = [CardingSampleService.working(), CardingSampleService.waiting()]
         try await screen("needs-you-clear", service: clear, .needsYou)

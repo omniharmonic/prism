@@ -352,6 +352,17 @@ extension EnvironmentValues {
     }
 }
 
+extension NeedsYouText {
+    /// The empty state's description: only what is in motion; nothing when nothing is.
+    static func inMotion(_ count: Int) -> String {
+        switch count {
+        case 0: return ""
+        case 1: return "1 thing is in motion."
+        default: return "\(count) things are in motion."
+        }
+    }
+}
+
 struct NeedsYouSectionHeader: View {
     let title: String
     let count: Int
@@ -421,8 +432,10 @@ struct NeedsYouView: View {
             ContentUnavailableView {
                 Label("You're clear", systemImage: "checkmark.circle")
             } description: {
-                Text(NeedsYouText.clear(inMotion: motion.count))
+                if !motion.isEmpty { Text(NeedsYouText.inMotion(motion.count)) }
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(NeedsYouText.clear(inMotion: motion.count))
             .accessibilityIdentifier("needsYou.clear")
         }
         if !decide.isEmpty {

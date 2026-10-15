@@ -12,6 +12,14 @@ enum CardMetrics {
     static let optionCorner: CGFloat = 10
 }
 
+extension View {
+    /// A 44 pt tap area that takes no layout room: the hit shape is grown past the view and the
+    /// layout size handed back, so the gaps between rows stay the card's own spacing.
+    func touchTarget() -> some View {
+        padding(.vertical, 14).contentShape(Rectangle()).padding(.vertical, -14)
+    }
+}
+
 enum CardLayout {
     /// iPhone (compact width) and every accessibility text size: options stacked, full width.
     /// Mac and iPad: wrapped chips.
@@ -105,8 +113,10 @@ struct CardView: View {
             if card.state == .sent || card.state == .done || card.state == .dismissed {
                 closed(card)
             } else {
-                Text(card.headline).font(.headline).fixedSize(horizontal: false, vertical: true).accessibilityAddTraits(.isHeader)
-                contextLine(card)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(card.headline).font(.headline).fixedSize(horizontal: false, vertical: true).accessibilityAddTraits(.isHeader)
+                    contextLine(card)
+                }
                 switch card.state {
                 case .draftReady: draftReady(card)
                 case .working, .waiting: motion(card)
@@ -156,8 +166,8 @@ struct CardView: View {
                 Text(card.contextLine)
                     .font(.callout).foregroundStyle(Color.quietText)
                     .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, minHeight: CardMetrics.touch, alignment: .leading)
-                    .contentShape(Rectangle())
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .touchTarget()
             }
             .buttonStyle(.borderless)
             .accessibilityHint(showsSources ? "Hides where each fact comes from" : "Shows where each fact comes from")
@@ -233,7 +243,7 @@ struct CardView: View {
                 VStack(alignment: .leading, spacing: CardMetrics.optionSpacing) {
                     Label("Couldn’t load the draft.", systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(Color.warningText).fixedSize(horizontal: false, vertical: true)
                     Button("Try again") { draftUnavailable = false }
-                        .frame(minHeight: CardMetrics.touch)
+                        .touchTarget()
                         .accessibilityIdentifier("card.\(card.id).draftRetry")
                 }
             } else {
@@ -265,7 +275,10 @@ struct CardView: View {
             VStack(alignment: .leading, spacing: 0) { footerButtons(card) }
         }
         .font(.callout)
+        .foregroundStyle(Color.quietText)
         .buttonStyle(.borderless)
+        // The field above already has its own 44 pt; the quiet row sits close under it.
+        .padding(.top, -2)
     }
 
     @ViewBuilder private func footerButtons(_ card: OmniCard) -> some View {
@@ -275,7 +288,7 @@ struct CardView: View {
                     let thread: String? = card.transitional ? await cards.openTransitional(card.id) : card.threadId
                     if let thread { navigator.open(.thread(thread)) }
                 }
-            } label: { Text(card.transitional ? "Open" : "Open thread").frame(minHeight: CardMetrics.touch).contentShape(Rectangle()) }
+            } label: { Text(card.transitional ? "Open" : "Open thread").foregroundStyle(Color.quietText).touchTarget() }
             .accessibilityIdentifier("card.\(card.id).open")
         }
         if card.state == .proposed || card.state == .snoozed {
@@ -283,10 +296,10 @@ struct CardView: View {
                 ForEach(CardText.laterPresets()) { preset in
                     Button(preset.label) { Task { await cards.later(card.id, until: preset.until) } }
                 }
-            } label: { Text("Later").frame(minHeight: CardMetrics.touch).contentShape(Rectangle()) }
+            } label: { Text("Later").foregroundStyle(Color.quietText).touchTarget() }
             .fixedSize()
             .accessibilityIdentifier("card.\(card.id).later")
-            Button { Task { await cards.notNeeded(card.id) } } label: { Text("Not needed").frame(minHeight: CardMetrics.touch).contentShape(Rectangle()) }
+            Button { Task { await cards.notNeeded(card.id) } } label: { Text("Not needed").foregroundStyle(Color.quietText).touchTarget() }
                 .accessibilityHint("Takes this off Needs you. Omni learns from it.")
                 .accessibilityIdentifier("card.\(card.id).notNeeded")
         }
@@ -308,7 +321,7 @@ struct DraftPreview: View {
             if let body = content.body {
                 Text(body).font(.callout).lineLimit(expanded ? nil : 4).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 Button(expanded ? "Show less" : "Show all") { expanded.toggle() }
-                    .buttonStyle(.borderless).font(.callout).frame(minHeight: CardMetrics.touch)
+                    .buttonStyle(.borderless).font(.callout).touchTarget()
             }
         }
         .padding(CardMetrics.padding)
