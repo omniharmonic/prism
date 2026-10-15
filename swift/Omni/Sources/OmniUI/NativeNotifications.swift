@@ -21,11 +21,15 @@ public final class NativeNotifications: NSObject, UNUserNotificationCenterDelega
             switch self {
             case .generic: "Generic update"
             case .title: "Thread title"
-            case .titlePreview: "Thread title and short reply preview"
+            case .titlePreview: "Title and preview"
             }
         }
     }
-    public private(set) var preview = Preview(rawValue: UserDefaults.standard.string(forKey: "omni.notifications.preview") ?? "generic") ?? .generic
+    /// The explicit choice made in Settings, or nil when this device never chose: then no
+    /// preview is sent and the server's stored value or default (`title_preview`) applies.
+    private var chosenPreview = PushPreviewPreference.sent(stored: UserDefaults.standard.string(forKey: PushPreviewPreference.storageKey))
+    /// What Settings shows as selected.
+    public var preview: Preview { Preview(rawValue: PushPreviewPreference.shown(stored: chosenPreview)) ?? .titlePreview }
     public private(set) var busy = false
     public private(set) var enabled = UserDefaults.standard.bool(forKey: "omni.notifications.enabled")
     @ObservationIgnored private weak var app: AppModel?
@@ -114,7 +118,7 @@ public final class NativeNotifications: NSObject, UNUserNotificationCenterDelega
                 // Read preference when this write reaches the front of the queue,
                 // after any earlier explicit save has committed locally.
                 guard enabled, app.phase == .signedIn else { return false }
-                return try await app.registerPush(token: token, environment: environment, preview: preview.rawValue)
+                return try await app.registerPush(token: token, environment: environment, preview: chosenPreview)
             }
             if enabled { status = deliveryEnabled ? "Notifications are on." : "Registration saved. Server notifications are off." }
         } catch { status = "Could not connect notifications. Try again while connected." }
@@ -133,8 +137,8 @@ public final class NativeNotifications: NSObject, UNUserNotificationCenterDelega
                 let deliveryEnabled = try await registrationQueue.run { [self] in
                     let result = try await app.registerPush(token: token, environment: environment, preview: value.rawValue)
                     // Commit before the queue releases the next reconnect write.
-                    preview = value
-                    UserDefaults.standard.set(value.rawValue, forKey: "omni.notifications.preview")
+                    chosenPreview = value.rawValue
+                    UserDefaults.standard.set(value.rawValue, forKey: PushPreviewPreference.storageKey)
                     return result
                 }
                 status = deliveryEnabled ? "Notifications are on." : "Preview saved. Server notifications are off."
@@ -144,8 +148,8 @@ public final class NativeNotifications: NSObject, UNUserNotificationCenterDelega
             }
         }
         if !enabled {
-            preview = value
-            UserDefaults.standard.set(value.rawValue, forKey: "omni.notifications.preview")
+            chosenPreview = value.rawValue
+            UserDefaults.standard.set(value.rawValue, forKey: PushPreviewPreference.storageKey)
             status = "Preview saved. Notifications are off."
         }
     }

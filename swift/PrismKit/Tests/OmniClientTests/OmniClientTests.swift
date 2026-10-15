@@ -77,10 +77,13 @@ final class OmniClientTests: XCTestCase {
         let (omni, server) = try make { _ in .json(200, #"{"ok":true,"apnsEnabled":true}"#) }
         _ = try await omni.registerPush(token: String(repeating: "a", count: 64), environment: "sandbox")
         _ = try await omni.registerPush(token: String(repeating: "a", count: 64), environment: "sandbox", preview: "title_preview")
+        _ = try await omni.registerPush(token: String(repeating: "a", count: 64), environment: "sandbox", preview: "generic")
         let bodies = try server.requests.map { try JSONDecoder().decode(JSONValue.self, from: $0.body) }
         XCTAssertEqual(server.requests[0].path, "/api/omni/push")
-        XCTAssertEqual(bodies[0]["preview"]?.stringValue, "generic")
+        // Never chosen: no preview at all, so the server's stored value or default applies.
+        XCTAssertNil(bodies[0]["preview"])
         XCTAssertEqual(bodies[1]["preview"]?.stringValue, "title_preview")
+        XCTAssertEqual(bodies[2]["preview"]?.stringValue, "generic")
         XCTAssertNil(bodies[1]["deviceId"])
     }
 

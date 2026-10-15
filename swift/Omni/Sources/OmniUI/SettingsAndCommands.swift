@@ -97,7 +97,7 @@ public struct SettingsView: View {
                     }
                 }
                 .accessibilityIdentifier("settings.notification-preview")
-                Text("Titles and reply previews are sent through Apple notifications and may appear on this device’s lock screen. Choose Generic update to keep message content private.")
+                Text("Title and preview is the default. Titles and reply previews are sent through Apple notifications and may appear on this device’s lock screen. Choose Generic update to keep message content private.")
                     .font(.footnote)
                     .foregroundStyle(Color.quietText)
                     .fixedSize(horizontal: false, vertical: true)
