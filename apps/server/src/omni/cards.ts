@@ -40,8 +40,8 @@ export type CardSection = "decide" | "approve" | "motion";
 export const SENDABLE_KINDS = new Set<string>(["email", "email-reply", "message", "calendar-rsvp", "calendar-invite"]);
 /** States the OWNER moved the card into: an agent re-publish never overwrites them. */
 export const ACTED_STATES = new Set<CardState>(["working", "draft-ready", "waiting", "sent", "done", "dismissed"]);
-/** Finished states a changed source item (new sourceRevision) reopens as `proposed`. */
-export const REOPENABLE_STATES = new Set<CardState>(["sent", "done", "dismissed"]);
+/** Finished or waiting states a changed source item (new sourceRevision) reopens as `proposed`. */
+export const REOPENABLE_STATES = new Set<CardState>(["sent", "done", "dismissed", "waiting"]);
 export const URGENCY_RANK: Record<CardUrgency, number> = { today: 0, "this-week": 1, whenever: 2 };
 
 export interface CardFact { text: string; source: string | null }
