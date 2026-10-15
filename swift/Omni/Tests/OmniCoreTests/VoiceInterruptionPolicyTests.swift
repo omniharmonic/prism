@@ -15,6 +15,31 @@ final class VoiceInterruptionPolicyTests: XCTestCase {
         XCTAssertFalse(sustained.accept(frame(0.512), now: 100))
         XCTAssertTrue(sustained.accept(frame(0.768), now: 100))
     }
+    func testEchoSettlingIgnoresSpeechAtTheStartOfEachReply() {
+        // Echo leaks while the canceller adapts: continuous detector speech from the
+        // first frame cannot interrupt until a run begins after settling.
+        var quick = VoiceInterruptionPolicy(responsiveness: .quick, settlingSeconds: VoiceInterruptionPolicy.echoSettlingSeconds)
+        for index in 1...3 { XCTAssertFalse(quick.accept(frame(Double(index) * 0.256), now: 100)) }
+        XCTAssertTrue(quick.ignoredSpeechWhileSettling)
+        XCTAssertFalse(quick.accept(frame(1.024), now: 100))
+        XCTAssertTrue(quick.accept(frame(1.280), now: 100), "Quick interrupts two frames after settling")
+        var sustained = VoiceInterruptionPolicy(responsiveness: .sustained, settlingSeconds: VoiceInterruptionPolicy.echoSettlingSeconds)
+        for index in 1...5 { XCTAssertFalse(sustained.accept(frame(Double(index) * 0.256), now: 100)) }
+        XCTAssertTrue(sustained.accept(frame(1.536), now: 100), "Sustained interrupts three frames after settling")
+    }
+    func testSettlingIsMeasuredFromTheFirstMonitoredFrameAndNotReopenedByReset() {
+        var policy = VoiceInterruptionPolicy(responsiveness: .quick, settlingSeconds: 1)
+        XCTAssertFalse(policy.accept(frame(10.256, speech: false), now: 100))
+        XCTAssertFalse(policy.ignoredSpeechWhileSettling)
+        policy.reset()
+        XCTAssertFalse(policy.accept(frame(11.264), now: 100))
+        XCTAssertTrue(policy.accept(frame(11.520), now: 100), "A mid-reply discontinuity must not restart settling")
+    }
+    func testSilentSettlingDoesNotRecordIgnoredSpeech() {
+        var policy = VoiceInterruptionPolicy(settlingSeconds: 1)
+        for index in 1...3 { XCTAssertFalse(policy.accept(frame(Double(index) * 0.256, speech: false), now: 100)) }
+        XCTAssertFalse(policy.ignoredSpeechWhileSettling)
+    }
     func testSilenceAndExplicitResetBreakSpeechRuns() {
         var policy = VoiceInterruptionPolicy(responsiveness: .sustained)
         for index in 1...8 {

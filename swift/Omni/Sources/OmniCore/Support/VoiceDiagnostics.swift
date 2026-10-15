@@ -17,6 +17,13 @@ public enum VoiceDiagnosticEvent: String, Codable, Sendable {
     case playbackRouteLost, playbackEngineInactive, playbackCaptureMissing, playbackBufferBudget
     case playbackDecodeFailed, playbackOtherFailure
     case wakeStarted, wakeDetected, wakeRetry, wakeCooldown, wakePaused, wakeRollover, wakePermissionDenied
+    // Self-echo defenses. An automatic turn that began during or within
+    // VoiceSelfEcho.windowSeconds of playback ends in exactly one of these three;
+    // a turn with fresh owner speech is only sendAccepted.
+    case echoDiscarded, playbackAdjacentTurnAccepted, selfHearingPause
+    // A run of detector speech in the echo canceller's settling period after
+    // playback started, which did not interrupt. Recorded at most once per reply.
+    case interruptionSettlingIgnored
 
 }
 public enum VoiceDiagnostics {

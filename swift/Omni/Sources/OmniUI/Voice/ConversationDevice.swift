@@ -220,7 +220,10 @@ import OmniVoiceKit
             receiveInterruption?(.unavailable("Acoustic interruption is unavailable. Use Interrupt and speak."))
         case .frame(let audioTime, let captured, let duration, let isSpeech):
             let frame = VoiceActivityFrame(audioTime: audioTime, capturedAt: captured, duration: duration, isSpeech: isSpeech)
-            guard interruptionPolicy.accept(frame, now: ProcessInfo.processInfo.systemUptime) else { return }
+            let alreadyIgnored = interruptionPolicy.ignoredSpeechWhileSettling
+            let interrupted = interruptionPolicy.accept(frame, now: ProcessInfo.processInfo.systemUptime)
+            if !alreadyIgnored && interruptionPolicy.ignoredSpeechWhileSettling { diagnostic(.interruptionSettlingIgnored) }
+            guard interrupted else { return }
             do {
                 try audio.retainInterruptionLeadIn()
                 diagnostic(.acousticInterruption)
@@ -244,7 +247,8 @@ import OmniVoiceKit
     private func beginPlaybackMonitor(request: Int) async -> Bool {
         let url = FileManager.default.temporaryDirectory.appending(path: "omni-interruption-\(UUID().uuidString).caf")
         file = url; monitoringPlayback = true; playbackMonitorReady = false
-        interruptionPolicy = VoiceInterruptionPolicy(responsiveness: turnPreferences.interruptionResponsiveness)
+        // The stored responsiveness is unchanged; every reply adds an echo-settling period.
+        interruptionPolicy = VoiceInterruptionPolicy(responsiveness: turnPreferences.interruptionResponsiveness, settlingSeconds: VoiceInterruptionPolicy.echoSettlingSeconds)
         do {
             try await audio.start(url: url, chunkSeconds: 60, chunkClosed: Self.chunkCallback(for: self, request: request), activity: Self.activityCallback(for: self, request: request), firstTap: Self.firstTapCallback(for: self, request: request), configurationChanged: Self.configurationCallback(for: self, request: request))
             try await audio.waitForFirstTap()

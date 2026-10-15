@@ -86,6 +86,21 @@ public extension ConversationAudio {
     public var canStart: Bool { !privacyLocked && !isMicrophoneMuted && !starting && (state == .off || state == .paused || state == .answering || state == .speaking) }
     private var spoken: [String: String] = [:]
     private var hasQueuedReplySpeech = false
+    // Self-echo defenses. Omni can hear its own reply (acoustic interruption during
+    // playback, or output latency right after it) and must not send that as the owner.
+    /// Clock for playback end; frames carry the same system-uptime clock.
+    var uptime: @MainActor () -> Double = { ProcessInfo.processInfo.systemUptime }
+    /// What Omni spoke or queued for the current or most recent reply.
+    private var replyNarration = ""
+    private var lastPlaybackEndedAt: Double?
+    private var captureSpeechOnset: Double?
+    private var captureBeganDuringPlayback = false
+    private var automaticSubmitPending = false
+    private var selfHearing = VoiceSelfHearingBreaker()
+    private var echoRetries = 0
+    /// Automatic sending stopped because Omni seemed to answer itself. Cleared by an owner tap.
+    public private(set) var isPausedForSelfHearing = false
+    public static let selfHearingNotice = "Voice paused: Omni may be hearing itself. Your words are saved as an unsent draft. Tap Resume to keep talking."
     public init(audio: any ConversationAudio) { self.audio = audio }
 
     /// Preferences apply to the next capture. Changing modes requires pausing first.
@@ -96,6 +111,7 @@ public extension ConversationAudio {
     }
     public func keepListening() {
         guard state == .listening else { return }
+        automaticSubmitPending = false
         endpointPolicy.keepListening()
         endpointCountdown = nil
     }
@@ -108,6 +124,10 @@ public extension ConversationAudio {
             let now = ProcessInfo.processInfo.systemUptime
             let decision = endpointPolicy.accept(frame, now: now)
             if decision != .unavailable {
+                if frame.isSpeech {
+                    if captureSpeechOnset == nil { captureSpeechOnset = frame.capturedAt }
+                    automaticSubmitPending = false
+                }
                 if lastActivityAt == nil { VoiceDiagnostics.record(.activityFirstFrame) }
                 // Delivery liveness and source freshness are different checks.
                 // The endpoint policy above still rejects old or discontinuous audio.
@@ -119,6 +139,7 @@ public extension ConversationAudio {
             case .send:
                 endpointCountdown = nil
                 guard !privacyLocked else { return }
+                automaticSubmitPending = true
                 automaticFinish()
             case .unavailable: disableEndpoint("Automatic detection fell behind. Use Send turn.")
             }
@@ -160,9 +181,15 @@ public extension ConversationAudio {
         if locked { cancel() }
     }
 
+    /// An owner action. Clears the self-hearing pause; automatic relistening uses `relisten`.
     public func start(continuingDraft draft: String = "") async {
+        selfHearing.ownerActed(); isPausedForSelfHearing = false; echoRetries = 0
         VoiceDiagnostics.record(state == .paused ? .resumed : .sessionStart)
         await startCapture(continuingDraft: draft, resetEmptyAttempts: true)
+    }
+    private func relisten() async {
+        VoiceDiagnostics.record(state == .paused ? .resumed : .sessionStart)
+        await startCapture(continuingDraft: "", resetEmptyAttempts: true)
     }
     private func startCapture(continuingDraft draft: String, resetEmptyAttempts: Bool) async {
         guard canStart else { return }
@@ -173,6 +200,7 @@ public extension ConversationAudio {
         isSessionActive = true
         let request = generation
         continuingDraft = draft; capturedText = ""
+        captureSpeechOnset = nil; captureBeganDuringPlayback = false; automaticSubmitPending = false
         state = .preparing; problem = nil; transcript = draft
         activityNotice = nil; interruptionNotice = nil; endpointCountdown = nil
         audio.configureInterruption(enabled: acousticInterruptionEnabled) { [weak self] event in
@@ -184,6 +212,10 @@ public extension ConversationAudio {
             case .speech, .speechEvidence:
                 guard !self.isMicrophoneMuted else { return }
                 guard self.state == .answering || self.state == .speaking else { return }
+                // Onset is during playback: possibly Omni's own voice until the transcript says otherwise.
+                let now = self.uptime()
+                self.lastPlaybackEndedAt = now; self.captureSpeechOnset = now
+                self.captureBeganDuringPlayback = true; self.automaticSubmitPending = false
                 self.drainTask?.cancel(); self.drainTask = nil
                 self.audio.silence(); self.spoken = [:]; self.hasQueuedReplySpeech = false; self.pendingCompletion = nil
                 self.endpointPolicy = VoiceEndpointPolicy(pauseSeconds: self.endpointPause)
@@ -235,6 +267,10 @@ public extension ConversationAudio {
     public func finish(submit: Bool = true, draftReason: DraftReason = .recordingLimit, send: @MainActor (String) async -> Bool) async {
         guard !privacyLocked, (!submit || !isMicrophoneMuted), state == .listening else { return }
         let request = generation
+        // Only the endpoint may auto-submit; any other submit is an owner tap.
+        let automatic = submit && automaticSubmitPending
+        automaticSubmitPending = false
+        if submit && !automatic { selfHearing.ownerActed() }
         activityWatchdog?.cancel(); activityWatchdog = nil; endpointCountdown = nil
         state = .transcribing; captureNotice = nil
         VoiceDiagnostics.record(.transcribing)
@@ -267,12 +303,29 @@ public extension ConversationAudio {
                 state = .paused; problem = recovery
                 return
             }
+            if automatic {
+                let adjacent = isPlaybackAdjacentCapture
+                if adjacent, VoiceSelfEcho.isLikelyEcho(captured, of: replyNarration) {
+                    VoiceDiagnostics.record(.echoDiscarded)
+                    await discardEcho()
+                    return
+                }
+                if selfHearing.automaticTurn(playbackAdjacent: adjacent) {
+                    VoiceDiagnostics.record(.selfHearingPause)
+                    isPausedForSelfHearing = true
+                    saveRecoveredDraft(text)
+                    state = .paused; problem = Self.selfHearingNotice
+                    return
+                }
+                if adjacent { VoiceDiagnostics.record(.playbackAdjacentTurnAccepted) }
+            }
             isSubmitting = submit
             if submit { VoiceDiagnostics.record(.sending) }
             let sent = await send(text)
             guard generation == request, !Task.isCancelled else { VoiceDiagnostics.record(.staleCallback); return }
             isSubmitting = false
             if sent {
+                if submit { replyNarration = ""; echoRetries = 0 }
                 VoiceDiagnostics.record(submit ? .sendAccepted : .paused)
                 state = submit ? .answering : .paused
                 if !submit {
@@ -296,6 +349,27 @@ public extension ConversationAudio {
         }
     }
 
+    /// Speech that began during playback or within `VoiceSelfEcho.windowSeconds` of its end.
+    private var isPlaybackAdjacentCapture: Bool {
+        if captureBeganDuringPlayback { return true }
+        guard let end = lastPlaybackEndedAt, let onset = captureSpeechOnset else { return false }
+        return onset - end <= VoiceSelfEcho.windowSeconds
+    }
+
+    /// The echo is not the owner's turn: nothing is sent or kept as a draft. Listen
+    /// again (playback has stopped, so there is nothing left to echo) or wait for a tap.
+    private func discardEcho() async {
+        transcript = continuingDraft; capturedText = ""
+        state = .paused
+        if endpointMode == .automatic, !isMicrophoneMuted, continuingDraft.isEmpty, canAutomaticallyListen(), echoRetries < 2 {
+            echoRetries += 1
+            await startCapture(continuingDraft: "", resetEmptyAttempts: false)
+            if state == .listening { captureNotice = "Ignored audio that matched Omni's reply. Still listening." }
+        } else {
+            captureNotice = "Ignored audio that matched Omni's reply. Resume when you're ready."
+        }
+    }
+
     /// Narrate completed assistant blocks only. Markdown structures can span stream
     /// fragments; the complete original stays in chat while narration omits artifacts.
     public func consume(_ timeline: [TimelineItem], running: Bool) {
@@ -310,6 +384,7 @@ public extension ConversationAudio {
             spoken[id] = text
             let words = SpeechText.narration(from: text).trimmingCharacters(in: .whitespacesAndNewlines)
             if !words.isEmpty {
+                replyNarration = String(Self.join(replyNarration, words).suffix(8000))
                 if !hasQueuedReplySpeech {
                     VoiceDiagnostics.record(.replyTextQueued)
                     hasQueuedReplySpeech = true
@@ -338,6 +413,7 @@ public extension ConversationAudio {
                 guard let self else { return }
                 await self.audio.waitForPlayback()
                 guard !Task.isCancelled, self.generation == request, self.isSessionActive, !self.privacyLocked, self.state == .speaking else { return }
+                self.lastPlaybackEndedAt = self.uptime()
                 self.drainTask = nil
                 self.state = .paused
                 guard !self.isMicrophoneMuted, self.canAutomaticallyListen() else {
@@ -345,7 +421,7 @@ public extension ConversationAudio {
                     return
                 }
                 VoiceDiagnostics.record(.listeningAgain)
-                await self.start()
+                await self.relisten()
             }
         }
     }
