@@ -178,8 +178,7 @@ struct TodayView: View {
                 .accessibilityHint(session.taskThreadID(task) != nil ? "Opens the conversation already linked to this task" : "Starts a conversation with this task as context")
                 if let link = PrismSourceLink(web: task.link, noteID: task.noteId) {
                     Button("Open task") {
-                        if let native = link.native { openURL(native) { accepted in if !accepted { openURL(link.web) } } }
-                        else { openURL(link.web) }
+                        SourceLinkOpener.open(link, with: openURL)
                     }
                     .contextMenu { Button("Open in Browser") { openURL(link.web) } }
                 }

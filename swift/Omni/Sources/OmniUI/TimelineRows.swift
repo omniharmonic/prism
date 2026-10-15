@@ -117,8 +117,7 @@ struct RecordCardView: View {
     var body: some View {
         Button {
             if let link {
-                if let native = link.native { openURL(native) { accepted in if !accepted { openURL(link.web) } } }
-                else { openURL(link.web) }
+                SourceLinkOpener.open(link, with: openURL)
             }
         } label: {
             HStack(alignment: .top, spacing: 10) {

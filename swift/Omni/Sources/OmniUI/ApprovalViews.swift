@@ -471,8 +471,7 @@ struct NudgeCardView: View {
             }
         } else if let link = PrismSourceLink(web: item.sourceLink, noteID: item.candidate.sourceId) {
             Button {
-                if let native = link.native { openURL(native) { accepted in if !accepted { openURL(link.web) } } }
-                else { openURL(link.web) }
+                SourceLinkOpener.open(link, with: openURL)
             } label: { Text("Open source").frame(minHeight: 44).contentShape(Rectangle()) }
             .contextMenu { Button("Open in Browser") { openURL(link.web) } }
         }
