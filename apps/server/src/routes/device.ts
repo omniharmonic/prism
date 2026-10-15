@@ -296,6 +296,12 @@ deviceAuth.post("/device/approve", async (c) => {
   // enough — an existing device must approve this exact sign-in in Omni. The request stays
   // parked; this browser waits on /auth/device/wait.
   if (needsDeviceConfirmation(s.email)) {
+    // The approval must fit inside the parked request's life (R4 M-a): too little left → start again.
+    if (req.expires_at - Date.now() < 60_000) {
+      deleteDeviceAuthRequest(req.id);
+      clearReqCookie(c);
+      return errorPage(c, 400, "This sign-in request is about to expire. Start again from the app.");
+    }
     // With Omni off there is no device to approve from: refuse rather than fall back to a
     // session's consent (review round 3, probe F). Bootstrap rules still apply.
     if (!confirmationAvailable()) {
@@ -309,9 +315,9 @@ deviceAuth.post("/device/approve", async (c) => {
     if (otherPendingSignIn(req.id)) {
       c.header("Cache-Control", "no-store");
       return page(c, 403, "Another sign-in is waiting",
-        `<h1>Another sign-in is already waiting for approval</h1><p>Only one new device can wait for approval at a time. ` +
-        `Open the Omni app on a device you already use and approve or deny the waiting request, then start again from this app.</p>` +
-        `<p class="muted">If you did not start the other sign-in yourself, deny it.</p>`);
+        `<h1>Another sign-in is already waiting for approval</h1>` +
+        `<p><strong>The waiting request is NOT this one.</strong> Deny it in Omni, then try again — unless you started a sign-in on another device a moment ago.</p>` +
+        `<p class="muted">Only one new device can wait for approval at a time; this sign-in was not started.</p>`);
     }
     requestConfirmation(req, s.email, req.label ?? defaultLabelFor(req.client_id), requestHints((k) => c.req.header(k)));
     return waitingPage(c, req.id);
@@ -391,7 +397,7 @@ deviceAuth.post("/device/token", async (c) => {
   if (!row) return oauthError(c, 400, "invalid_grant");
   if (row.used_at !== null) {
     // Replay of a redeemed code: someone else may hold it — kill what it minted.
-    if (row.device_id) await revokeDevice(row.device_id);
+    if (row.device_id) await revokeDevice(row.device_id, "replay");
     return oauthError(c, 400, "invalid_grant", "code already used");
   }
   // Claim BEFORE checking the verifier: any attempt burns the code (no retries).
@@ -415,7 +421,7 @@ deviceAuth.post("/device/revoke", async (c) => {
   if (f.token) {
     if (f.token.startsWith(DEVICE_TOKEN_PREFIX)) {
       const row = getDeviceTokenByHash(sha256hex(f.token));
-      if (row) await revokeDevice(row.id);
+      if (row) await revokeDevice(row.id, "token");
     }
     return c.json({ ok: true });
   }

@@ -78,9 +78,11 @@ export function requestHints(get: (k: string) => string | undefined): { ipHint?:
   const viaTunnel = !!get("cf-connecting-ip") && !!publicHost && (get("host") ?? "").toLowerCase() === publicHost && !/^(localhost|127\.|\[::1\])/.test(publicHost);
   const ip = viaTunnel ? (get("cf-connecting-ip") ?? "").trim() : "";
   let ipHint: string;
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(ip)) ipHint = "internet, " + ip.split(".").slice(0, 2).join(".") + ".x.x";
-  else if (ip.includes(":")) ipHint = "internet, " + ip.split(":").slice(0, 3).join(":") + ":…";
-  else ipHint = "this Mac or the local network";
+  // R4 M-b: the Host header can be forged locally too, so every hint is a CLAIM made by the
+  // request and is labelled so. The matching code is the check.
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(ip)) ipHint = "reported from " + ip.split(".").slice(0, 2).join(".") + ".x.x (unverified)";
+  else if (ip.includes(":")) ipHint = "reported from " + ip.split(":").slice(0, 3).join(":") + ":… (unverified)";
+  else ipHint = "reported from this Mac or the local network (unverified)";
   const ua = (get("user-agent") ?? "").replace(/[\r\n\0]+/g, " ").trim().slice(0, 160);
   return { ipHint, ...(ua ? { userAgentHint: ua } : {}) };
 }
@@ -90,7 +92,8 @@ export function requestConfirmation(req: DeviceAuthRequestRow, email: string, la
   const known = pending.get(req.id);
   if (known) return known.approvalId;
   // Never outlive the parked request (review M1).
-  const ttlMs = Math.max(60_000, Math.min(CONFIRM_TTL_MS, req.expires_at - Date.now()));
+  // Never outlive the parked request (review M1 / R4 M-a): min(own TTL, request's life).
+  const ttlMs = Math.min(CONFIRM_TTL_MS, req.expires_at - Date.now());
   const a = createApproval({
     owner: config.ownerEmail,
     threadId: null,

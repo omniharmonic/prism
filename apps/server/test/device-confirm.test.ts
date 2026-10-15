@@ -96,7 +96,7 @@ test("with a live device: a session's consent only WAITS; an existing device app
   assert.deepEqual(Object.keys(a!.payload).sort(), ["clientId", "ipHint", "label", "matchCode", "redirectUri", "requestedAt", "userAgentHint"]);
   assert.equal(a!.payload.label, "Evil Laptop");
   assert.equal(a!.payload.redirectUri, REDIRECT);
-  assert.equal(a!.payload.ipHint, "this Mac or the local network", "a forged client-IP header off the tunnel host is not believed");
+  assert.equal(a!.payload.ipHint, "reported from this Mac or the local network (unverified)", "a forged client-IP header off the tunnel host is not believed");
 
   // The session that asked cannot approve its own request; nor can it be edited or proposed.
   const bySession = await decide(a!.id, a!.digest, "send", { cookie: cookie.split(";")[0]!, origin: config.appOrigin, "sec-fetch-site": "same-origin" });
@@ -210,7 +210,9 @@ test("I1: the waiting page and the Omni card show the same matching code; one pe
   assert.match(html, /only if it shows this same code/);
   const second = await consent();
   assert.equal(second.r.status, 403, "a second concurrent sign-in is refused");
-  assert.match(await second.r.text(), /Another sign-in is already waiting/);
+  const page2 = await second.r.text();
+  assert.match(page2, /Another sign-in is already waiting/);
+  assert.match(page2, /The waiting request is NOT this one/);
   assert.equal((await pendingSignIns(phone)).length, 1);
   assert.notEqual(matchCodeFor("req-a"), matchCodeFor("req-b"));
   assert.equal(matchCodeFor("req-a"), matchCodeFor("req-a"));
@@ -219,10 +221,10 @@ test("I1: the waiting page and the Omni card show the same matching code; one pe
 test("I1: the client IP is believed only for the tunnel's public host", () => {
   const host = new URL(config.appOrigin).host;
   const h = (o: Record<string, string>) => (k: string) => o[k];
-  assert.equal(requestHints(h({ "cf-connecting-ip": "203.0.113.9", host: "127.0.0.1:8787" })).ipHint, "this Mac or the local network");
+  assert.equal(requestHints(h({ "cf-connecting-ip": "203.0.113.9", host: "127.0.0.1:8787" })).ipHint, "reported from this Mac or the local network (unverified)");
   const viaPublic = requestHints(h({ "cf-connecting-ip": "203.0.113.9", host })).ipHint;
   // In tests APP_ORIGIN is localhost, which is never treated as the tunnel.
-  assert.equal(viaPublic, /^(localhost|127\.)/.test(host) ? "this Mac or the local network" : "internet, 203.0.x.x");
+  assert.equal(viaPublic, /^(localhost|127\.)/.test(host) ? "reported from this Mac or the local network (unverified)" : "reported from 203.0.x.x (unverified)");
 });
 
 test("M1 + M2: the approval never outlives the parked request; a session cannot deny the owner's sign-in", async () => {
@@ -243,5 +245,57 @@ test("with Omni off and a live device, a session's consent is refused (no fallba
   delete process.env.OMNI_ENABLED;
   const { r } = await consent();
   assert.equal(r.status, 403);
+  assert.equal((db.prepare("SELECT count(*) n FROM device_auth_codes").get() as { n: number }).n, 0);
+});
+
+
+// ── review round 4 ───────────────────────────────────────────────────────────
+
+test("R4 I-a: invite/register can never replace an existing password; nothing changes", async () => {
+  const { verifyPassword } = await import("../src/auth/password");
+  setAccount(OWNER, "Owner", hashPassword("the owners passphrase"));
+  const s = { ...J, cookie: sessionCookie(makeSession(OWNER)), origin: config.appOrigin, ...tunnel() };
+  const inv = await app.request("/auth/invite", { method: "POST", headers: s, body: JSON.stringify({ email: OWNER }) });
+  assert.equal(inv.status, 409, "no invite for the owner's own address");
+  // An existing member with a password: no invite either.
+  setAccount("member@test.local", "M", hashPassword("member passphrase one"));
+  assert.equal((await app.request("/auth/invite", { method: "POST", headers: s, body: JSON.stringify({ email: "member@test.local" }) })).status, 409);
+  // A stale invite issued before the account got its password cannot overwrite it either.
+  const fresh = await app.request("/auth/invite", { method: "POST", headers: s, body: JSON.stringify({ email: "later@test.local" }) });
+  assert.equal(fresh.status, 200);
+  const token = new URL(((await fresh.json()) as { url: string }).url).searchParams.get("token")!;
+  setAccount("later@test.local", "L", hashPassword("their own passphrase"));
+  const reg = await app.request("/auth/register", { method: "POST", headers: { ...J, ...tunnel() }, body: JSON.stringify({ token, name: "x", password: "attacker passphrase" }) });
+  assert.equal(reg.status, 409);
+  assert.ok(verifyPassword("their own passphrase", getUser("later@test.local")!.password_hash!), "the password is unchanged");
+  assert.ok(verifyPassword("the owners passphrase", getUser(OWNER)!.password_hash!));
+});
+
+test("R4 M-a: a request with under a minute left is not parked for approval; the approval never outlives it", async () => {
+  issueDeviceToken(OWNER, "phone", "omni-native");
+  const { verifier: _v } = pkce();
+  const sid = makeSession(OWNER);
+  const q = new URLSearchParams({ client_id: "prism-native", redirect_uri: REDIRECT, code_challenge_method: "S256", code_challenge: pkce().challenge, state: "st", label: "L" });
+  const a = await app.request(`/auth/device/authorize?${q}`, { headers: { cookie: sessionCookie(sid), ...tunnel() } });
+  const html = await a.text();
+  const reqCookie = cookieVal(a.headers.get("set-cookie"), "prism_device_req")!;
+  db.prepare("UPDATE device_auth_requests SET expires_at = ?").run(Date.now() + 30_000);
+  const r = await app.request("/auth/device/approve", { method: "POST", headers: { ...FORM_H, cookie: `${sessionCookie(sid)}; prism_device_req=${reqCookie}`, ...tunnel() },
+    body: new URLSearchParams({ req: html.match(/name="req" value="([^"]+)"/)![1]!, csrf: html.match(/name="csrf" value="([^"]+)"/)![1]!, decision: "approve" }).toString() });
+  assert.equal(r.status, 400);
+  assert.equal((db.prepare("SELECT count(*) n FROM omni_approvals WHERE kind = 'device-sign-in'").get() as { n: number }).n, 0);
+});
+
+test("R4 M-d: a revocation without a device credential (used-code replay, token-possession revoke) never starts the 24 h clock", async () => {
+  const dev = issueDeviceToken(OWNER, "phone", "omni-native");
+  // Token possession (RFC 7009 style) revokes it, tagged "token".
+  await app.request("/auth/device/revoke", { method: "POST", headers: { ...J, ...tunnel() }, body: JSON.stringify({ token: dev.token }) });
+  const h = db.prepare("SELECT last_end_via FROM device_account_history WHERE email = ?").get(OWNER) as { last_end_via: string };
+  assert.equal(h.last_end_via, "token");
+  db.prepare("UPDATE device_tokens SET revoked_at = ?").run(Date.now() - 2 * DEVICE_BOOTSTRAP_COOLDOWN_MS);
+  db.prepare("UPDATE device_account_history SET last_live_until = ?").run(Date.now() - 2 * DEVICE_BOOTSTRAP_COOLDOWN_MS);
+  const late = await consent();
+  assert.equal(late.r.status, 200, "even 48 h later: no bootstrap — it waits for a device approval");
+  assert.match(await late.r.text(), /Approve this sign-in on a device you already use/);
   assert.equal((db.prepare("SELECT count(*) n FROM device_auth_codes").get() as { n: number }).n, 0);
 });

@@ -1479,7 +1479,7 @@ export function insertDeviceToken(r: Omit<DeviceTokenRow, "last_seen_at" | "revo
   ).run(r.id, r.token_hash, r.email, r.label, r.client_id, r.created_at, r.created_at, r.expires_at, r.max_expires_at);
   db.prepare(
     `INSERT INTO device_account_history (email, first_device_at, last_live_until, last_end_via) VALUES (?, ?, ?, NULL)
-     ON CONFLICT(email) DO NOTHING`,
+     ON CONFLICT(email) DO UPDATE SET last_end_via = NULL`,
   ).run(r.email, r.created_at, r.created_at);
 }
 export function getDeviceTokenByHash(hash: string): DeviceTokenRow | null {
@@ -1517,7 +1517,9 @@ export function deviceBootstrapOpen(email: string): boolean {
   // When each past device stopped being live: revoked, or its (idle/absolute) expiry.
   const r = db.prepare("SELECT COUNT(*) AS n, MAX(COALESCE(revoked_at, MIN(expires_at, max_expires_at))) AS ended FROM device_tokens WHERE email = ?").get(email) as { n: number; ended: number | null };
   if (!h && !r.n) return true; // this account never had a device: bootstrap
-  if (h?.last_end_via === "session") return false;
+  // Only an end triggered by a DEVICE credential (or a natural expiry) starts the 24 h clock;
+  // a session, a bare token presentation or a used-code replay never does (R4 M-d).
+  if (h?.last_end_via && h.last_end_via !== "device") return false;
   const ended = Math.max(r.ended ?? 0, h?.last_live_until ?? 0);
   return t - ended >= DEVICE_BOOTSTRAP_COOLDOWN_MS;
 }

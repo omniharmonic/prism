@@ -211,8 +211,10 @@ export function bearerFromHeader(h: string | null | undefined): string | undefin
  * visible (and revocable) in the MCP token list. Capability links created via
  * the device are NOT revoked — like a session's, they are standalone shares.
  */
-export async function revokeDevice(id: string): Promise<boolean> {
-  const changed = revokeDeviceTokenRow(id);
+/** `via`: who triggered it — "device" (a device credential), or "token" / "replay" /
+ *  "session", which never start the bootstrap cool-down (db.deviceBootstrapOpen). */
+export async function revokeDevice(id: string, via: string = "device"): Promise<boolean> {
+  const changed = revokeDeviceTokenRow(id, via);
   // Prism MCP PATs minted through this device (WP6.1) die with it — a local row
   // update, immediate.
   revokePatsForDevice(id);

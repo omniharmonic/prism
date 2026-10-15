@@ -744,3 +744,22 @@ alone no longer signs a NEW device in once the owner already has one:
   time (a second gets a 403 page). The client-IP hint is believed only when the request came
   for the tunnel's public host; otherwise "this Mac or the local network". Hints are claims.
 - The approval never outlives the parked request; denying it also needs a device.
+
+### Round 4 (review R4)
+- **Invites never replace a password (I-a):** `/auth/invite` refuses the owner's own address and
+  any account that already has a password (409 `account_exists`); `/auth/register` refuses (409,
+  before the invite is consumed — nothing changes) when the account already has a password.
+- **Approval lifetime (M-a):** the approval expires at min(10 min, the parked request's expiry);
+  a request with under a minute left is not parked (start again).
+- **Location hints are claims (M-b):** the card reads "reported from … (unverified)". Any local
+  process can forge both the client-IP header and Host, so the hint is never evidence; the
+  matching code and the one-at-a-time rule are the check.
+- **One at a time (M-c):** while a sign-in waits, a new one gets "Another sign-in is already
+  waiting for approval — the waiting request is NOT this one. Deny it in Omni, then try again."
+  No replacement (an attacker could displace the owner's own request). **Known limit:** whoever
+  can park requests (a lifted session) can keep re-parking after each denial — a repeatable
+  denial of new sign-ins, never a sign-in. Revoke the session (sign out everywhere) to end it.
+- **What starts the 24 h clock (M-d):** only a device-credential revocation or a natural expiry.
+  A used-code replay (`via: replay`) or a token-possession revoke (`via: token`) never does — the
+  account then stays closed to bootstrap until a device is signed in through approval (or the
+  operator intervenes on the Mini).
