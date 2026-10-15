@@ -87,6 +87,8 @@ import { DIALS, type InterruptContext } from "../omni/nudge-policy";
 import { priorNudgeSources, resolveNudgeSource, nudgeWeeklyAudit, latestNudgeAudit, FRESHNESS_SUBSYSTEMS, NUDGE_KINDS, upsertNudge, listNudges, getNudge, nudgeAction, nudgeSettings, setNudgeSettings, bindNudgeThread, type Candidate } from "../omni/nudges";
 import { startNudgeDelivery } from "../omni/nudge-delivery";
 import { resolveNote, readNoteContent } from "../omni/records";
+import { CardError, cardView, cardsByThread } from "../omni/cards";
+import { parseCardPublish, publishCard } from "../omni/card-flow";
 import { readableNudgeText } from "../omni/titles";
 import { proactiveSourceHealth } from "../omni/source-health";
 import { syncAttentionPreferences, AttentionPreferenceError } from "../omni/attention-preferences";
@@ -235,6 +237,10 @@ function hermesFailure(c: Context, e: unknown): Response {
   if (e instanceof HermesError) return c.json({ error: e.code }, e.status as 400);
   console.error(`[omni] ${(e as Error)?.message}`);
   return c.json({ error: "internal_error" }, 500);
+}
+function cardFailure(c: Context, e: unknown): Response {
+  if (e instanceof CardError) return c.json({ error: e.code, ...(e.detail ? { detail: e.detail } : {}) }, e.status);
+  return hermesFailure(c, e);
 }
 const iso = (v: number | null | undefined) => (v ? new Date(v).toISOString() : null);
 const tsIso = (v: number | string | null | undefined): string | null => {
@@ -458,6 +464,7 @@ omniApi.get("/threads/:id", async (c) => {
     thread: { ...threadView(getThread(id), session), ...(nonmarking ? { lastSeq: readSequence } : {}) },
     messages: [...messages.map(messageView).filter(Boolean), ...proactiveMessages(omniConfig.ownerEmail(), id)].sort((a,b)=>String(a?.at??"").localeCompare(String(b?.at??""))),
     cards: threadCards(id),
+    itemCards: cardsByThread(omniConfig.ownerEmail(), id).map((x) => cardView(x)),
     approvals: threadApprovals(id).map(approvalView),
     activeTurnId: activeTurn(id)?.id ?? null,
   });
@@ -1089,6 +1096,18 @@ omniApi.post("/hooks/proactive", async c => {
  const body=await jsonBody(c);if(!body)return bad(c,"JSON object required");
  try {const decision=parseProactiveDecision(body);const result=await publishProactive(omniConfig.ownerEmail(),decision);return c.json(result,result.replayed?200:201);}
  catch(e){if(e instanceof ProactiveError)return c.json({error:e.code},e.status);return hermesFailure(c,e);}
+});
+
+/** The understanding step's card for one item. Proposes nothing outward; see docs/omni-module.md § Item cards. */
+omniApi.post("/hooks/cards", async (c) => {
+  const b = await jsonBody(c);
+  if (!b) return bad(c, "a JSON object body is required");
+  try {
+    const r = await publishCard(omniConfig.ownerEmail(), parseCardPublish(b));
+    return c.json({ card: cardView(r.card), created: r.created, changed: r.changed, droppedFacts: r.droppedFacts, ...(r.ignored ? { ignored: r.ignored } : {}) }, r.created ? 201 : 200);
+  } catch (e) {
+    return cardFailure(c, e);
+  }
 });
 
 // ── M3 nudges: hooks only propose, app presses only start private work ─────────

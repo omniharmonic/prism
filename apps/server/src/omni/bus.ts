@@ -21,7 +21,7 @@ export interface ThreadMessage {
   event: OmniEvent;
 }
 export interface OmniNotice {
-  type: "thread" | "approval" | "card";
+  type: "thread" | "approval" | "card" | "item-card";
   id: string;
   op: string;
   threadId?: string;
