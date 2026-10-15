@@ -97,10 +97,10 @@ struct ApprovalCardView: View {
         }
         if let body = content.body {
             Divider()
-            // The whole text, never shortened: what is approved is what is seen.
-            MarkdownText(markdown: body).textSelection(.enabled)
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("Text: \(MarkdownBlocks.plainText(body))")
+            // The whole text, never shortened, and verbatim (not rendered as
+            // markdown): what is approved is exactly what will be sent.
+            Text(body).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel("Text: \(body)")
         }
     }
 
