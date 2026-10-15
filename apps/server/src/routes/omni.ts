@@ -89,7 +89,7 @@ import { priorNudgeSources, resolveNudgeSource, nudgeWeeklyAudit, latestNudgeAud
 import { startNudgeDelivery } from "../omni/nudge-delivery";
 import { resolveNote, readNoteContent } from "../omni/records";
 import { CardError, cardView, cardsByThread, getCard } from "../omni/cards";
-import { parseCardPublish, publishCard, listCardViews, snoozeCard, dismissCard, chooseCardOption, instructCard, cardAfterProposal, cardAfterDecision, relinkApproval, resolveCardSource } from "../omni/card-flow";
+import { parseCardPublish, publishCard, listCardViews, snoozeCard, dismissCard, chooseCardOption, instructCard, cardAfterProposal, cardAfterDecision, relinkApproval, resolveCardSource, updateCardFromThread } from "../omni/card-flow";
 import { readableNudgeText } from "../omni/titles";
 import { proactiveSourceHealth } from "../omni/source-health";
 import { syncAttentionPreferences, AttentionPreferenceError } from "../omni/attention-preferences";
@@ -1125,6 +1125,18 @@ omniApi.post("/hooks/cards", async (c) => {
   try {
     const r = await publishCard(omniConfig.ownerEmail(), parseCardPublish(b));
     return c.json({ card: cardView(r.card), created: r.created, changed: r.changed, droppedFacts: r.droppedFacts, ...(r.ignored ? { ignored: r.ignored } : {}) }, r.created ? 201 : 200);
+  } catch (e) {
+    return cardFailure(c, e);
+  }
+});
+
+/** omni_card: the card's own turn posts an updated card into Decide. */
+omniApi.post("/hooks/cards/thread", async (c) => {
+  const b = await jsonBody(c);
+  if (!b || typeof b.threadId !== "string" || !SESSION_ID_RE.test(b.threadId)) return bad(c, "threadId: the card's thread (Hermes session) id");
+  try {
+    const r = await updateCardFromThread(omniConfig.ownerEmail(), b.threadId, b);
+    return c.json({ card: cardView(r.card), droppedFacts: r.droppedFacts });
   } catch (e) {
     return cardFailure(c, e);
   }

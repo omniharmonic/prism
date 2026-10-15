@@ -15,7 +15,7 @@ import { recordProactiveOwnerTurn } from "./proactive";
 import { emit, onTurnEnded, startTurn, withNotes } from "./turns";
 import { publishNotice, pushOmni } from "./bus";
 import { ensureSourceSession } from "./source-session";
-import { ACTED_STATES, REOPENABLE_STATES, CardError, cardBySource, cardForApproval, cardsByThread, cardSourceKeys, cardView, compareCardViews, finishCardAction, getCard, linkApproval, listOpenCards, parseCardInput, priorCardAction, releaseCardAction, reserveCardAction, transitionCard, upsertCard, type CardOption, type Card, type CardFact, type CardInput, type CardKind, type CardSection, type CardState } from "./cards";
+import { ACTED_STATES, REOPENABLE_STATES, CardError, cardBySource, cardForApproval, cardsByThread, cardSourceKeys, cardView, compareCardViews, finishCardAction, getCard, linkApproval, replaceCardContent, listOpenCards, parseCardInput, priorCardAction, releaseCardAction, reserveCardAction, transitionCard, upsertCard, type CardOption, type Card, type CardFact, type CardInput, type CardKind, type CardSection, type CardState } from "./cards";
 
 const NOTE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 export interface CardPublish extends CardInput { evidence: Array<{ sourceId: string; revision: string }> }
@@ -416,4 +416,40 @@ export function resolveCardSource(owner: string, sourceKey: string, now: number 
   const next = transitionCard(owner, card.id, OPEN_STATES, "done", { action: "resolved-elsewhere" }, {}, now);
   if (next) announceCard(next, "resolved", { push: false });
   return next;
+}
+
+/** Why replaceCardContent refused, as the distinct error the agent can act on. */
+export function replaceFailure(owner: string, id: string, sourceKey: string): CardError {
+  const c = getCard(owner, id);
+  if (!c) return new CardError("card_not_found", 404);
+  if (c.sourceKey !== sourceKey) return new CardError("card_source_mismatch", 409);
+  if (resolvedPending(c)) return new CardError("card_resolved", 409, "the item was answered elsewhere");
+  return new CardError("card_not_open", 409, `the card is ${c.state}`);
+}
+
+/** omni_card: the card's own turn offers new options. Fields it leaves out are kept. Sends nothing.
+ *  New context facts go through the same source filter as a published card (R8). */
+export async function updateCardFromThread(owner: string, threadId: string, b: Record<string, unknown>, now: number = Date.now()): Promise<{ card: Card; droppedFacts: number }> {
+  const all = cardsByThread(owner, threadId);
+  if (all.length === 0) throw new CardError("no_card_for_thread", 404);
+  const card = all.find((c) => c.state !== "sent" && c.state !== "done" && c.state !== "dismissed");
+  if (!card) throw new CardError("card_not_open", 409, `the card is ${all[0]!.state}`);
+  if (resolvedPending(card)) throw new CardError("card_resolved", 409, "the item was answered elsewhere");
+  if (card.state === "draft-ready") throw new CardError("draft_waiting", 409, "a draft is waiting for Benjamin's decision");
+  const input = parseCardInput({
+    sourceKey: card.sourceKey, sourceRevision: card.sourceRevision, itemRefs: card.itemRefs,
+    kind: b.kind ?? card.kind, headline: b.headline ?? card.headline, context: b.context ?? card.context,
+    ask: b.ask === undefined ? card.ask : b.ask, urgency: b.urgency ?? card.urgency,
+    options: b.options, recommended: b.recommended ?? null,
+  });
+  let droppedFacts = 0;
+  if (b.context !== undefined) {
+    const f = await filterFacts(input.context, input.itemRefs);
+    input.context = f.kept;
+    droppedFacts = f.dropped;
+  }
+  const next = replaceCardContent(owner, card.id, input, ["proposed", "snoozed", "working", "waiting"], now);
+  if (!next) throw replaceFailure(owner, card.id, card.sourceKey);
+  announceCard(next, "updated", { push: true });
+  return { card: next, droppedFacts };
 }
