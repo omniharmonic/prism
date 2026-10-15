@@ -46,12 +46,14 @@ public final class NudgeCenter {
             items = values.0; later = values.1; settings = values.2; audit = values.3; phase = .loaded
         } catch { phase = .failed(sink.describe(error) ?? "Couldn’t load nudges") }
     }
-    public func act(_ id: String, _ action: NudgeAction, until: Date? = nil) async {
-        guard busy.insert(id).inserted else { return }
+    /// True when the server took the action.
+    @discardableResult
+    public func act(_ id: String, _ action: NudgeAction, until: Date? = nil) async -> Bool {
+        guard busy.insert(id).inserted else { return false }
         defer { busy.remove(id) }
         failure = nil
-        do { _ = try await service.actOnNudge(id, action: action, until: until); await refresh() }
-        catch { failure = sink.describe(error) }
+        do { _ = try await service.actOnNudge(id, action: action, until: until); await refresh(); return true }
+        catch { failure = sink.describe(error); return false }
     }
     public func markSeen(_ id: String, updatedAt: Double) async {
         let version = "\(id):\(updatedAt)"

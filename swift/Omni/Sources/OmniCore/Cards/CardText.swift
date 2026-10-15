@@ -3,6 +3,9 @@ import OmniClient
 
 /// The words cards use. One place, so Needs you, threads and notifications say the same thing.
 public enum CardText {
+    public static let alreadyHandled = "This was already handled."
+    public static let couldNotDo = "Couldn’t do that just now. Try again."
+
     public static func kindLabel(_ kind: CardKind) -> String {
         switch kind {
         case .email: return "Email"

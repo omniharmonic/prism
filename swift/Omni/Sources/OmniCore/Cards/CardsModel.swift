@@ -7,6 +7,7 @@ import PrismTransport
 /// gallery use fakes.
 public protocol CardService: Sendable {
     func cards(section: CardSection?) async throws -> CardList
+    func card(_ id: String) async throws -> OmniCard
     func chooseCardOption(_ id: String, optionID: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult
     func instructCard(_ id: String, text: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult
     func snoozeCard(_ id: String, until: Date) async throws -> OmniCard
@@ -15,6 +16,7 @@ public protocol CardService: Sendable {
 
 extension LiveOmniService: CardService {
     public func cards(section: CardSection?) async throws -> CardList { try await client.cards(section: section) }
+    public func card(_ id: String) async throws -> OmniCard { try await client.card(id) }
     public func chooseCardOption(_ id: String, optionID: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult {
         try await client.chooseCardOption(id, optionID: optionID, idempotencyKey: idempotencyKey)
     }
@@ -41,6 +43,7 @@ public final class CardsModel {
     @ObservationIgnored public var approvalDidArrive: (@MainActor (Approval) -> Void)?
 
     private var known: [String: OmniCard] = [:]
+    private var dirty = false
     private let service: any CardService
     private let nudges: NudgeCenter?
     private let sink: ErrorSink
@@ -65,21 +68,43 @@ public final class CardsModel {
     static func ordered(_ cards: [OmniCard]) -> [OmniCard] {
         cards.sorted { a, b in
             if a.urgency.rank != b.urgency.rank { return a.urgency.rank < b.urgency.rank }
-            return (a.createdAt ?? .distantFuture) < (b.createdAt ?? .distantFuture)
+            // A card with no creation time sorts first, as on the server.
+            return (a.createdAt ?? .distantPast) < (b.createdAt ?? .distantPast)
         }
     }
 
     public func refresh() async {
-        guard phase != .loading else { return }
-        phase = .loading
-        do {
-            let list = try await service.cards(section: nil)
-            items = list.cards
-            for card in list.cards { known[card.id] = card }
-            phase = .loaded
-        } catch {
-            phase = .failed(sink.describe(error, reading: true) ?? "Couldn’t load what needs you")
+        if phase == .loading { dirty = true; return }
+        repeat {
+            dirty = false
+            phase = .loading
+            do {
+                let list = try await service.cards(section: nil)
+                merge(list.cards)
+                phase = .loaded
+            } catch {
+                phase = .failed(sink.describe(error, reading: true) ?? "Couldn’t load what needs you")
+            }
+        } while dirty
+    }
+
+    /// A server list never steps back to an older copy, and never overwrites a card mid-tap
+    /// with a copy that is not newer than the tap's starting point.
+    private func merge(_ cards: [OmniCard]) {
+        var next: [OmniCard] = []
+        var seen: Set<String> = []
+        for card in cards {
+            seen.insert(card.id)
+            var chosen = card
+            if let current = known[card.id], let a = current.updatedAt, let b = card.updatedAt {
+                if b < a || (b == a && busy.contains(card.id)) { chosen = current }
+            }
+            known[card.id] = chosen
+            if chosen.section != nil { next.append(chosen) }
         }
+        // A card being tapped right now stays where the tap put it.
+        for card in items where busy.contains(card.id) && !seen.contains(card.id) { next.append(card) }
+        items = next
     }
 
     /// Cards from a thread's detail or its stream. Never steps back to an older copy.
@@ -92,6 +117,9 @@ public final class CardsModel {
 
     private func put(_ card: OmniCard) {
         known[card.id] = card
+        if card.section == nil {
+            for token in keys.keys where token.hasPrefix("choose:\(card.id):") || token.hasPrefix("instruct:\(card.id):") { keys[token] = nil }
+        }
         if let i = items.firstIndex(where: { $0.id == card.id }) {
             if card.section == nil { items.remove(at: i) } else { items[i] = card }
         } else if card.section != nil {
@@ -99,11 +127,38 @@ public final class CardsModel {
         }
     }
 
-    private func fail(_ cardID: String, token: String, _ error: any Error) {
-        if PlainLanguage.outcomeIsUnknown(error) {
+    /// Put the card back as it was, but only if nothing newer has replaced the tap's own copy.
+    private func rollBack(_ original: OmniCard, optimistic: OmniCard) {
+        if known[original.id] == optimistic { put(original) }
+    }
+
+    private func failure(_ error: any Error) -> (code: String?, unclear: Bool) {
+        if case .conflict(let f)? = error as? PrismError { return (f.code, false) }
+        return (nil, PlainLanguage.outcomeIsUnknown(error) || error is CancellationError)
+    }
+
+    private func fail(_ cardID: String, token: String, original: OmniCard, optimistic: OmniCard, _ error: any Error) async {
+        let (code, unclear) = failure(error)
+        if unclear {
+            rollBack(original, optimistic: optimistic)
             notices[cardID] = "Not sure that went through. Tap it again — it won’t happen twice."
-        } else {
-            keys[token] = nil
+            return
+        }
+        keys[token] = nil
+        switch code {
+        case "card_not_open":
+            // Someone else (or the sweep) already moved it: show what it is now, not the stale snapshot.
+            if let fresh = try? await service.card(cardID) { put(fresh) } else {
+                await refresh()
+                rollBack(original, optimistic: optimistic)
+            }
+            notices[cardID] = CardText.alreadyHandled
+        case "idempotency_conflict":
+            rollBack(original, optimistic: optimistic)
+            await refresh()
+            notices[cardID] = sink.describe(error)
+        default:
+            rollBack(original, optimistic: optimistic)
             notices[cardID] = sink.describe(error)
         }
     }
@@ -112,13 +167,16 @@ public final class CardsModel {
     /// a plan starts Omni working in the card's thread. Nothing is sent.
     @discardableResult
     public func choose(_ cardID: String, optionID: String) async -> CardActionResult? {
-        guard let card = known[cardID], !card.transitional, let option = card.options.first(where: { $0.id == optionID }), busy.insert(cardID).inserted else { return nil }
+        guard let card = known[cardID], !card.transitional, let option = card.options.first(where: { $0.id == optionID }), !busy.contains(cardID) else { return nil }
+        guard card.state == .proposed else { notices[cardID] = CardText.alreadyHandled; return nil }
+        busy.insert(cardID)
         defer { busy.remove(cardID) }
         notices[cardID] = nil
         let token = "choose:\(cardID):\(optionID)"
         let key = keys[token] ?? .random()
         keys[token] = key
-        put(option.draft != nil ? card.with(state: .draftReady, chosenOptionId: optionID, section: .approve) : card.with(state: .working, chosenOptionId: optionID, section: .motion))
+        let optimistic = option.draft != nil ? card.with(state: .draftReady, chosenOptionId: optionID, section: .approve) : card.with(state: .working, chosenOptionId: optionID, section: .motion)
+        put(optimistic)
         do {
             let result = try await service.chooseCardOption(cardID, optionID: optionID, idempotencyKey: key)
             keys[token] = nil
@@ -126,8 +184,7 @@ public final class CardsModel {
             if let approval = result.approval { approvalDidArrive?(approval) }
             return result
         } catch {
-            put(card)
-            fail(cardID, token: token, error)
+            await fail(cardID, token: token, original: card, optimistic: optimistic, error)
             return nil
         }
     }
@@ -136,37 +193,39 @@ public final class CardsModel {
     @discardableResult
     public func instruct(_ cardID: String, text: String) async -> CardActionResult? {
         let words = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let card = known[cardID], !card.transitional, !words.isEmpty, busy.insert(cardID).inserted else { return nil }
+        guard let card = known[cardID], !card.transitional, !words.isEmpty, !busy.contains(cardID) else { return nil }
+        guard card.state == .proposed else { notices[cardID] = CardText.alreadyHandled; return nil }
+        busy.insert(cardID)
         defer { busy.remove(cardID) }
         notices[cardID] = nil
         let token = "instruct:\(cardID):\(words)"
         let key = keys[token] ?? .random()
         keys[token] = key
-        put(card.with(state: .working, chosenOptionId: nil, section: .motion))
+        let optimistic = card.with(state: .working, chosenOptionId: nil, section: .motion)
+        put(optimistic)
         do {
             let result = try await service.instructCard(cardID, text: words, idempotencyKey: key)
             keys[token] = nil
             put(result.card)
             return result
         } catch {
-            put(card)
-            fail(cardID, token: token, error)
+            await fail(cardID, token: token, original: card, optimistic: optimistic, error)
             return nil
         }
     }
 
-    /// Later. A card that is still a nudge snoozes the nudge.
+    /// Later. A card that is still a nudge snoozes the nudge; a real card uses the card route.
     public func later(_ cardID: String, until: Date) async {
         guard let card = known[cardID], busy.insert(cardID).inserted else { return }
         defer { busy.remove(cardID) }
         notices[cardID] = nil
-        if card.transitional, let nudgeID = card.nudgeId {
-            await nudges?.act(nudgeID, .snooze, until: until)
-            put(card.with(state: .snoozed, chosenOptionId: nil, section: nil))
+        if card.transitional {
+            await viaNudge(card, .snooze, until: until, closed: card.with(state: .snoozed, chosenOptionId: nil, section: nil))
             return
         }
-        put(card.with(state: .snoozed, chosenOptionId: card.chosenOptionId, section: nil))
-        do { put(try await service.snoozeCard(cardID, until: until)) } catch { put(card); notices[cardID] = sink.describe(error) }
+        let optimistic = card.with(state: .snoozed, chosenOptionId: card.chosenOptionId, section: nil)
+        put(optimistic)
+        do { put(try await service.snoozeCard(cardID, until: until)) } catch { rollBack(card, optimistic: optimistic); notices[cardID] = sink.describe(error) ?? CardText.couldNotDo }
     }
 
     /// Not needed: it leaves Needs you, and the sweep learns from it.
@@ -174,13 +233,19 @@ public final class CardsModel {
         guard let card = known[cardID], busy.insert(cardID).inserted else { return }
         defer { busy.remove(cardID) }
         notices[cardID] = nil
-        if card.transitional, let nudgeID = card.nudgeId {
-            await nudges?.act(nudgeID, .noise)
-            put(card.with(state: .dismissed, chosenOptionId: nil, section: nil))
+        if card.transitional {
+            await viaNudge(card, .noise, until: nil, closed: card.with(state: .dismissed, chosenOptionId: nil, section: nil))
             return
         }
-        put(card.with(state: .dismissed, chosenOptionId: card.chosenOptionId, section: nil))
-        do { put(try await service.dismissCard(cardID, reason: .notNeeded)) } catch { put(card); notices[cardID] = sink.describe(error) }
+        let optimistic = card.with(state: .dismissed, chosenOptionId: card.chosenOptionId, section: nil)
+        put(optimistic)
+        do { put(try await service.dismissCard(cardID, reason: .notNeeded)) } catch { rollBack(card, optimistic: optimistic); notices[cardID] = sink.describe(error) ?? CardText.couldNotDo }
+    }
+
+    /// A card that is still a nudge acts through the nudge; it only leaves once the nudge took it.
+    private func viaNudge(_ card: OmniCard, _ action: NudgeAction, until: Date?, closed: OmniCard) async {
+        guard let nudges, let nudgeID = card.nudgeId else { notices[card.id] = CardText.couldNotDo; return }
+        if await nudges.act(nudgeID, action, until: until) { put(closed) } else { notices[card.id] = nudges.failure ?? CardText.couldNotDo }
     }
 
     /// Open on a card that is still a nudge: its conversation, or start one (the nudge's own route).
