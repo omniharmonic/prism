@@ -247,3 +247,29 @@ test("editing an older draft does not move the card's latest", async () => {
   assert.equal(edit.status, 201);
   assert.deepEqual(getCard(owner, card.id)!.approvalIds, [old.id, newer.id]);
 });
+
+test("a draft-ready card resolved elsewhere cancels its draft so it can never be sent", async () => {
+  const card = await publish();
+  const r = await choose(card.id, "a", "choose-key-0001");
+  const res = await omniApi.request("/hooks/proactive/resolve", { method: "POST", headers: hook, body: JSON.stringify({ sources: [{ sourceId: "mail1", sourceRevision: revision }] }) });
+  assert.equal(res.status, 200);
+  assert.deepEqual((await res.json() as { resolved: string[] }).resolved, ["mail1"]);
+  assert.equal(getCard(owner, card.id)!.state, "done");
+  assert.equal(getApproval(owner, r.approval!.id)!.status, "cancelled");
+  assert.equal(getApproval(owner, r.approval!.id)!.decidedVia, "source-resolved");
+  const late = await decide(r.approval!.id, r.approval!.digest, "send", "late-send-0001");
+  assert.equal(late.status, 409);
+  assert.equal(executed, 0);
+});
+
+test("the sweep's resolution closes a proposed card; a sent card stays sent", async () => {
+  const open = await publish();
+  const sweep = (ids: string[]) => omniApi.request("/hooks/nudges/resolve", { method: "POST", headers: hook, body: JSON.stringify({ complete: true, sourceIds: ids }) });
+  assert.equal((await sweep(["mail1"])).status, 200);
+  assert.equal(getCard(owner, open.id)!.state, "done");
+  const sent = await publish({ sourceKey: "mail2", itemRefs: ["mail2"] });
+  const r = await choose(sent.id, "a", "choose-key-0002");
+  await decide(r.approval!.id, r.approval!.digest, "send", "send-key-00009");
+  await sweep(["mail2"]);
+  assert.equal(getCard(owner, sent.id)!.state, "sent");
+});

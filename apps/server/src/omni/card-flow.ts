@@ -375,3 +375,14 @@ export function cardAfterTurnEnded(threadId: string, status: string): void {
   }
 }
 onTurnEnded(cardAfterTurnEnded);
+
+/** Benjamin answered elsewhere (another mail client, the chat app) or the item closed: the card is
+ *  done, and a draft for it must never be sendable a second time. */
+export function resolveCardSource(owner: string, sourceKey: string, now: number = Date.now()): Card | null {
+  const card = cardBySource(owner, sourceKey);
+  if (!card || card.state === "sent" || card.state === "done" || card.state === "dismissed") return null;
+  cancelPendingDrafts(owner, card.approvalIds, { via: "source-resolved", device: null }, "source-resolved", { prefix: "source-resolved", actor: "omni", detail: "answered elsewhere" });
+  const next = transitionCard(owner, card.id, ["proposed", "snoozed", "working", "waiting", "draft-ready"], "done", { action: "resolved-elsewhere" }, {}, now);
+  if (next) announceCard(next, "resolved", { push: false });
+  return next;
+}

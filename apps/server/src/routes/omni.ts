@@ -89,7 +89,7 @@ import { priorNudgeSources, resolveNudgeSource, nudgeWeeklyAudit, latestNudgeAud
 import { startNudgeDelivery } from "../omni/nudge-delivery";
 import { resolveNote, readNoteContent } from "../omni/records";
 import { CardError, cardView, cardsByThread, getCard } from "../omni/cards";
-import { parseCardPublish, publishCard, listCardViews, snoozeCard, dismissCard, chooseCardOption, instructCard, cardAfterProposal, cardAfterDecision, relinkApproval } from "../omni/card-flow";
+import { parseCardPublish, publishCard, listCardViews, snoozeCard, dismissCard, chooseCardOption, instructCard, cardAfterProposal, cardAfterDecision, relinkApproval, resolveCardSource } from "../omni/card-flow";
 import { readableNudgeText } from "../omni/titles";
 import { proactiveSourceHealth } from "../omni/source-health";
 import { syncAttentionPreferences, AttentionPreferenceError } from "../omni/attention-preferences";
@@ -1316,7 +1316,7 @@ omniApi.get("/hooks/nudges/jobs",async c=>{
 omniApi.get("/hooks/nudges/sources",c=>c.json(priorNudgeSources(omniConfig.ownerEmail())));
 omniApi.post("/hooks/nudges/resolve",async c=>{
  const b=await jsonBody(c);if(!b||b.complete!==true||!Array.isArray(b.sourceIds)||b.sourceIds.length>5000||b.sourceIds.some(id=>typeof id!=="string"||!NOTE_ID_RE.test(id)))return bad(c,"complete verified resolution IDs required");
- for(const id of new Set(b.sourceIds as string[])){const resolved=resolveNudgeSource(omniConfig.ownerEmail(),id);if(resolved)publishNotice({type:"card",id:resolved,op:"nudge"});}
+ for(const id of new Set(b.sourceIds as string[])){resolveCardSource(omniConfig.ownerEmail(),id);const resolved=resolveNudgeSource(omniConfig.ownerEmail(),id);if(resolved)publishNotice({type:"card",id:resolved,op:"nudge"});}
  return c.json({resolved:new Set(b.sourceIds as string[]).size});
 });
 omniApi.post("/hooks/nudges/audit",async c=>{
