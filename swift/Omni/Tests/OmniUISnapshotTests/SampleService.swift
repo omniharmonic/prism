@@ -7,7 +7,7 @@ import PrismTransport
 /// A gateway that lives in memory and answers with made-up data, shaped exactly as the
 /// real one answers (everything is built as the gateway's JSON and decoded). The Mac
 /// snapshots are rendered from it: no server, no vault, nothing private in a picture.
-final class SampleService: OmniService, @unchecked Sendable {
+class SampleService: OmniService, @unchecked Sendable {
     private let lock = NSLock()
     private var threadRows: [[String: Any]] = []
     private var details: [String: [String: Any]] = [:]
@@ -231,6 +231,31 @@ final class SampleService: OmniService, @unchecked Sendable {
         }
         return Self.decode(object)
     }
+}
+
+/// The sample gateway with the nudge queue switched on (Needs you then shows its nudge cards).
+final class NudgingSampleService: SampleService, NudgeService, @unchecked Sendable {
+    var nudgeItems: [OmniNudge] = []
+
+    /// A nudge as the gateway sends it.
+    static func nudge(_ id: String, kind: String, title: String, summary: String, reasons: [String], threadId: String? = nil) -> OmniNudge {
+        var object: [String: Any] = [
+            "id": id, "updatedAt": 1_760_000_000_000.0, "score": 0.7, "surfaces": 0, "dismissed": false,
+            "sourceLink": "https://prism.example.com/page/\(id)",
+            "candidate": ["sourceId": "source-\(id)", "sourcePath": "notes/\(id)", "kind": kind, "title": title, "summary": summary, "reasons": reasons],
+        ]
+        if let threadId { object["threadId"] = threadId }
+        return decode(object)
+    }
+
+    func nudges(later: Bool) async throws -> [OmniNudge] { later ? [] : nudgeItems }
+    func nudgeSettings() async throws -> NudgeSettings { NudgeSettings() }
+    func saveNudgeSettings(_ settings: NudgeSettings) async throws -> NudgeSettings { settings }
+    func actOnNudge(_ id: String, action: NudgeAction, until: Date?) async throws -> OmniNudge {
+        guard let item = nudgeItems.first(where: { $0.id == id }) else { throw PrismError.invalidRequest("sample") }
+        return item
+    }
+    func startNudge(_ id: String, action: NudgeStart, key: IdempotencyKey) async throws -> NudgeStarted { throw PrismError.invalidRequest("sample") }
 }
 
 struct SampleAuth: SessionAuth {

@@ -21,6 +21,42 @@ import SwiftUI
 
 @MainActor
 enum UITestLaunch {
+    /// An answer with every block the transcript renders (the `markdown-sample` fault, and the
+    /// Mac snapshot of a markdown-heavy message).
+    nonisolated static let markdownSample = """
+    ## Mooring options
+
+    I compared the **three suppliers** near the harbour. Short version: *Harbour Rope & Chain* is the safest choice — see [their spec sheet](https://example.com/spec) and the `winter-swell` rating.
+
+    ### What matters
+
+    - Lead time: two weeks at most
+    - Rated for the winter swell
+      - heavier chain on the north buoy
+      - standard line elsewhere
+    - Price within the grant
+
+    1. Ask Kevin about the seal
+    2. Confirm the battery size
+    3. Book the crane for **Friday**
+
+    > The housing takes the larger battery without a new seal, per Dana.
+
+    ```swift
+    let chain = Chain(grade: 70, length: 12.5)
+    print(chain.rating)
+    ```
+
+    ---
+
+    | Supplier | Lead time |
+    | --- | --- |
+    | Harbour Rope & Chain | 2 weeks |
+    | North Marine | 5 weeks |
+
+    That's everything. ~~Nothing~~ is ordered yet.
+    """
+
     struct Configuration {
         /// The dev gateway, `http://127.0.0.1:<port>`.
         let server: String
@@ -165,6 +201,7 @@ private struct NeverReturningFlow: RedirectFlow {
 ///  - `sample-data`: Today's agenda and tasks, and the titles on record cards, are replaced
 ///    with made-up ones — the laptop's dev vault holds real notes, and the screenshots are
 ///    committed to a public repository;
+///  - `markdown-sample`: a thread titled "Markdown sample" answers with block markdown;
 ///  - `today-fail`, `threads-fail`, `jobs-fail`: the read does not get through.
 private struct FaultInjectingService: OmniService {
     let base: any OmniService
@@ -191,7 +228,7 @@ private struct FaultInjectingService: OmniService {
     }
     func createThread(_ new: NewThread) async throws -> CreatedThread { try await base.createThread(new) }
     func thread(_ id: String) async throws -> ThreadDetail {
-        let detail = try await base.thread(id)
+        let detail = try await markdownSample(try await base.thread(id))
         guard faults.contains("sample-data"), !detail.cards.isEmpty else { return detail }
         let cards = detail.cards.map { card -> RecordCard in
             guard let data = try? PrismJSON.encoder().encode(card), var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return card }
@@ -203,6 +240,16 @@ private struct FaultInjectingService: OmniService {
             return decoded
         }
         return ThreadDetail(thread: detail.thread, messages: detail.messages, cards: cards, approvals: detail.approvals, activeTurnId: detail.activeTurnId)
+    }
+    /// `markdown-sample`: the last answer in a thread titled "Markdown sample" is replaced with
+    /// `UITestLaunch.markdownSample` (the stub Hermes only answers in plain sentences).
+    private func markdownSample(_ detail: ThreadDetail) async throws -> ThreadDetail {
+        guard faults.contains("markdown-sample"), detail.thread.title == "Markdown sample",
+              let last = detail.messages.lastIndex(where: { $0.role == .assistant }) else { return detail }
+        var messages = detail.messages
+        let object: [String: Any] = ["id": messages[last].id ?? "markdown", "role": "assistant", "text": UITestLaunch.markdownSample]
+        messages[last] = try PrismJSON.decoder().decode(OmniMessage.self, from: JSONSerialization.data(withJSONObject: object))
+        return ThreadDetail(thread: detail.thread, messages: messages, cards: detail.cards, approvals: detail.approvals, activeTurnId: detail.activeTurnId)
     }
     func updateThread(_ id: String, _ patch: ThreadPatch) async throws -> OmniThread { try await base.updateThread(id, patch) }
     func startTurn(threadID: String, text: String, idempotencyKey: IdempotencyKey) async throws -> TurnStart {
