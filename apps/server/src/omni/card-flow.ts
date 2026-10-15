@@ -7,9 +7,9 @@ import { db } from "../db";
 import { resolveNote } from "./records";
 import { bindNudgeThread, listNudges, nudgeAction, resolveNudgeSource, type Candidate, type Nudge } from "./nudges";
 import { clip, plainText } from "./titles";
-import { ensureThread, getThread, omniAudit, sha256 } from "./store";
+import { activeTurn, ensureThread, getThread, omniAudit, sha256 } from "./store";
 import { omniConfig } from "./config";
-import { approvalView, closeApproval, getApproval } from "./approvals";
+import { approvalView, closeApproval, getApproval, listApprovals } from "./approvals";
 import { proposeApproval } from "./propose";
 import { recordProactiveOwnerTurn } from "./proactive";
 import { emit, onTurnEnded, startTurn, withNotes } from "./turns";
@@ -317,6 +317,8 @@ export function cardAfterProposal(owner: string, threadId: string | null, approv
   if (!threadId) return null;
   const card = cardsByThread(owner, threadId).find((c) => c.state === "working" || c.state === "proposed" || c.state === "draft-ready");
   if (!card) return null;
+  // Answered elsewhere while this turn runs: the draft is never linked or announced; the turn's end cancels it.
+  if (resolvedPending(card)) return null;
   const earlier = card.approvalIds;
   const next = transitionCard(owner, card.id, ["working", "proposed", "draft-ready"], "draft-ready", { action: "draft", approvalId }, { approvalId });
   if (!next) return null;
@@ -364,11 +366,20 @@ export function relinkApproval(owner: string, oldApprovalId: string, newApproval
   return next;
 }
 
-/** A turn in a card's thread ended and the card is still `working`: no draft was proposed and no new options
- *  were posted, so the question is back with him (Decide). A drafted card is already `draft-ready` and is left alone. */
+/** A turn in a card's thread ended. A card whose item was answered elsewhere during the turn closes now and every
+ *  draft still pending in the thread (linked or proposed during the turn) is cancelled. Otherwise, if the card is still
+ *  `working`, no draft was proposed and no new options were posted, so the question is back with him (Decide);
+ *  a drafted card is already `draft-ready` and is left alone. */
 export function cardAfterTurnEnded(threadId: string, status: string): void {
   const owner = omniConfig.ownerEmail();
   for (const c of cardsByThread(owner, threadId)) {
+    if (resolvedPending(c)) {
+      const inThread = listApprovals(owner, "pending", 500).filter((a) => a.threadId === threadId && a.kind !== "command").map((a) => a.id);
+      cancelPendingDrafts(owner, [...new Set([...c.approvalIds, ...inThread])], SOURCE_RESOLVED, "source-resolved-turn", ANSWERED_ELSEWHERE);
+      const done = transitionCard(owner, c.id, OPEN_STATES, "done", { action: "resolved-elsewhere" });
+      if (done) announceCard(done, "resolved", { push: false });
+      continue;
+    }
     if (c.state !== "working") continue;
     const next = transitionCard(owner, c.id, ["working"], "proposed", { action: "turn-ended", detail: status }, { chosenOptionId: null });
     if (next) announceCard(next, "turn-ended", { push: false });
@@ -376,13 +387,33 @@ export function cardAfterTurnEnded(threadId: string, status: string): void {
 }
 onTurnEnded(cardAfterTurnEnded);
 
+const SOURCE_RESOLVED = { via: "source-resolved", device: null };
+const ANSWERED_ELSEWHERE = { prefix: "source-resolved", actor: "omni", detail: "answered elsewhere" };
+const OPEN_STATES: CardState[] = ["proposed", "snoozed", "working", "waiting", "draft-ready"];
+const TURN_PENDING = "pending: turn running";
+/** Resolved elsewhere while a turn was running in the card's thread: the close waits for the turn's end. */
+const resolvedPending = (c: Card): boolean => {
+  const last = c.outcomes[c.outcomes.length - 1];
+  return !!last && last.action === "resolved-elsewhere" && last.detail === TURN_PENDING && OPEN_STATES.includes(c.state);
+};
+
 /** Benjamin answered elsewhere (another mail client, the chat app) or the item closed: the card is
- *  done, and a draft for it must never be sendable a second time. */
+ *  done, and a draft for it must never be sendable a second time. Two cases wait instead of closing:
+ *  a send already in flight (the decision settles the card) and a running turn in the card's thread
+ *  (its end closes the card and cancels whatever draft it proposed meanwhile). */
 export function resolveCardSource(owner: string, sourceKey: string, now: number = Date.now()): Card | null {
   const card = cardBySource(owner, sourceKey);
   if (!card || card.state === "sent" || card.state === "done" || card.state === "dismissed") return null;
-  cancelPendingDrafts(owner, card.approvalIds, { via: "source-resolved", device: null }, "source-resolved", { prefix: "source-resolved", actor: "omni", detail: "answered elsewhere" });
-  const next = transitionCard(owner, card.id, ["proposed", "snoozed", "working", "waiting", "draft-ready"], "done", { action: "resolved-elsewhere" }, {}, now);
+  cancelPendingDrafts(owner, card.approvalIds, SOURCE_RESOLVED, "source-resolved", ANSWERED_ELSEWHERE);
+  if (card.approvalIds.some((id) => getApproval(owner, id)?.status === "approved")) {
+    transitionCard(owner, card.id, [card.state], card.state, { action: "resolved-elsewhere", detail: "send in flight" }, {}, now);
+    return null;
+  }
+  if (card.threadId && activeTurn(card.threadId)) {
+    if (resolvedPending(card)) return card;
+    return transitionCard(owner, card.id, [card.state], card.state, { action: "resolved-elsewhere", detail: TURN_PENDING }, {}, now);
+  }
+  const next = transitionCard(owner, card.id, OPEN_STATES, "done", { action: "resolved-elsewhere" }, {}, now);
   if (next) announceCard(next, "resolved", { push: false });
   return next;
 }

@@ -5,6 +5,7 @@ process.env.OMNI_HERMES_URL = "http://127.0.0.1:8642"; process.env.OMNI_HERMES_K
 process.env.OMNI_PROTON_SEND = process.execPath; // "configured": the executor itself is the test's fake
 import { omniApi, setOmniExecutorForTests } from "../src/routes/omni";
 import { config } from "../src/config";
+import { db } from "../src/db";
 import { resetDb, makeSession, sessionCookie } from "./helpers";
 import { createHermesStub } from "../scripts/lib/hermes-stub";
 import { setHermesFetchForTests } from "../src/omni/hermes-client";
@@ -16,7 +17,7 @@ import { resetCardsForTests, getCard, transitionCard } from "../src/omni/cards";
 import { proposeApproval } from "../src/omni/propose";
 import { setOmniPusherForTests } from "../src/omni/bus";
 import { getApproval, type ExecOutcome } from "../src/omni/approvals";
-import { turnSettled, notifyTurnEnded } from "../src/omni/turns";
+import { turnSettled, notifyTurnEnded, startTurn } from "../src/omni/turns";
 import { cardPublish } from "./omni-card-samples";
 
 const owner = config.ownerEmail;
@@ -272,4 +273,71 @@ test("the sweep's resolution closes a proposed card; a sent card stays sent", as
   await decide(r.approval!.id, r.approval!.digest, "send", "send-key-00009");
   await sweep(["mail2"]);
   assert.equal(getCard(owner, sent.id)!.state, "sent");
+});
+
+const resolveHook = (ids: string[]) => omniApi.request("/hooks/nudges/resolve", { method: "POST", headers: hook, body: JSON.stringify({ complete: true, sourceIds: ids }) });
+const outcomesOf = (id: string) => getCard(owner, id)!.outcomes.map((o) => `${o.action}${o.detail ? `:${o.detail}` : ""}`);
+
+test("waiting and snoozed cards close to done; dismissed and done stay put", async () => {
+  const w = await publish({ sourceKey: "w1", itemRefs: ["w1"] });
+  transitionCard(owner, w.id, ["proposed"], "waiting", { action: "waiting" });
+  const sn = await publish({ sourceKey: "s1", itemRefs: ["s1"] });
+  transitionCard(owner, sn.id, ["proposed"], "snoozed", { action: "snooze" }, { snoozedUntil: 1 });
+  const dm = await publish({ sourceKey: "d1", itemRefs: ["d1"] });
+  transitionCard(owner, dm.id, ["proposed"], "dismissed", { action: "dismiss" });
+  const dn = await publish({ sourceKey: "n1", itemRefs: ["n1"] });
+  transitionCard(owner, dn.id, ["proposed"], "done", { action: "done" });
+  await resolveHook(["w1", "s1", "d1", "n1"]);
+  assert.equal(getCard(owner, w.id)!.state, "done");
+  assert.equal(getCard(owner, sn.id)!.state, "done");
+  assert.equal(getCard(owner, dm.id)!.state, "dismissed");
+  assert.equal(getCard(owner, dn.id)!.state, "done");
+  assert.equal(outcomesOf(dm.id).includes("resolved-elsewhere"), false);
+});
+
+test("the proactive resolve path closes the card when a decision row exists too", async () => {
+  const card = await publish();
+  const now = Date.now();
+  db.prepare("INSERT INTO omni_proactive_decisions (owner_email, decision_id, digest, source_id, source_revision, thread_id, nudge_id, body, evidence, expires_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+    .run(owner, "dec1", "dg", "mail1", revision, card.threadId, "nudge-x", "b", "[]", now + 3_600_000, now);
+  const res = await omniApi.request("/hooks/proactive/resolve", { method: "POST", headers: hook, body: JSON.stringify({ sources: [{ sourceId: "mail1", sourceRevision: revision }] }) });
+  assert.equal(res.status, 200);
+  assert.deepEqual((await res.json() as { resolved: string[] }).resolved, ["mail1"]);
+  assert.equal(getCard(owner, card.id)!.state, "done");
+});
+
+test("resolved elsewhere while the card's turn runs: the draft is cancelled now, the card closes when the turn ends, a draft proposed meanwhile is cancelled too", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  setHermesFetchForTests(createHermesStub({ key: process.env.OMNI_HERMES_KEY!, script: async () => { await gate; return { acts: [{ say: "ok" }] }; } }).fetch);
+  const card = await publish();
+  const r = await choose(card.id, "a", "choose-key-0001");
+  const running = startTurn(card.threadId, "revise it", "direct-turn-0002");
+  assert.ok("turn" in running);
+  transitionCard(owner, card.id, ["draft-ready"], "working", { action: "test-working" });
+  await resolveHook(["mail1"]);
+  assert.equal(getCard(owner, card.id)!.state, "working");
+  assert.equal(getCard(owner, card.id)!.outcomes.at(-1)!.detail, "pending: turn running");
+  assert.equal(getApproval(owner, r.approval!.id)!.status, "cancelled");
+  pushes = [];
+  const p = await propose({ kind: "email-reply", payload: { noteId: "mail1", expectTo: ["sam@example.com"], body: "Hi Sam,\n\nToo late.\n\nBenjamin" }, threadId: card.threadId });
+  assert.equal(getCard(owner, card.id)!.state, "working");
+  assert.deepEqual(getCard(owner, card.id)!.approvalIds, [r.approval!.id]);
+  assert.equal(pushes.includes(`OMNI_CARD:${card.id}`), false);
+  release();
+  await turnSettled((running as { turn: { id: string } }).turn.id);
+  assert.equal(getCard(owner, card.id)!.state, "done");
+  assert.equal(getApproval(owner, p.id)!.status, "cancelled");
+  assert.equal((await decide(p.id, p.digest, "send", "late-send-0002")).status, 409);
+  assert.equal(executed, 0);
+});
+
+test("resolved elsewhere with a send in flight: the card is not closed, the send settles it", async () => {
+  const card = await publish();
+  const r = await choose(card.id, "a", "choose-key-0001");
+  db.prepare("UPDATE omni_approvals SET status='approved', decided_at=? WHERE id=?").run(Date.now(), r.approval!.id);
+  await resolveHook(["mail1"]);
+  assert.equal(getCard(owner, card.id)!.state, "draft-ready");
+  assert.ok(outcomesOf(card.id).includes("resolved-elsewhere:send in flight"));
+  assert.equal(getApproval(owner, r.approval!.id)!.status, "approved");
 });
