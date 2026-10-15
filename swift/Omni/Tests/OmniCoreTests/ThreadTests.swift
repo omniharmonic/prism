@@ -279,6 +279,65 @@ final class ThreadModelTests: XCTestCase {
         }
     }
 
+    // MARK: Item cards inline
+
+    private func draftCard(_ id: String = "c1", state: CardState = .draftReady) -> OmniCard {
+        OmniCard(id: id, sourceKey: "src-\(id)", kind: .email, state: state, headline: "Sam asks about it",
+                 options: [.init(id: "a", label: "Say yes", plan: "Reply yes", produces: ["email-reply"], draft: nil),
+                           .init(id: "b", label: "Later", plan: "Reply later", produces: ["email-reply"], draft: nil)],
+                 recommended: "a", itemRefs: ["src-\(id)"], threadId: "t1", approvalIds: ["apr1"], chosenOptionId: "a",
+                 createdAt: Date(timeIntervalSince1970: 1_792_080_030), updatedAt: Date(timeIntervalSince1970: 1_792_080_030), section: .approve)
+    }
+
+    private func withCards(_ base: ThreadDetail, _ cards: [OmniCard]) -> ThreadDetail {
+        ThreadDetail(thread: base.thread, messages: base.messages, cards: base.cards, approvals: base.approvals, activeTurnId: base.activeTurnId, itemCards: cards)
+    }
+
+    func testADraftReadyCardCarriesItsApprovalSoTheDraftShowsOnce() async {
+        let base = Fixture.detail(lastSeq: 4, messages: [hello, answer], approvals: [Fixture.approvalJSON("apr1")])
+        service.details(.success(withCards(base, [draftCard()])))
+        let model = make()
+        await model.open()
+        let rows = texts(model)
+        XCTAssertTrue(rows.contains("item_card:c1"))
+        XCTAssertFalse(rows.contains("approval:apr1"), "the card shows the draft; no second copy")
+        // Once the card is closed, the approval returns as its historical row.
+        service.details(.success(withCards(base, [draftCard(state: .sent)])))
+        await model.reload()
+        XCTAssertTrue(texts(model).contains("approval:apr1"))
+    }
+
+    func testAStreamApprovalOfAnInlineDraftReadyCardIsNotShownTwice() async {
+        service.details(.success(Fixture.detail(lastSeq: 14, messages: [hello, answer], activeTurnId: "turn1")))
+        let stream = service.manualStream()
+        let model = make()
+        await model.open()
+        stream.yield(Fixture.event(15, turn: "turn1", .itemCard(draftCard())))
+        stream.yield(Fixture.event(16, turn: "turn1", .approval(Fixture.approval("apr1"))))
+        await eventually("card on the stream") { self.texts(model).contains("item_card:c1") }
+        XCTAssertFalse(texts(model).contains("approval:apr1"))
+        // An approval no card owns always shows.
+        stream.yield(Fixture.event(17, turn: "turn1", .approval(Fixture.approval("apr2"))))
+        await eventually("lone approval") { self.texts(model).contains("approval:apr2") }
+    }
+
+    func testAStreamOnlyCardIsAppendedThenDedupedOnceTheDetailHoldsIt() async {
+        service.details(
+            .success(Fixture.detail(lastSeq: 14, messages: [hello, answer], activeTurnId: "turn1")),
+            .success(withCards(Fixture.detail(lastSeq: 16, messages: [hello, answer]), [draftCard()]))
+        )
+        let stream = service.manualStream()
+        let model = make()
+        await model.open()
+        stream.yield(Fixture.event(15, turn: "turn1", .itemCard(draftCard())))
+        await eventually("appended") { self.texts(model).last == "item_card:c1" }
+        stream.yield(Fixture.event(16, turn: "turn1", .result(ok: true, durationMs: 1, errorCode: nil)))
+        stream.finish()
+        await eventually("detail reloaded") { !model.isRunning }
+        await model.reload()
+        XCTAssertEqual(texts(model).filter { $0 == "item_card:c1" }.count, 1)
+    }
+
     func testOpeningAnIdleThreadShowsHistoryAndOpensNoStream() async {
         service.details(.success(Fixture.detail(lastSeq: 9, messages: [hello, answer])))
         let model = make()

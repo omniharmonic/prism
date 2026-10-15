@@ -108,14 +108,23 @@ public final class ThreadModel {
 
     /// Everything the transcript shows, top to bottom.
     public var timeline: [TimelineItem] {
-        let liveItems = ThreadTimeline.live(transcript, turnRunning: isRunning)
+        // A draft shows once: while its card is draft-ready and shown inline, the card carries it.
+        var owned = Set<String>()
+        for card in (detail?.itemCards ?? []) + transcript.itemCards {
+            let current = cards?.card(for: card.id) ?? card
+            if current.state == .draftReady, let id = current.latestApprovalID { owned.insert(id) }
+        }
+        let liveItems = ThreadTimeline.live(transcript, turnRunning: isRunning).filter {
+            if case .approval(let id) = $0 { return !owned.contains(id) }
+            return true
+        }
         var liveApprovals = Set<String>()
         var liveCards = Set<String>()
         for item in liveItems {
             if case .approval(let id) = item { liveApprovals.insert(id) }
             if case .card(let id, _) = item { liveCards.insert(id) }
         }
-        var items = detail.map { ThreadTimeline.history($0, excludingApprovals: liveApprovals, excludingCards: liveCards) } ?? []
+        var items = detail.map { ThreadTimeline.history($0, excludingApprovals: liveApprovals.union(owned), excludingCards: liveCards) } ?? []
         if let createdVoicePrompt {
             items.insert(.message(id: "created-voice", role: .user, text: createdVoicePrompt, at: nil), at: 0)
         }

@@ -154,7 +154,7 @@ struct CardView: View {
                 .foregroundStyle(Color.quietText)
             Spacer(minLength: 8)
             if cards.isBusy(card.id) { ProgressView().controlSize(.small).accessibilityLabel("Working") }
-            if let urgency = CardText.urgencyLabel(card.urgency) {
+            if !(card.state == .sent || card.state == .done || card.state == .dismissed), let urgency = CardText.urgencyLabel(card.urgency) {
                 Text(urgency)
                     .font(.caption.weight(.semibold))
                     .padding(.horizontal, 8).padding(.vertical, 2)
