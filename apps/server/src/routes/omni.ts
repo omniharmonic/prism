@@ -87,8 +87,8 @@ import { DIALS, type InterruptContext } from "../omni/nudge-policy";
 import { priorNudgeSources, resolveNudgeSource, nudgeWeeklyAudit, latestNudgeAudit, FRESHNESS_SUBSYSTEMS, NUDGE_KINDS, upsertNudge, listNudges, getNudge, nudgeAction, nudgeSettings, setNudgeSettings, bindNudgeThread, type Candidate } from "../omni/nudges";
 import { startNudgeDelivery } from "../omni/nudge-delivery";
 import { resolveNote, readNoteContent } from "../omni/records";
-import { CardError, cardView, cardsByThread } from "../omni/cards";
-import { parseCardPublish, publishCard } from "../omni/card-flow";
+import { CardError, cardView, cardsByThread, getCard } from "../omni/cards";
+import { parseCardPublish, publishCard, listCardViews, snoozeCard, dismissCard } from "../omni/card-flow";
 import { readableNudgeText } from "../omni/titles";
 import { proactiveSourceHealth } from "../omni/source-health";
 import { syncAttentionPreferences, AttentionPreferenceError } from "../omni/attention-preferences";
@@ -1105,6 +1105,50 @@ omniApi.post("/hooks/cards", async (c) => {
   try {
     const r = await publishCard(omniConfig.ownerEmail(), parseCardPublish(b));
     return c.json({ card: cardView(r.card), created: r.created, changed: r.changed, droppedFacts: r.droppedFacts, ...(r.ignored ? { ignored: r.ignored } : {}) }, r.created ? 201 : 200);
+  } catch (e) {
+    return cardFailure(c, e);
+  }
+});
+
+// ── item cards (owner): Needs you's Decide / Approve / In motion ────────────
+
+const CARD_SECTIONS = ["decide", "approve", "motion"] as const;
+const CARD_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+omniApi.get("/cards", (c) => {
+  const section = c.req.query("section");
+  if (section !== undefined && section !== "all" && !(CARD_SECTIONS as readonly string[]).includes(section)) return bad(c, "section: decide|approve|motion|all");
+  expireApprovals();
+  const { cards, counts } = listCardViews(omniConfig.ownerEmail());
+  return c.json({ cards: section && section !== "all" ? cards.filter((v) => v.section === section) : cards, counts });
+});
+
+omniApi.get("/cards/:id", (c) => {
+  const id = c.req.param("id") ?? "";
+  const card = CARD_ID_RE.test(id) ? getCard(omniConfig.ownerEmail(), id) : null;
+  return card ? c.json({ card: cardView(card) }) : c.json({ error: "not_found" }, 404);
+});
+
+omniApi.post("/cards/:id/snooze", async (c) => {
+  if (!humanOrigin(c).human) return c.json({ error: "human_origin_required" }, 403);
+  const b = await jsonBody(c);
+  if (!b) return bad(c, "a JSON object body is required");
+  const until = b.until;
+  const now = Date.now();
+  if (typeof until !== "number" || !Number.isSafeInteger(until) || until <= now || until > now + 30 * 86_400_000) return bad(c, "until: a future timestamp within 30 days");
+  try {
+    return c.json({ card: cardView(snoozeCard(omniConfig.ownerEmail(), c.req.param("id") ?? "", until, now)) });
+  } catch (e) {
+    return cardFailure(c, e);
+  }
+});
+
+omniApi.post("/cards/:id/dismiss", async (c) => {
+  if (!humanOrigin(c).human) return c.json({ error: "human_origin_required" }, 403);
+  const b = await jsonBody(c);
+  if (!b || (b.reason !== "not-needed" && b.reason !== "done")) return bad(c, "reason: not-needed|done");
+  try {
+    return c.json({ card: cardView(dismissCard(omniConfig.ownerEmail(), c.req.param("id") ?? "", b.reason)) });
   } catch (e) {
     return cardFailure(c, e);
   }

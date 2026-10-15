@@ -12,6 +12,7 @@ import { setOmniRecordSourcesForTests } from "../src/omni/records";
 import { resetOmniStoreForTests, eventsAfter, getThread } from "../src/omni/store";
 import { resetNudgesForTests, upsertNudge, nudgeAction, getNudge } from "../src/omni/nudges";
 import { resetCardsForTests, getCard, transitionCard } from "../src/omni/cards";
+import { dismissCard } from "../src/omni/card-flow";
 import { setOmniPusherForTests } from "../src/omni/bus";
 import { cardPublish } from "./omni-card-samples";
 
@@ -101,6 +102,22 @@ test("evidence must be current and the owner's dismissal holds", async () => {
   assert.equal(res.status, 409);
   assert.deepEqual(await res.json(), { error: "source_suppressed" });
   assert.equal(stub.sessions.size, 0);
+});
+
+test("dismissing a card suppresses only its current revision: same revision ignored, a new one reopens", async () => {
+  upsertNudge(config.ownerEmail, { sourceId: "mail1", sourcePath: "mail/mail1", kind: "reply-owed", title: "Reply owed", summary: "x", reasons: ["x"], senderId: null, baseScore: .7, priority: .5, deadline: null, urgentAt: null, commitment: false });
+  const first = (await (await post(cardPublish())).json()) as { card: { id: string } };
+  dismissCard(config.ownerEmail, first.card.id, "not-needed");
+  assert.equal(getCard(config.ownerEmail, first.card.id)!.state, "dismissed");
+  const same = await post(cardPublish());
+  assert.equal(same.status, 200);
+  assert.equal(((await same.json()) as { ignored?: string }).ignored, "owner_acted");
+  assert.equal(getCard(config.ownerEmail, first.card.id)!.state, "dismissed");
+  const rev2 = "2026-10-15T11:00:00Z";
+  setOmniRecordSourcesForTests({ resolver: async ({ id }) => ({ id: id!, path: `mail/${id}`, tags: ["email"], updatedAt: rev2 }) });
+  const res = await post(cardPublish({ sourceRevision: rev2, evidence: [{ sourceId: "mail1", revision: rev2 }] }));
+  assert.equal(res.status, 200);
+  assert.equal(getCard(config.ownerEmail, first.card.id)!.state, "proposed");
 });
 
 test("context facts: unknown vault citations are dropped; null, calendar and itemRefs stay", async () => {
