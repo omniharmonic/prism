@@ -427,6 +427,12 @@ export function replaceFailure(owner: string, id: string, sourceKey: string): Ca
   return new CardError("card_not_open", 409, `the card is ${c.state}`);
 }
 
+function threadPostGuard(card: Card): void {
+  if (card.state === "sent" || card.state === "done" || card.state === "dismissed") throw new CardError("card_not_open", 409, `the card is ${card.state}`);
+  if (resolvedPending(card)) throw new CardError("card_resolved", 409, "the item was answered elsewhere");
+  if (card.state === "draft-ready") throw new CardError("draft_waiting", 409, "a draft is waiting for Benjamin's decision");
+}
+
 /** omni_card: the card's own turn offers new options. Fields it leaves out are kept. Sends nothing.
  *  New context facts go through the same source filter as a published card (R8). */
 export async function updateCardFromThread(owner: string, threadId: string, b: Record<string, unknown>, now: number = Date.now()): Promise<{ card: Card; droppedFacts: number }> {
@@ -434,8 +440,7 @@ export async function updateCardFromThread(owner: string, threadId: string, b: R
   if (all.length === 0) throw new CardError("no_card_for_thread", 404);
   const card = all.find((c) => c.state !== "sent" && c.state !== "done" && c.state !== "dismissed");
   if (!card) throw new CardError("card_not_open", 409, `the card is ${all[0]!.state}`);
-  if (resolvedPending(card)) throw new CardError("card_resolved", 409, "the item was answered elsewhere");
-  if (card.state === "draft-ready") throw new CardError("draft_waiting", 409, "a draft is waiting for Benjamin's decision");
+  threadPostGuard(card);
   const input = parseCardInput({
     sourceKey: card.sourceKey, sourceRevision: card.sourceRevision, itemRefs: card.itemRefs,
     kind: b.kind ?? card.kind, headline: b.headline ?? card.headline, context: b.context ?? card.context,
@@ -448,6 +453,10 @@ export async function updateCardFromThread(owner: string, threadId: string, b: R
     input.context = f.kept;
     droppedFacts = f.dropped;
   }
+  // The filter awaited: re-read and re-check synchronously, right before the write (a resolve or a draft may have landed meanwhile).
+  const fresh = getCard(owner, card.id);
+  if (!fresh) throw new CardError("card_not_found", 404);
+  threadPostGuard(fresh);
   const next = replaceCardContent(owner, card.id, input, ["proposed", "snoozed", "working", "waiting"], now);
   if (!next) throw replaceFailure(owner, card.id, card.sourceKey);
   announceCard(next, "updated", { push: true });

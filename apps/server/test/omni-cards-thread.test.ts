@@ -13,6 +13,7 @@ import { resetNudgesForTests } from "../src/omni/nudges";
 import { resetCardsForTests, getCard, transitionCard, replaceCardContent, parseCardInput } from "../src/omni/cards";
 import { replaceFailure, resolveCardSource } from "../src/omni/card-flow";
 import { startTurn, turnSettled } from "../src/omni/turns";
+import { listApprovals } from "../src/omni/approvals";
 import { setOmniPusherForTests } from "../src/omni/bus";
 import { cardPublish } from "./omni-card-samples";
 
@@ -109,4 +110,43 @@ test("posted context goes through the source filter: unresolvable sources are dr
   const body = await res.json() as { droppedFacts: number };
   assert.equal(body.droppedFacts, 1);
   assert.deepEqual(getCard(owner, card.id)!.context.map((f) => f.text), ["from the calendar", "unsourced"]);
+  assert.equal(listApprovals(owner, "pending").length, 0);
+});
+
+test("a resolve landing during the fact filter's await wins: 409 card_resolved, pending marker intact", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  setHermesFetchForTests(createHermesStub({ key: process.env.OMNI_HERMES_KEY!, script: async () => { await gate; return { acts: [{ say: "ok" }] }; } }).fetch);
+  const card = await publish();
+  let filtering!: () => void;
+  const entered = new Promise<void>((r) => { filtering = r; });
+  let slowGate!: () => void;
+  const slow = new Promise<void>((r) => { slowGate = r; });
+  setOmniRecordSourcesForTests({ resolver: async ({ id, path }) => { const k = id ?? path; if (k === "slow") { filtering(); await slow; } return k ? { id: k, path: `mail/${k}`, tags: ["email"], updatedAt: revision } : null; } });
+  const running = startTurn(card.threadId, "look at it", "direct-turn-0011");
+  assert.ok("turn" in running);
+  if (!("turn" in running)) return;
+  const pending = update({ threadId: card.threadId, options: newOptions, recommended: "mon", context: [{ text: "x", source: "slow" }] });
+  await entered;
+  resolveCardSource(owner, "mail1");
+  slowGate();
+  const res = await pending;
+  assert.equal(res.status, 409);
+  assert.equal(await errOf(res), "card_resolved");
+  const after = getCard(owner, card.id)!;
+  assert.deepEqual(after.options.map((o) => o.id), ["a", "b"]);
+  assert.equal(after.outcomes[after.outcomes.length - 1]!.detail, "pending: turn running");
+  release();
+  await turnSettled(running.turn.id);
+});
+
+test("a valid draft on a working card is accepted but creates no approval; omitting context keeps the old facts", async () => {
+  const card = await publish();
+  transitionCard(owner, card.id, ["proposed"], "working", { action: "choose", optionId: "b" });
+  const before = getCard(owner, card.id)!.context;
+  const res = await update({ threadId: card.threadId, options: newOptions, recommended: "mon" });
+  assert.equal(res.status, 200);
+  assert.equal(getCard(owner, card.id)!.options[0]!.draft?.kind, "email-reply");
+  assert.deepEqual(getCard(owner, card.id)!.context, before);
+  assert.equal(listApprovals(owner, "pending").length, 0);
 });
