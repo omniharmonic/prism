@@ -48,16 +48,26 @@ struct ThreadView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                VStack(spacing: 0) {
-                    // Voice and New Chat share the bar: a title a little too long for what is
-                    // left is drawn a little smaller rather than cut.
-                    Text(barTitle).font(.headline).lineLimit(1).minimumScaleFactor(0.75).allowsTightening(true)
-                    if let state = model.thread.map({ $0.gone ? "No longer available" : ThreadGrouping.title(for: $0.state) }) {
-                        Text(state).font(.caption).foregroundStyle(Color.quietText)
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
+                let state = model.thread.map { $0.gone ? "No longer available" : ThreadGrouping.title(for: $0.state) }
+                // Voice and New Chat share the bar. The title and its state on one line each when
+                // the title fits; a longer title takes both lines instead of being cut (its state
+                // is still read out, and shown in the list).
+                ViewThatFits(in: .horizontal) {
+                    VStack(spacing: 0) {
+                        Text(barTitle).font(.headline).lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                        if let state {
+                            Text(state).font(.caption).foregroundStyle(Color.quietText)
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
                     }
+                    Text(barTitle).font(.subheadline.weight(.semibold))
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                        .minimumScaleFactor(0.8)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+                .accessibilityLabel(state.map { "\(barTitle), \($0)" } ?? barTitle)
                 // A bar does not grow with the text size (the system shows its items large
                 // on a long press instead); held to sizes that fit it.
                 .dynamicTypeSize(...DynamicTypeSize.xxxLarge)

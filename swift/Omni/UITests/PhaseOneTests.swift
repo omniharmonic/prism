@@ -73,14 +73,23 @@ final class PhaseOneTests: OmniUITestCase {
         shot("p1-new-chat-from-\(screen.lowercased().replacingOccurrences(of: " ", with: "-"))")
         let cancel = element("voice.sheet.close")
         if cancel.exists { cancel.tap() }
-        hideKeyboard()
+        putKeyboardAway()
+    }
+
+    /// The composer's own "Hide keyboard" button (the system keyboard's key moves about on an iPad).
+    private func putKeyboardAway() {
+        #if os(iOS)
+        let hide = element("composer.hideKeyboard")
+        if hide.exists, hide.isHittable { hide.tap() }
+        _ = gone(app.keyboards.firstMatch, 3)
+        #endif
     }
 
     /// iPad with a sidebar: put it away, so the content column (and its bar) is all there is.
     private func collapseSidebar() {
         #if os(iOS)
         guard Run.isPad, !Run.usesTabs else { return }
-        hideKeyboard()
+        putKeyboardAway()
         guard element("nav.today").exists else { return }
         let toggle = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'sidebar'")).firstMatch
         if toggle.exists { toggle.tap() }

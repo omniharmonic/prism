@@ -2,7 +2,8 @@
 
 These are fixture screenshots; names, records and approvals are sample data. No email or other external action was sent.
 
-- `mac/`: 36 screen snapshots in light, dark and narrow layouts (108 images).
+- `mac/`: 38 screen snapshots in light, dark and narrow layouts (114 images), redrawn for Phase 1 (markdown, New Chat bar, nudge cards).
+- `phase-1/`: before/after pictures for Omni Phase 1 — iPhone, iPad with the sidebar put away, and Mac.
 - `iphone/`: largest accessibility text walkthrough plus dark representative Today, approval, record-card, composer/keyboard and Settings views.
 - `ipad/`: representative portrait, landscape and compact split-width views. The final layout checks include native notification and privacy-lock settings from the dependent native stage.
 
