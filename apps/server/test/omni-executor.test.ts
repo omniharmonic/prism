@@ -23,7 +23,7 @@ import { setMatrixActionClientForTests } from "../src/actions/matrix";
 import { setOmniPusherForTests } from "../src/omni/bus";
 import { resetOmniStoreForTests } from "../src/omni/store";
 import { issueDeviceToken } from "../src/auth/device";
-import { resetDb, makeSession, sessionCookie, installFakeVault, type FakeVault } from "./helpers";
+import { resetDb, makeSession, sessionCookie, deviceAuth, installFakeVault, type FakeVault } from "./helpers";
 
 const J = { "content-type": "application/json" };
 const ROOM = "!room1:hs.example.test";
@@ -72,7 +72,7 @@ const decide = (id: string, digest: string, headers: Record<string, string>, k: 
 
 test("flag off: executor_disabled, the live action is never called, the approval stays pending", async () => {
   const p = await propose();
-  const r = await decide(p.id, p.digest, { cookie: sessionCookie(makeSession(config.ownerEmail)) }, "omni-exec-key-0001");
+  const r = await decide(p.id, p.digest, { ...deviceAuth() }, "omni-exec-key-0001");
   assert.equal(r.status, 503);
   assert.equal(((await r.json()) as { error: string }).error, "executor_disabled");
   assert.equal(sent.length, 0);
@@ -103,7 +103,7 @@ for (const allowlist of ["", "unknown", "email,email-reply", "message,unknown"])
     Object.assign(config, { actionsMatrixEnabled: true });
     process.env.OMNI_EXECUTOR_KINDS = allowlist;
     const p = await propose();
-    const r = await decide(p.id, p.digest, { cookie: sessionCookie(makeSession(config.ownerEmail)) }, "omni-allowlist-0001");
+    const r = await decide(p.id, p.digest, { ...deviceAuth() }, "omni-allowlist-0001");
     assert.equal(r.status, 503);
     assert.equal((await r.json() as { error: string }).error, "executor_disabled");
     assert.equal(sent.length, 0);
@@ -116,11 +116,11 @@ test("an allowed kind executes, while the master off switch still wins", async (
   process.env.OMNI_EXECUTOR_KINDS = "message";
   process.env.OMNI_EXECUTORS = "off";
   let p = await propose();
-  assert.equal((await decide(p.id, p.digest, { cookie: sessionCookie(makeSession(config.ownerEmail)) }, "omni-allowlist-0002")).status, 503);
+  assert.equal((await decide(p.id, p.digest, { ...deviceAuth() }, "omni-allowlist-0002")).status, 503);
   assert.equal(sent.length, 0);
   delete process.env.OMNI_EXECUTORS;
   p = await propose();
-  assert.equal((await decide(p.id, p.digest, { cookie: sessionCookie(makeSession(config.ownerEmail)) }, "omni-allowlist-0003")).status, 200);
+  assert.equal((await decide(p.id, p.digest, { ...deviceAuth() }, "omni-allowlist-0003")).status, 200);
   assert.equal(sent.length, 1);
 });
 
@@ -143,7 +143,7 @@ test("RSVP requires exact kind and digest; human decision executes once through 
     assert.equal(r.status, 201);
     const p = await r.json() as { id: string; digest: string };
     assert.equal(calls.length, 0, "proposal sends nothing");
-    const human = { cookie: sessionCookie(makeSession(config.ownerEmail)) };
+    const human = { ...deviceAuth() };
     process.env.OMNI_EXECUTOR_KINDS = "email,email-reply";
     assert.equal((await decide(p.id, p.digest, human, "rsvp-disabled-0001")).status, 503);
     process.env.OMNI_EXECUTOR_KINDS = "email,email-reply,calendar-rsvp";

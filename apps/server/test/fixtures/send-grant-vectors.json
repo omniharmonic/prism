@@ -1,0 +1,135 @@
+{
+  "note": "Generated from apps/server/src/omni (protonSendArgs + send-grant.ts). The agent repo's tests/test_send_grant.py holds an identical copy and feeds each argv to the REAL proton_send.py parser + send_grant.email_digest. Regenerate both together.",
+  "email": [
+    {
+      "kind": "email",
+      "argv": [
+        "send",
+        "--approved",
+        "--json",
+        "--body-file",
+        "-",
+        "--subject",
+        "Friday",
+        "--to",
+        "kevin@example.org",
+        "--allow-external"
+      ],
+      "body": "See you Friday.\n",
+      "digest": "c788ab0ba5f533eef1d955631a9363a212d88da24f9a3b3a588d840d2d12c811"
+    },
+    {
+      "kind": "email",
+      "argv": [
+        "send",
+        "--approved",
+        "--json",
+        "--body-file",
+        "-",
+        "--subject",
+        "Grüße; rm -rf / --to x",
+        "--to",
+        "a@b.co",
+        "--to",
+        "c@d.co",
+        "--cc",
+        "synergy@benjaminlife.one",
+        "--cc",
+        "e@f.co",
+        "--allow-external"
+      ],
+      "body": "Hi\r\nthere ✓\n-- B\n",
+      "digest": "2d0c9f7770364871b1e68933982eeb3a8034279a46964fdf980a2950801507e3"
+    },
+    {
+      "kind": "email",
+      "argv": [
+        "send",
+        "--approved",
+        "--json",
+        "--body-file",
+        "-",
+        "--subject",
+        "Note to self",
+        "--to",
+        "synergy@benjaminlife.one"
+      ],
+      "body": "plain",
+      "digest": "12777a3f3d85fc63b0a12f617e398d6497224fff7636f88b7e128faa5df6dc84"
+    },
+    {
+      "kind": "email-reply",
+      "argv": [
+        "send",
+        "--approved",
+        "--json",
+        "--body-file",
+        "-",
+        "--reply-to-note",
+        "vault/messages/email/n1",
+        "--subject",
+        "Re: Plans",
+        "--in-reply-to",
+        "<m1@mail.example>",
+        "--references",
+        "<root@mail.example> <m1@mail.example>",
+        "--to",
+        "a@b.co",
+        "--cc",
+        "c@d.co",
+        "--allow-external"
+      ],
+      "body": "Sounds good.\n",
+      "digest": "9d291679194cf1b468ce89c61f2b460d17bdcba7e6ffa5ba16db0fb83a1f3f64"
+    },
+    {
+      "kind": "email-reply",
+      "argv": [
+        "send",
+        "--approved",
+        "--json",
+        "--body-file",
+        "-",
+        "--reply-to-note",
+        "n2",
+        "--subject",
+        "Re: x",
+        "--in-reply-to",
+        "<m2@x>",
+        "--references",
+        "<m2@x>",
+        "--to",
+        "a@b.co",
+        "--allow-external"
+      ],
+      "body": "ok",
+      "digest": "30ecd5fff4272ff13a5cbfbaeee47e78954dd75cfdeb34cf83f77f51df4eac7f"
+    }
+  ],
+  "tweet": [
+    {
+      "text": "hello",
+      "digest": "aebf2adad1845cf81fd71d0f57214fefaa3a88e5c0ccc26751b9c53f0fcaaa15"
+    },
+    {
+      "text": "  exact  ",
+      "digest": "47bdd5fd45ca1ee4beeb3883ea4a964d72c824b3687d36630f58715f501b4836"
+    },
+    {
+      "text": "line\nbreak ✓",
+      "digest": "bcd6ddd1c252115b2e78cf7a63676eb5ee9bfeeda4f43118d7fc7867d7007c50"
+    }
+  ],
+  "message": [
+    {
+      "room": "!r:hs",
+      "body": "ab",
+      "digest": "3e57c88bfe703235f34dd866219ea7b29c3d983e7f6d4ec68bdb2e934e0c5664"
+    },
+    {
+      "room": "!room:hs.example",
+      "body": "On my way\n",
+      "digest": "a0a6f2137bdabfb8d6214241e17e065ceca3f75e9a802aaaeea8c2b3089e8785"
+    }
+  ]
+}

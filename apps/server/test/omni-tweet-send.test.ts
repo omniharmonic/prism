@@ -20,7 +20,8 @@ test("exact approved text goes on stdin with fixed arguments and no server crede
   assert.equal(calls[0]![2].input, JSON.stringify({ text }));
   assert.equal(calls[0]![2].env.TEST_SECRET_TOKEN, undefined);
   assert.equal(calls[0]![2].env.PRISM_SEND_GRANT_APPROVAL, "apr_t");
-  assert.match(calls[0]![2].env.PRISM_SEND_GRANT!, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(calls[0]![2].env.PRISM_SEND_GRANT_FD, "3");
+  assert.match(calls[0]![2].grant!, /^[A-Za-z0-9_-]{43}$/);
 });
 test("unconfigured executor and kind/global switches stay closed", () => {
   assert.equal(executorFor("tweet").enabled, true);

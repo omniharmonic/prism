@@ -63,6 +63,7 @@ import { publishNotice, pushOmni, subscribeNotices, subscribeThread, type Thread
 import {
   APPROVAL_KINDS,
   ApprovalInputError,
+  applyReplyContext,
   approvalView,
   claimApproval,
   closeApproval,
@@ -85,6 +86,8 @@ import { buildToday, buildTasksPage, localDate, validDate, type Dispatch } from 
 import { runProtonSend } from "../omni/proton-send";
 import { runTweetSend } from "../omni/tweet-send";
 import { consumeSendGrant } from "../omni/send-grant";
+import { vaultClient, VaultError } from "../parachute";
+import { resolveVaultEntry } from "../db";
 
 import { DIALS, type InterruptContext } from "../omni/nudge-policy";
 import { priorNudgeSources, resolveNudgeSource, nudgeWeeklyAudit, latestNudgeAudit, FRESHNESS_SUBSYSTEMS, NUDGE_KINDS, upsertNudge, listNudges, getNudge, nudgeAction, nudgeSettings, setNudgeSettings, bindNudgeThread, type Candidate } from "../omni/nudges";
@@ -242,6 +245,18 @@ async function jsonBody(c: Context): Promise<Record<string, unknown> | null> {
   }
 }
 const bad = (c: Context, detail: string) => c.json({ error: "bad_request", detail }, 400);
+
+/** An email-reply draft gets its subject + threading from the PRIMARY vault's note now. */
+async function withReplyContext(kind: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (kind !== "email-reply") return payload;
+  let note: { tags?: string[] | null; metadata?: Record<string, unknown> | null } | null = null;
+  try {
+    note = (await vaultClient(resolveVaultEntry(undefined).id).getNote(String(payload.noteId))) as unknown as typeof note;
+  } catch (e) {
+    if (!(e instanceof VaultError && e.status === 404)) throw new ApprovalInputError("noteId: the email note could not be read right now; try again");
+  }
+  return applyReplyContext(payload, note, omniConfig.ownerEmail());
+}
 function hermesFailure(c: Context, e: unknown): Response {
   if (e instanceof HermesError) return c.json({ error: e.code }, e.status as 400);
   console.error(`[omni] ${(e as Error)?.message}`);
@@ -687,6 +702,8 @@ omniApi.put("/approvals/:id", async (c) => {
   const owner = omniConfig.ownerEmail();
   const o = humanOrigin(c);
   if (!o.human) return c.json({ error: "human_origin_required" }, 403);
+  // An edit becomes the draft that is sent: the same device rule as a send.
+  if (o.via !== "device") return c.json({ error: "device_required", detail: "edit and approve sends in the Omni app on a signed-in device" }, 403);
   const b = await jsonBody(c);
   if (!b) return bad(c, "a JSON object body is required");
   expireApprovals();
@@ -701,6 +718,7 @@ omniApi.put("/approvals/:id", async (c) => {
   let v;
   try {
     v = validatePayload(a.kind, b.payload);
+    v = { kind: v.kind, payload: await withReplyContext(v.kind, v.payload) };
   } catch (e) {
     if (e instanceof ApprovalInputError) return bad(c, e.message);
     throw e;
@@ -726,6 +744,13 @@ async function decide(c: Context): Promise<Response> {
   if (!b) return bad(c, "a JSON object body is required");
   const decision = b.decision === "approve" ? "send" : b.decision === "reject" ? "cancel" : b.decision;
   if (decision !== "send" && decision !== "cancel" && decision !== "revise") return bad(c, "decision: send|cancel|revise");
+  // One door (2026-10-15): approving a send needs the owner's DEVICE token (hashed at rest,
+  // bound to the Omni app), not a browser session cookie an agent on the host could replay.
+  // Cancelling or asking for a revision sends nothing and stays open to a session.
+  if (decision === "send" && o.via !== "device") {
+    omniAudit({ actor: owner, via: o.via, action: "approval.decide", approvalId: id, status: "refused", error: "device_required" });
+    return c.json({ error: "device_required", detail: "approve sends in the Omni app on a signed-in device" }, 403);
+  }
   const digest = typeof b.digest === "string" ? b.digest : b.payloadHash;
   if (typeof digest !== "string" || !DIGEST_RE.test(digest)) return bad(c, "digest: the 64-hex digest of the draft shown");
   expireApprovals();
@@ -808,12 +833,21 @@ omniApi.post("/approvals/:id/decide", decide);
  * consumed whatever the verdict. 200 = go ahead (once); anything else = do not send.
  */
 omniApi.post("/approvals/:id/send-grant/verify", async (c) => {
+  // Unauthenticated (the grant is the credential), so bounded: a flood is refused, and
+  // only presentations of a REAL grant are audited (an unknown token proves nothing and
+  // must not be able to fill the audit table).
+  const retry = consumeRateLimit("omni-send-grant-verify", 60, 60_000);
+  if (retry !== null) {
+    c.header("Retry-After", String(retry));
+    return c.json({ ok: false, error: "rate_limited" }, 429);
+  }
   const id = c.req.param("id") ?? "";
   const b = await jsonBody(c);
   if (!b) return bad(c, "a JSON object body is required");
   const owner = omniConfig.ownerEmail();
   const v = consumeSendGrant(id, b.token, b.digest, (aid) => getApproval(owner, aid)?.status ?? null);
-  omniAudit({ actor: "send-script", via: "send-grant", action: "approval.grant", approvalId: id, digest: typeof b.digest === "string" ? b.digest : null, status: v.ok ? "ok" : "refused", error: v.ok ? null : v.error });
+  if (v.ok || v.error !== "invalid_grant")
+    omniAudit({ actor: "send-script", via: "send-grant", action: "approval.grant", approvalId: id, digest: typeof b.digest === "string" ? b.digest : null, status: v.ok ? "ok" : "refused", error: v.ok ? null : v.error });
   return v.ok ? c.json({ ok: true, approvalId: id }) : c.json({ ok: false, error: v.error }, 403);
 });
 
@@ -1004,6 +1038,7 @@ omniApi.post("/hooks/propose", async (c) => {
   let v;
   try {
     v = validatePayload(b.kind, b.payload);
+    v = { kind: v.kind, payload: await withReplyContext(v.kind, v.payload) };
   } catch (e) {
     if (e instanceof ApprovalInputError) return bad(c, e.message);
     throw e;

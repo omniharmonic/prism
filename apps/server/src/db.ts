@@ -5,7 +5,7 @@
  */
 import Database from "better-sqlite3";
 import { notifyAccessChanged } from "./access-events";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync } from "node:fs";
 import { config, vaultRegistry, type VaultEntry } from "./config";
 import { isCap, levelForCaps, type Cap, type Level } from "./permissions";
@@ -1368,26 +1368,46 @@ export interface Session {
 const now = () => Date.now();
 
 // ---- sessions ----
+// The cookie value is a bearer secret, so the table stores only its SHA-256
+// (`h:<hex>`): a process that can read this database file cannot replay a
+// signed-in session (one door, 2026-10-15 — an agent reading prism-server.db
+// must not be able to decide approvals). Rows written before this change hold the
+// raw id; the first read of such a session rewrites it to the hashed form, so
+// existing sign-ins keep working and the plaintext disappears as they are used.
+const sessionKey = (id: string): string => "h:" + createHash("sha256").update(id, "utf8").digest("hex");
 const insertSession = db.prepare(
   "INSERT INTO sessions (id, email, created_at, expires_at) VALUES (?, ?, ?, ?)",
 );
 const selectSession = db.prepare("SELECT * FROM sessions WHERE id = ?");
 const deleteSession = db.prepare("DELETE FROM sessions WHERE id = ?");
+const rehashSession = db.prepare("UPDATE OR IGNORE sessions SET id = ? WHERE id = ?");
 
 export function createSession(id: string, email: string, ttlMs: number): void {
-  insertSession.run(id, email, now(), now() + ttlMs);
+  insertSession.run(sessionKey(id), email, now(), now() + ttlMs);
 }
 export function getSession(id: string): Session | null {
-  const s = selectSession.get(id) as Session | undefined;
+  const key = sessionKey(id);
+  let s = selectSession.get(key) as Session | undefined;
+  if (!s && !id.startsWith("h:")) {
+    // Legacy plaintext row: migrate it on first use.
+    const legacy = selectSession.get(id) as Session | undefined;
+    if (legacy) {
+      rehashSession.run(key, id);
+      deleteSession.run(id);
+      s = { ...legacy, id: key };
+    }
+  }
   if (!s) return null;
   if (s.expires_at < now()) {
-    deleteSession.run(id);
+    deleteSession.run(key);
     return null;
   }
   return s;
 }
 export function destroySession(id: string): void {
-  if (deleteSession.run(id).changes) notifyAccessChanged();
+  const a = deleteSession.run(sessionKey(id)).changes;
+  const b = id.startsWith("h:") ? 0 : deleteSession.run(id).changes;
+  if (a || b) notifyAccessChanged();
 }
 
 // ---- device tokens (WP2.1 native sign-in; see auth/device.ts) ----

@@ -348,6 +348,16 @@ function matrixCreds(actor: OwnerActor): MatrixCreds {
 const agentRefused = (ctx: RunCtx, what: string) => {
   if (ctx.origin === "agent") throw new Refusal("agent_origin_refused", `${what} can only be started by the owner from the Prism UI`);
 };
+/**
+ * One door (2026-10-15): an action that reaches OTHER PEOPLE needs the owner's DEVICE
+ * credential (a native app's `pd_…` token, stored hashed), not merely a browser session —
+ * a session cookie is a bearer value an agent on the host could lift from a browser
+ * profile or an old database copy. Nothing is sent on refusal.
+ */
+const deviceRequired = (ctx: RunCtx, what: string) => {
+  agentRefused(ctx, what);
+  if (ctx.via !== "device") throw new Refusal("device_required", `${what} needs the owner's signed-in device (the Omni or Prism app)`, 403, false);
+};
 
 // ── status ──────────────────────────────────────────────────────────────────
 
@@ -389,7 +399,7 @@ actionsApi.post(
     rate: EMAIL_SEND_RATE,
     requireKey: true,
     prepare: (ctx) => {
-      agentRefused(ctx, "sending email");
+      deviceRequired(ctx, "sending email");
       sendTarget(ctx, validateSendInput(ctx.body));
     },
     run: async (ctx) => deliver(ctx, validateSendInput(ctx.body)),
@@ -432,7 +442,7 @@ actionsApi.post(
     rate: EMAIL_SEND_RATE,
     requireKey: true,
     prepare: (ctx) => {
-      agentRefused(ctx, "sending email");
+      deviceRequired(ctx, "sending email");
       // Validate the user-supplied part now; recipients come from the stored note.
       validateSendInput({ ...ctx.body, to: ["placeholder@example.invalid"], subject: "x" });
       if (typeof ctx.body.noteId !== "string" || !ctx.body.noteId) throw new ActionInputError("noteId is required");
@@ -540,7 +550,7 @@ actionsApi.post(
     rate: CAL_RATE,
     requireKey: false,
     prepare: (ctx) => {
-      agentRefused(ctx, "responding to invitations");
+      deviceRequired(ctx, "responding to invitations");
       // L3: validate fully BEFORE anything client-supplied reaches the audit target.
       rsvpArgs("x@example.invalid", validateCalEventId(ctx.body.eventId), String(ctx.body.response));
       ctx.target.eventId = ctx.body.eventId;
@@ -570,7 +580,7 @@ actionsApi.post(
     rate: CAL_RATE,
     requireKey: true,
     prepare: (ctx) => {
-      agentRefused(ctx, "creating events");
+      deviceRequired(ctx, "creating events");
       const input = validateCreateInput(ctx.body);
       ctx.target.attendees = input.attendees.length;
       if (input.attendees.length) ctx.target.attendeesHash = recipientsHash(input.attendees);
@@ -641,7 +651,7 @@ actionsApi.post(
     // become a second round of update emails.
     requireKey: true,
     prepare: (ctx) => {
-      agentRefused(ctx, "editing events");
+      deviceRequired(ctx, "editing events");
       const u = validateUpdateInput(ctx.body);
       ctx.target.eventId = u.eventId;
       ctx.target.fields = [u.title !== undefined && "title", u.start !== undefined && "time", u.location !== undefined && "location", u.description !== undefined && "description", u.attendees !== undefined && "attendees"].filter(Boolean);
@@ -682,7 +692,7 @@ actionsApi.post(
     rate: CAL_RATE,
     requireKey: true,
     prepare: (ctx) => {
-      agentRefused(ctx, "deleting events");
+      deviceRequired(ctx, "deleting events");
       ctx.target.eventId = validateCalEventId(ctx.body.eventId);
       if (ctx.body.notify !== undefined && typeof ctx.body.notify !== "boolean") throw new ActionInputError("notify: true or false");
       ctx.target.notify = ctx.body.notify !== false;
@@ -744,6 +754,9 @@ actionsApi.post(
     rate: MX_SEND_RATE,
     requireKey: true,
     prepare: (ctx) => {
+      // A human message to another person needs the owner's device (agent origin keeps
+      // its own room allowlist below).
+      if (ctx.origin === "human" && ctx.via !== "device") throw new Refusal("device_required", "sending a message needs the owner's signed-in device (the Omni or Prism app)", 403, false);
       ctx.target.roomId = validateRoomId(ctx.body.roomId);
       validateBody(ctx.body.body);
     },

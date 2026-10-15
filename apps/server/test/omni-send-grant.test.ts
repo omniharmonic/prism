@@ -31,7 +31,7 @@ import {
   setGrantClockForTests,
   tweetSendDigest,
 } from "../src/omni/send-grant";
-import { resetDb, makeSession, sessionCookie } from "./helpers";
+import { resetDb, makeSession, sessionCookie, deviceAuth } from "./helpers";
 
 const J = { "content-type": "application/json" };
 const app = createApp();
@@ -129,7 +129,7 @@ const verify = (id: string, body: unknown, headers: Record<string, string> = {})
 const approve = (id: string, digest: string, key: string) =>
   app.request(`/api/omni/approvals/${id}/decision`, {
     method: "POST",
-    headers: { ...J, cookie: sessionCookie(makeSession(config.ownerEmail)), "idempotency-key": key },
+    headers: { ...J, ...deviceAuth(), "idempotency-key": key },
     body: JSON.stringify({ decision: "send", digest }),
   });
 
@@ -140,7 +140,7 @@ test("approved email: the script verifies its grant once, over loopback, for the
   const fake: Spawner = async (_cmd, _args, o) => {
     env = o.env;
     // A script that was handed (or tries to send) other recipients cannot verify.
-    const tamperedFirst = await verify(p.id, { token: o.env[GRANT_ENV.token], digest: emailSendDigest("email", { to: ["mallory@example.org"], subject: "Friday", body: o.input }) });
+    const tamperedFirst = await verify(p.id, { token: o.grant, digest: emailSendDigest("email", { to: ["mallory@example.org"], subject: "Friday", body: o.input }) });
     seen.push({ status: tamperedFirst.status, body: await tamperedFirst.json() });
     return { code: 1, signal: null, stdout: "", stderr: "ERROR: Sends must be approved in Omni (digest_mismatch).", timedOut: false };
   };
@@ -148,7 +148,8 @@ test("approved email: the script verifies its grant once, over loopback, for the
   const r = await approve(p.id, p.digest, "grant-key-0001");
   assert.equal(r.status, 422, "a refused grant = failed, nothing sent");
   assert.equal(env[GRANT_ENV.approval], p.id);
-  assert.match(env[GRANT_ENV.token]!, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(env[GRANT_ENV.fd], "3");
+  assert.ok(!Object.values(env).some((v) => /^[A-Za-z0-9_-]{43}$/.test(v)), "the grant is never in the environment (ps eww)");
   assert.deepEqual(seen, [{ status: 403, body: { ok: false, error: "digest_mismatch" } }]);
   assert.equal(outstandingGrants(), 0, "nothing left behind");
 
@@ -157,15 +158,15 @@ test("approved email: the script verifies its grant once, over loopback, for the
   const statuses: number[] = [];
   setProtonSpawnerForTests(async (_c, _a, o) => {
     const digest = emailSendDigest("email", { to: ["kevin@example.org"], subject: "Friday", body: o.input });
-    statuses.push((await verify(p2.id, { token: o.env[GRANT_ENV.token], digest })).status);
-    statuses.push((await verify(p2.id, { token: o.env[GRANT_ENV.token], digest })).status);
+    statuses.push((await verify(p2.id, { token: o.grant, digest })).status);
+    statuses.push((await verify(p2.id, { token: o.grant, digest })).status);
     return { code: 0, signal: null, stdout: '{"messageId":"<m@x>"}', stderr: "", timedOut: false };
   });
   const r2 = await approve(p2.id, p2.digest, "grant-key-0002");
   assert.equal(r2.status, 200);
   assert.deepEqual(statuses, [200, 403]);
   const grantAudit = auditRows().filter((a) => a.action === "approval.grant").map((a) => [a.status, a.error]);
-  assert.deepEqual(grantAudit, [["refused", "digest_mismatch"], ["ok", null], ["refused", "invalid_grant"]]);
+  assert.deepEqual(grantAudit, [["refused", "digest_mismatch"], ["ok", null]], "a replay of a consumed grant is an unknown token: refused, not audited (N2)");
 });
 
 test("approved tweet: the grant covers exactly the approved text", async () => {
@@ -178,7 +179,7 @@ test("approved tweet: the grant covers exactly the approved text", async () => {
   let status = 0;
   setTweetSpawnerForTests(async (_c, _a, o) => {
     const text = (JSON.parse(o.input) as { text: string }).text;
-    status = (await verify(p.id, { token: o.env[GRANT_ENV.token], digest: tweetSendDigest(text) })).status;
+    status = (await verify(p.id, { token: o.grant, digest: tweetSendDigest(text) })).status;
     return { code: 0, signal: null, stdout: JSON.stringify({ status: "sent", postId: "1" }), stderr: "", timedOut: false };
   });
   assert.equal((await approve(p.id, p.digest, "grant-key-0003")).status, 200);
@@ -194,7 +195,7 @@ test("verify: a request through the tunnel, a GET, or no grant at all is refused
   // Still unused (the tunnel requests never reached the route) — but the approval is only pending.
   assert.deepEqual(await (await verify(p.id, { token: t, digest: D("a") })).json(), { ok: false, error: "approval_not_claimed" });
   // A signed-in session cannot mint or skip anything here: no token, no send.
-  const s = await verify(p.id, { digest: D("a") }, { cookie: sessionCookie(makeSession(config.ownerEmail)) });
+  const s = await verify(p.id, { digest: D("a") }, { ...deviceAuth() });
   assert.equal(s.status, 403);
   assert.deepEqual(await s.json(), { ok: false, error: "invalid_grant" });
 });

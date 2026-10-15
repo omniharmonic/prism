@@ -229,7 +229,7 @@ Prism's existing guarded executors.
 | `kind` | `payload` | Executor |
 |---|---|---|
 | `email` | `{to:[≤20], cc?:[≤20], subject, body}` (plain text) | `proton_send.py send --approved` (default; see below) or `POST /api/actions/email/send` |
-| `email-reply` | `{noteId, expectTo:[…], cc?, body}` | `proton_send.py send --approved --reply-to-note <noteId> --to <each expectTo>` or `POST /api/actions/email/reply` |
+| `email-reply` | `{noteId, expectTo:[…], cc?, body}` + `subject`, `inReplyTo`, `references` filled by Prism from the note at propose time | `proton_send.py send --approved --reply-to-note <noteId> --subject … --in-reply-to … [--references …] --to <each expectTo>` or `POST /api/actions/email/reply` |
 | `message` | `{roomId, body}` | `POST /api/actions/matrix/send` (`ACTIONS_MATRIX_ENABLED`) |
 | `calendar-invite` | `{title, start, end, attendees?, location?, description?}` (RFC 3339) | `POST /api/actions/calendar/create` (`ACTIONS_CALENDAR_ENABLED`) |
 | `tweet` | `{text}` | none wired yet → `executor_unavailable` |
@@ -316,12 +316,16 @@ message from a signed-in device. Prism's in-process senders (`/api/actions/*`) a
 require a human-origin credential. The agent repo's send scripts (`proton_send.py`,
 `omni_tweet_send.py`, `twitter_post.py`, `matrix_reader.py send|send-to`) are separate
 processes anyone on the Mini could start, so they now refuse to send unless they hold a
-ONE-TIME SEND GRANT that this server minted (`src/omni/send-grant.ts`):
+ONE-TIME SEND GRANT that this server minted (`src/omni/send-grant.ts`). Only the email
+and tweet executors mint grants. Approved chat `message`s are sent by Prism itself
+(`/api/actions/matrix/send`, in process), so `matrix_reader.py send|send-to` is never
+given a grant and always refuses:
 
 - Minted only by the email/tweet executors, only after `claimApproval` atomically claimed a
   pending, unexpired, digest-matched approval on a human-origin decision.
-- Handed to the child in its environment (`PRISM_SEND_GRANT`, `PRISM_SEND_GRANT_APPROVAL`),
-  never argv; stored here only as a SHA-256 hash; in memory (a restart revokes all).
+- Handed to the child on an inherited pipe (fd 3; the env carries only `PRISM_SEND_GRANT_FD=3`
+  and `PRISM_SEND_GRANT_APPROVAL`), never argv or the environment (`ps eww` shows those);
+  stored here only as a SHA-256 hash; in memory (a restart revokes all).
 - Lives ≤ 60 s; single use (consumed on first presentation, whatever the verdict); revoked
   as soon as the child exits.
 - Bound to (approval id, send digest). The send digest is a length-prefixed SHA-256 over
@@ -333,9 +337,25 @@ ONE-TIME SEND GRANT that this server minted (`src/omni/send-grant.ts`):
   only (`isLocalRequest`), no session or service token (the grant is the credential); the
   approval must still be `approved` (claimed, unfinished). 200 `{ok:true}` = send once;
   anything else = 403 and the script exits with "Sends must be approved in Omni" (→ `failed`).
-  Every verification is in `omni_audit` (`approval.grant`).
+  Every presentation of a real grant is in `omni_audit` (`approval.grant`); unknown tokens
+  are not audited, and the route is rate-limited (60/min) since it is unauthenticated.
+- A reply's subject and threading headers (`subject`, `inReplyTo`, `references`) are resolved
+  from the stored email note when the reply is PROPOSED (or edited), stored in the payload,
+  shown on the card, passed to `proton_send.py` explicitly and covered by the digest; a note
+  edited after approval changes nothing. A reply whose note cannot be threaded is refused
+  (400). Replies proposed before this change lack these fields and are refused at send
+  (`invalid_payload`): propose them again.
+- **Approving needs the device.** `decision: send` and edits (`PUT /approvals/:id`) require the
+  owner's DEVICE token (`via: device`, stored hashed) — a browser session gets
+  `403 device_required` — so a process that lifts a session cookie cannot approve its own
+  draft. Cancel/revise stay open to a session. The same rule applies to the live actions
+  that reach other people (`/api/actions/email/send|reply`, `calendar/rsvp|create|update|delete`,
+  human `matrix/send`): the browser PWA can no longer send on a session alone. Session ids are
+  stored as SHA-256 (`h:<hex>`); a legacy plaintext row is rewritten on its first use.
 
-Tests: `test/omni-send-grant.test.ts`.
+Tests: `test/omni-send-grant.test.ts`, `test/omni-one-door-review.test.ts` (incl. the
+argv/digest vectors in `test/fixtures/send-grant-vectors.json`, replayed by the agent repo's
+Python tests against the real `proton_send.py` parser).
 
 ## Change channel and push
 

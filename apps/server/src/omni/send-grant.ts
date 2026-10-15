@@ -26,8 +26,13 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 export const GRANT_TTL_MS = 60_000;
-/** Env names the executor sets on the child (the script reads exactly these). */
-export const GRANT_ENV = { token: "PRISM_SEND_GRANT", approval: "PRISM_SEND_GRANT_APPROVAL" } as const;
+/**
+ * How the child receives its grant. The TOKEN goes down an inherited pipe (file
+ * descriptor `GRANT_FD`), never the environment or argv — a same-user `ps eww` shows
+ * environments. The env carries only the fd number and the approval id (not secrets).
+ */
+export const GRANT_FD = 3;
+export const GRANT_ENV = { fd: "PRISM_SEND_GRANT_FD", approval: "PRISM_SEND_GRANT_APPROVAL" } as const;
 
 export type SendChannel = "email" | "tweet" | "message";
 
@@ -55,17 +60,22 @@ export function sendDigest(channel: SendChannel, fields: ReadonlyArray<readonly 
 }
 
 const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.length > 0) : []);
-const one = (v: unknown): string[] => (typeof v === "string" ? [v] : []);
+const one = (v: unknown): string[] => (typeof v === "string" && v.length > 0 ? [v] : []);
 
-/** Digest of an approved email / email-reply, exactly as proton_send.py receives it. */
+/**
+ * Digest of an approved email / email-reply, exactly as proton_send.py receives it. A
+ * reply's subject and threading headers were resolved from the note when it was proposed
+ * (they are on the card) and are passed to the script explicitly, so they are bound too:
+ * a note edited after approval cannot change what is sent.
+ */
 export function emailSendDigest(kind: "email" | "email-reply", p: Record<string, unknown>): string {
   return sendDigest("email", [
     ["to", kind === "email" ? strs(p.to) : strs(p.expectTo)],
     ["cc", strs(p.cc)],
-    ["subject", kind === "email" ? one(p.subject) : []],
+    ["subject", one(p.subject)],
     ["reply_to_note", kind === "email-reply" ? one(p.noteId) : []],
-    ["in_reply_to", []],
-    ["references", []],
+    ["in_reply_to", kind === "email-reply" ? one(p.inReplyTo) : []],
+    ["references", kind === "email-reply" ? one(p.references) : []],
     ["body", one(p.body)],
   ]);
 }

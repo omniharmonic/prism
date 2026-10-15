@@ -24,7 +24,7 @@ import { approvalDigest, canonicalJson, type Executor } from "../src/omni/approv
 import { INPROCESS_ACTOR, INPROCESS_CLIENT_KEY } from "../src/auth/actor";
 import { issueDeviceToken } from "../src/auth/device";
 import { db, setMembership } from "../src/db";
-import { resetDb, makeSession, sessionCookie, makeCapability } from "./helpers";
+import { resetDb, makeSession, sessionCookie, deviceAuth, makeCapability } from "./helpers";
 import type { TreeChange } from "../src/tree";
 import { createHermesStub, type HermesStub, type StubAct, type StubFrame, type StubTurn } from "../scripts/lib/hermes-stub";
 import { resetJobCreationsForTests } from "../src/omni/job-creations";
@@ -32,7 +32,8 @@ import { resetOmniPresenceForTests } from "../src/routes/omni";
 import { HermesNormalizer, toolFailed, createdIdOf, errorCodeOf, toolRowsOf, unwrapResult } from "../src/omni/stream";
 
 const J = { "content-type": "application/json" };
-const owner = () => ({ ...J, cookie: sessionCookie(makeSession(config.ownerEmail)) });
+const owner = () => ({ ...J, ...deviceAuth() });
+const ownerSession = () => ({ ...J, cookie: sessionCookie(makeSession(config.ownerEmail)) });
 const hook = { ...J, authorization: `Bearer ${process.env.OMNI_SERVICE_TOKEN}` };
 let keyN = 0;
 const key = () => `omni-test-key-${Date.now()}-${++keyN}`;
@@ -174,16 +175,16 @@ test("only the server owner by session or device token; every other actor kind i
   assert.equal((await req("/version", { headers: { authorization: `Bearer ${config.collabToken}` } })).status, 403, "loopback owner token");
   const mcp = { [INPROCESS_ACTOR]: { kind: "user", email: config.ownerEmail, role: "owner", vaultId: "primary", grants: [] }, [INPROCESS_CLIENT_KEY]: "mcp:pat:t1" };
   assert.equal((await req("/version", {}, mcp)).status, 403, "in-process MCP dispatch");
-  assert.equal((await req("/version", { headers: { ...owner(), authorization: `Bearer ${process.env.OMNI_SERVICE_TOKEN}` } })).status, 200, "service token is no app credential (session decides)");
+  assert.equal((await req("/version", { headers: { ...ownerSession(), authorization: `Bearer ${process.env.OMNI_SERVICE_TOKEN}` } })).status, 200, "service token is no app credential (session decides)");
   assert.equal((await req("/version", { headers: { authorization: `Bearer ${process.env.OMNI_SERVICE_TOKEN}` } })).status, 401, "service token alone is anon to app routes");
 });
 
 test("mutations need JSON + same origin (live-actions CSRF guard); device tokens skip the origin check", async () => {
-  const r1 = await req("/threads", { method: "POST", headers: { cookie: owner().cookie, "content-type": "text/plain" }, body: "{}" });
+  const r1 = await req("/threads", { method: "POST", headers: { cookie: ownerSession().cookie, "content-type": "text/plain" }, body: "{}" });
   assert.equal(r1.status, 415);
-  const r2 = await post("/threads", { prompt: "x" }, { ...owner(), "sec-fetch-site": "cross-site" });
+  const r2 = await post("/threads", { prompt: "x" }, { ...ownerSession(), "sec-fetch-site": "cross-site" });
   assert.equal(r2.status, 403);
-  const r3 = await post("/threads", { prompt: "x" }, { ...owner(), origin: "https://evil.example" });
+  const r3 = await post("/threads", { prompt: "x" }, { ...ownerSession(), origin: "https://evil.example" });
   assert.equal(r3.status, 403);
   assert.equal(fake.calls.length, 0, "nothing reached Hermes");
 });
@@ -563,7 +564,7 @@ test("decide send: executes ONCE through the executor; replay with the same key;
   assert.equal(((await r.json()) as { approval: { status: string } }).approval.status, "sent");
   assert.equal(execCalls.length, 1);
   assert.deepEqual(execCalls[0]!.payload, draft);
-  assert.ok(execCalls[0]!.headers.cookie, "the decider's own credential is what the executor presents");
+  assert.ok(execCalls[0]!.headers.authorization?.startsWith("Bearer pd_"), "the decider's own device credential is what the executor presents");
   const again = await decide(p.id, { decision: "send", digest: p.digest }, { ...owner(), "idempotency-key": k });
   assert.equal(again.status, 200);
   assert.equal(again.headers.get("Idempotent-Replayed"), "true");

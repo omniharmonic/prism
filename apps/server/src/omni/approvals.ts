@@ -29,6 +29,7 @@ import { config } from "../config";
 import { newId } from "./store";
 import { omniConfig } from "./config";
 import { rsvpArgs } from "../actions/calendar";
+import { buildReply } from "../actions/email";
 import { protonSendConfigured } from "./proton-send";
 import { tweetSendConfigured } from "./tweet-send";
 
@@ -91,6 +92,9 @@ export function validatePayload(kind: unknown, raw: unknown): { kind: ApprovalKi
       payload = pick({ to: strList(b.to, "to", 20, true), cc: strList(b.cc, "cc", 20), subject: str(b.subject, "subject", 998), body: str(b.body, "body", 200_000) });
       break;
     case "email-reply":
+      // subject / inReplyTo / references are NOT taken from the proposer: Prism resolves them
+      // from the note (applyReplyContext) before storing, so the card shows them and the
+      // send is bound to them.
       payload = pick({ noteId: str(b.noteId, "noteId", 200), expectTo: strList(b.expectTo, "expectTo", 20, true), cc: strList(b.cc, "cc", 20), body: str(b.body, "body", 200_000) });
       break;
     case "message":
@@ -149,6 +153,23 @@ export function validatePayload(kind: unknown, raw: unknown): { kind: ApprovalKi
   }
   if (Buffer.byteLength(JSON.stringify(payload), "utf8") > MAX_PAYLOAD_BYTES) throw new ApprovalInputError("payload: too large");
   return { kind: kind as ApprovalKind, payload };
+}
+
+/**
+ * One door (review S6): a reply's subject and threading headers are fixed when it is
+ * PROPOSED, from the stored email note, and become part of the payload (shown on the card,
+ * covered by the digest, passed to the sender explicitly). Editing the note after approval
+ * cannot change what is sent. Throws ApprovalInputError when the note cannot be threaded.
+ */
+export function applyReplyContext(payload: Record<string, unknown>, note: { tags?: string[] | null; metadata?: Record<string, unknown> | null } | null, self: string): Record<string, unknown> {
+  if (!note || !(note.tags ?? []).includes("email") || typeof note.metadata?.messageId !== "string") throw new ApprovalInputError("noteId: not a stored email message this reply can thread to");
+  let r;
+  try {
+    r = buildReply(note.metadata as Parameters<typeof buildReply>[0], self);
+  } catch {
+    throw new ApprovalInputError("noteId: the stored message cannot be replied to (no usable Message-ID or address)");
+  }
+  return { ...payload, subject: r.subject, inReplyTo: r.inReplyTo, references: r.references.join(" ") };
 }
 
 export interface Approval {

@@ -4,7 +4,7 @@ import { dirname, isAbsolute } from "node:path";
 import { omniConfig } from "./config";
 import { realSpawner, type Spawner } from "./proton-send";
 import type { ExecOutcome } from "./approvals";
-import { GRANT_ENV, mintSendGrant, revokeSendGrant, tweetSendDigest } from "./send-grant";
+import { GRANT_ENV, GRANT_FD, mintSendGrant, revokeSendGrant, tweetSendDigest } from "./send-grant";
 
 export function tweetSendConfigured(): boolean {
   const p = omniConfig.tweetSendPath();
@@ -22,12 +22,12 @@ export async function runTweetSend(payload: Record<string, unknown>, approvalId:
   // One-time grant bound to this approval and these exact bytes (send-grant.ts); the
   // script verifies and consumes it with this server before it calls the provider.
   const grant = mintSendGrant(approvalId, tweetSendDigest(payload.text));
-  env[GRANT_ENV.token] = grant;
+  env[GRANT_ENV.fd] = String(GRANT_FD);
   env[GRANT_ENV.approval] = approvalId;
   let result: Awaited<ReturnType<Spawner>>;
   try {
     result = await spawner(omniConfig.tweetPython(), [script, "--approved-json"], {
-      cwd: dirname(dirname(script)), env, input: JSON.stringify({ text: payload.text }), timeoutMs: 45_000,
+      cwd: dirname(dirname(script)), env, input: JSON.stringify({ text: payload.text }), timeoutMs: 45_000, grant,
     });
   } finally {
     revokeSendGrant(grant);

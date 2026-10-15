@@ -22,12 +22,13 @@ import { setOmniRecordSourcesForTests } from "../src/omni/records";
 import { setOmniPusherForTests } from "../src/omni/bus";
 import { turnSettled } from "../src/omni/turns";
 import { eventsAfter, getThread, getTurn, resetOmniStoreForTests } from "../src/omni/store";
-import { resetDb, makeSession, sessionCookie } from "./helpers";
+import { resetDb, makeSession, sessionCookie, deviceAuth, installFakeVault } from "./helpers";
 import { createHermesStub, defaultScript, httpBridge, SCENARIOS, STUB_PROPOSALS, type HermesStub, type StubTurn } from "../scripts/lib/hermes-stub";
 
 const J = { "content-type": "application/json" };
 const KEY = process.env.OMNI_HERMES_KEY!;
-const owner = () => ({ ...J, cookie: sessionCookie(makeSession(config.ownerEmail)) });
+const owner = () => ({ ...J, ...deviceAuth() });
+const ownerSession = () => ({ ...J, cookie: sessionCookie(makeSession(config.ownerEmail)) });
 const hook = { ...J, authorization: `Bearer ${process.env.OMNI_SERVICE_TOKEN}` };
 let stub: HermesStub;
 let n = 0;
@@ -122,13 +123,17 @@ test("approval: the stub proposes through the hook the way omni-bridge does; a s
   const r = await post(`/approvals/${ap.id}/decision`, { decision: "send", digest: ap.digest }, { ...owner(), "idempotency-key": "stub-decide-0001" });
   assert.equal(r.status, 503);
   assert.equal(((await r.json()) as { error: string }).error, "executor_disabled");
-  // Every kind has a draft the gateway's validator accepts.
+  // Every kind has a draft the gateway's validator accepts. (A reply's subject/threading
+  // come from its stored email note at propose time, so the stub's note must exist.)
+  const fv = installFakeVault();
+  fv.notes.set("stub-email-note-0001", { id: "stub-email-note-0001", path: "vault/messages/email/stub-email-note-0001", tags: ["email"], content: "", metadata: { type: "email", from: "Dana <dana@example.com>", subject: "Friday", messageId: "<stub-1@example.com>" } } as never);
   for (const kind of Object.keys(STUB_PROPOSALS)) {
     const t = await turn(id, `stub:approval:${kind}`);
     assert.equal(resultOf(id, t).ok, true, kind);
   }
   const kinds = events(id).filter((e) => e.t === "approval").map((e) => (e.approval as { kind: string }).kind);
   assert.deepEqual(kinds, ["email", ...Object.keys(STUB_PROPOSALS)]);
+  fv.restore();
   // The gateway's own "revise" turn names the tool: the stub proposes again.
   assert.equal(defaultScript({ sessionId: id, message: "Revise the email draft. Propose the new draft with omni_propose; do not send anything.", runId: "run_x", stub }).acts.some((a) => "tool" in a && a.tool === "omni_propose"), true);
 });

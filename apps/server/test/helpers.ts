@@ -13,6 +13,7 @@
 import { db, createSession, addGrant, type ResourceType } from "../src/db";
 import type { Level } from "../src/permissions";
 import { signCapability } from "../src/auth/capability";
+import { issueDeviceToken } from "../src/auth/device";
 import { randomBytes } from "node:crypto";
 import { config } from "../src/config";
 import { TRANSCRIPT_LINK_TABLES } from "../src/transcript-links-store";
@@ -521,4 +522,10 @@ export function makeCapability(resourceType: ResourceType, resource: string, lev
   const id = `cap-${randomBytes(6).toString("hex")}`;
   addGrant({ subject_type: "link", subject: id, resource_type: resourceType, resource, level, created_by: "test" });
   return signCapability({ id, exp: expMs });
+}
+
+/** The owner's native-app credential (a `pd_…` device token). Sends to other people —
+ *  approval decisions and outward live actions — require it (one door, 2026-10-15). */
+export function deviceAuth(email: string = config.ownerEmail): Record<string, string> {
+  return { authorization: `Bearer ${issueDeviceToken(email, "Omni (test)", "omni-native").token}` };
 }
