@@ -7,6 +7,7 @@ import { db } from "../src/db";
 import { resetDb, makeSession, sessionCookie } from "./helpers";
 import { resetOmniStoreForTests } from "../src/omni/store";
 import { resetNudgesForTests, upsertNudge, getNudge, type Candidate } from "../src/omni/nudges";
+import { listCardViews, snoozeCard } from "../src/omni/card-flow";
 import { resetCardsForTests, parseCardInput, upsertCard, transitionCard, getCard } from "../src/omni/cards";
 import { cardInput } from "./omni-card-samples";
 
@@ -74,4 +75,25 @@ test("snooze and dismiss: human only, bounded, feedback kept, the nudge follows"
   const refused = await post(`/cards/${busy.id}/dismiss`, { reason: "done" });
   assert.equal(refused.status, 409);
   assert.equal((await refused.json() as { error: string }).error, "card_not_open");
+});
+
+test("dismiss as done resolves the nudge and records done feedback", async () => {
+  const n = upsertNudge(owner, candidate("mail1", "mail/ana"));
+  const c = card("mail1", 1_000);
+  assert.equal((await post(`/cards/${c.id}/dismiss`, { reason: "done" })).status, 200);
+  assert.equal(getCard(owner, c.id)!.state, "done");
+  assert.equal((db.prepare("SELECT resolved FROM omni_nudges WHERE id=?").get(n.id) as { resolved: number }).resolved, 1);
+  assert.equal((db.prepare("SELECT count(*) n FROM omni_feedback WHERE kind='done' AND source_id='mail1'").get() as { n: number }).n, 1);
+});
+
+test("a card in motion cannot be snoozed; a snoozed card returns when due", async () => {
+  const busy = card("mail1", 1_000);
+  transitionCard(owner, busy.id, ["proposed"], "working", { action: "choose", optionId: "b" });
+  const res = await post(`/cards/${busy.id}/snooze`, { until: Date.now() + 3_600_000 });
+  assert.equal(res.status, 409);
+  assert.equal((await res.json() as { error: string }).error, "card_not_open");
+  const c = card("mail2", 2_000);
+  snoozeCard(owner, c.id, 10_000, 5_000);
+  assert.equal(listCardViews(owner, 6_000).cards.some((v) => v.id === c.id), false);
+  assert.equal(listCardViews(owner, 10_001).cards.some((v) => v.id === c.id), true);
 });

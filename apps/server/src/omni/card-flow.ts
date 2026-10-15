@@ -61,17 +61,20 @@ export async function filterFacts(facts: CardFact[], itemRefs: string[]): Promis
   return { kept, dropped: facts.length - kept.length };
 }
 
-/** Dismissed, resolved or archived by the owner: the agent may not bring it back as a card.
- *  A dismissal covers only the revision the owner dismissed: when the item has since changed and
- *  the card is a finished one, a publish at the new revision is let through (upsertCard reopens
- *  it). An archived thread stays suppressed. */
+/** Archived, resolved or dismissed by the owner: the agent may not bring it back as a card.
+ *  - A resolved nudge (answered elsewhere) always suppresses; only the nudge sweep un-resolves it.
+ *  - A dismissal covers only the revision the owner dismissed: a finished card whose item has since
+ *    changed may be republished at the new revision (upsertCard reopens it and clears the dismissal).
+ *  - A card still open (proposed/snoozed) stays updatable. */
 function suppressed(owner: string, sourceKey: string, sourceRevision: string | null): boolean {
   const r = db.prepare("SELECT n.dismissed AS dismissed, n.resolved AS resolved, t.archived AS archived FROM omni_nudges n LEFT JOIN omni_threads t ON t.id=n.thread_id WHERE n.owner_email=? AND n.source_id=?")
     .get(owner, sourceKey) as { dismissed: number; resolved: number; archived: number | null } | undefined;
   if (!r || !(r.dismissed || r.resolved || r.archived)) return false;
-  if (r.archived) return true;
+  if (r.archived || r.resolved) return true;
   const card = cardBySource(owner, sourceKey);
-  return !(card && REOPENABLE_STATES.has(card.state) && sourceRevision !== null && card.sourceRevision !== sourceRevision);
+  if (!card) return true;
+  if (card.state === "proposed" || card.state === "snoozed") return false;
+  return !(REOPENABLE_STATES.has(card.state) && sourceRevision !== null && card.sourceRevision !== sourceRevision);
 }
 
 /** Tell every surface: the card's thread (as a timeline item), the change channel, and — for a
@@ -101,7 +104,9 @@ export async function publishCard(owner: string, p: CardPublish, now: number = D
     if (suppressed(owner, p.sourceKey, p.sourceRevision)) throw new CardError("source_suppressed", 409);
     ensureThread({ id: threadId, title: p.headline, taskNoteId: p.sourceKey, source: "nudge", state: "waiting" });
     if (nudge) bindNudgeThread(owner, nudge.id, threadId);
-    return upsertCard(owner, input, threadId, now);
+    const u = upsertCard(owner, input, threadId, now);
+    if (reopens && u.changed && nudge) db.prepare("UPDATE omni_nudges SET dismissed=0, updated_at=? WHERE owner_email=? AND id=?").run(now, owner, nudge.id);
+    return u;
   })();
   if (r.changed) announceCard(r.card, r.created ? "created" : reopens ? "reopened" : "updated", { push: r.created || reopens });
   return { ...r, droppedFacts: dropped };

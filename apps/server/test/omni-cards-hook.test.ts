@@ -10,7 +10,7 @@ import { createHermesStub } from "../scripts/lib/hermes-stub";
 import { setHermesFetchForTests } from "../src/omni/hermes-client";
 import { setOmniRecordSourcesForTests } from "../src/omni/records";
 import { resetOmniStoreForTests, eventsAfter, getThread } from "../src/omni/store";
-import { resetNudgesForTests, upsertNudge, nudgeAction, getNudge } from "../src/omni/nudges";
+import { resetNudgesForTests, upsertNudge, nudgeAction, getNudge, resolveNudgeSource } from "../src/omni/nudges";
 import { resetCardsForTests, getCard, transitionCard } from "../src/omni/cards";
 import { dismissCard } from "../src/omni/card-flow";
 import { setOmniPusherForTests } from "../src/omni/bus";
@@ -117,6 +117,42 @@ test("dismissing a card suppresses only its current revision: same revision igno
   setOmniRecordSourcesForTests({ resolver: async ({ id }) => ({ id: id!, path: `mail/${id}`, tags: ["email"], updatedAt: rev2 }) });
   const res = await post(cardPublish({ sourceRevision: rev2, evidence: [{ sourceId: "mail1", revision: rev2 }] }));
   assert.equal(res.status, 200);
+  assert.equal(getCard(config.ownerEmail, first.card.id)!.state, "proposed");
+});
+
+test("a reopened card stays updatable: the nudge's dismissal is cleared", async () => {
+  const n = upsertNudge(config.ownerEmail, { sourceId: "mail1", sourcePath: "mail/mail1", kind: "reply-owed", title: "Reply owed", summary: "x", reasons: ["x"], senderId: null, baseScore: .7, priority: .5, deadline: null, urgentAt: null, commitment: false });
+  const first = (await (await post(cardPublish())).json()) as { card: { id: string } };
+  dismissCard(config.ownerEmail, first.card.id, "not-needed");
+  const at = (rev: string, over: Record<string, unknown> = {}) => {
+    setOmniRecordSourcesForTests({ resolver: async ({ id }) => ({ id: id!, path: `mail/${id}`, tags: ["email"], updatedAt: rev }) });
+    return post(cardPublish({ sourceRevision: rev, evidence: [{ sourceId: "mail1", revision: rev }], ...over }));
+  };
+  assert.equal((await at("2026-10-15T11:00:00Z")).status, 200);
+  assert.equal(getCard(config.ownerEmail, first.card.id)!.state, "proposed");
+  assert.equal(getNudge(config.ownerEmail, n.id)!.dismissed, false);
+  const r3 = await at("2026-10-15T12:00:00Z");
+  assert.equal(r3.status, 200);
+  assert.equal(getCard(config.ownerEmail, first.card.id)!.sourceRevision, "2026-10-15T12:00:00Z");
+  const r4 = await at("2026-10-15T12:00:00Z", { headline: "Sam still needs the budget reviewed before Friday" });
+  assert.equal(r4.status, 200);
+  assert.equal(getCard(config.ownerEmail, first.card.id)!.headline, "Sam still needs the budget reviewed before Friday");
+});
+
+test("a resolved nudge always suppresses; only the sweep's upsert un-resolves it", async () => {
+  const cand = { sourceId: "mail1", sourcePath: "mail/mail1", kind: "reply-owed" as const, title: "Reply owed", summary: "x", reasons: ["x"], senderId: null, baseScore: .7, priority: .5, deadline: null, urgentAt: null, commitment: false };
+  upsertNudge(config.ownerEmail, cand);
+  const first = (await (await post(cardPublish())).json()) as { card: { id: string } };
+  transitionCard(config.ownerEmail, first.card.id, ["proposed"], "sent", { action: "sent" });
+  resolveNudgeSource(config.ownerEmail, "mail1");
+  const rev2 = "2026-10-15T11:00:00Z";
+  setOmniRecordSourcesForTests({ resolver: async ({ id }) => ({ id: id!, path: `mail/${id}`, tags: ["email"], updatedAt: rev2 }) });
+  const body = cardPublish({ sourceRevision: rev2, evidence: [{ sourceId: "mail1", revision: rev2 }] });
+  const res = await post(body);
+  assert.equal(res.status, 409);
+  assert.deepEqual(await res.json(), { error: "source_suppressed" });
+  upsertNudge(config.ownerEmail, cand);
+  assert.equal((await post(body)).status, 200);
   assert.equal(getCard(config.ownerEmail, first.card.id)!.state, "proposed");
 });
 
