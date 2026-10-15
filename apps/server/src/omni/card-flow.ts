@@ -267,19 +267,29 @@ export function instructPrompt(card: Card, text: string): string {
 }
 
 /** One card, one live draft: his new instruction retires the drafts still waiting on this card.
- *  Cancelled as the owner (audited like his own cancel) through the same close the decision route uses. */
-function cancelPendingDrafts(owner: string, ids: string[], origin: { via: string; device?: string | null }, key: string): void {
+ *  Cancelled as the owner (audited like his own cancel) through the same close the decision route uses.
+ *  The closes are pure database writes and all run first; the audit/notice/event side effects follow
+ *  per approval and can never undo or skip a close (a failure is logged and the loop goes on). */
+function cancelPendingDrafts(owner: string, ids: string[], origin: { via: string; device: string | null }, key: string): void {
+  const closed: Array<NonNullable<ReturnType<typeof getApproval>>> = [];
   for (const id of ids) {
     const a = getApproval(owner, id);
+    // Not pending any more (decided, expired or revised since the card was last read): nothing left to cancel.
     if (!a || a.status !== "pending") continue;
-    if (!closeApproval(id, "cancelled", origin.via, origin.device ?? null, `instruct-${sha256(`${id}:${key}`).slice(0, 40)}`)) continue;
-    omniAudit({ actor: owner, via: origin.via, action: "approval.cancel", approvalId: id, threadId: a.threadId, digest: a.digest, status: "ok" });
-    publishNotice({ type: "approval", id, op: "cancelled", threadId: a.threadId ?? undefined });
-    if (a.threadId && getThread(a.threadId)) emit(a.threadId, null, { t: "approval", approval: approvalView(getApproval(owner, id)!) });
+    if (closeApproval(id, "cancelled", origin.via, origin.device, `instruct-${sha256(`${id}:${key}`).slice(0, 40)}`)) closed.push(a);
+  }
+  for (const a of closed) {
+    try {
+      omniAudit({ actor: owner, via: origin.via, action: "approval.cancel", approvalId: a.id, threadId: a.threadId, digest: a.digest, status: "ok" });
+      publishNotice({ type: "approval", id: a.id, op: "cancelled", threadId: a.threadId ?? undefined });
+      if (a.threadId && getThread(a.threadId)) emit(a.threadId, null, { t: "approval", approval: approvalView(getApproval(owner, a.id)!) });
+    } catch (e) {
+      console.error("omni: cancelled draft side effects failed", a.id, e);
+    }
   }
 }
 
-export function instructCard(owner: string, cardId: string, text: string, key: string, origin: { via: string; device?: string | null } = { via: "session" }): CardActionAnswer {
+export function instructCard(owner: string, cardId: string, text: string, key: string, origin: { via: string; device: string | null }): CardActionAnswer {
   const words = text.trim();
   if (!words || words.length > 4000) throw new CardError("invalid_instruction", 400, "text: 1–4000 characters");
   return idempotent(owner, cardId, key, `instruct:${sha256(words).slice(0, 16)}`, () => {

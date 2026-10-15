@@ -8,12 +8,12 @@ import { resetDb, makeSession, sessionCookie } from "./helpers";
 import { createHermesStub } from "../scripts/lib/hermes-stub";
 import { setHermesFetchForTests } from "../src/omni/hermes-client";
 import { setOmniRecordSourcesForTests } from "../src/omni/records";
-import { resetOmniStoreForTests, eventsAfter } from "../src/omni/store";
+import { resetOmniStoreForTests, eventsAfter, auditRows } from "../src/omni/store";
 import { resetNudgesForTests } from "../src/omni/nudges";
 import { resetCardsForTests, getCard } from "../src/omni/cards";
-import { setOmniPusherForTests } from "../src/omni/bus";
+import { setOmniPusherForTests, subscribeNotices } from "../src/omni/bus";
 import { approvalDigest, listApprovals } from "../src/omni/approvals";
-import { turnSettled } from "../src/omni/turns";
+import { turnSettled, startTurn } from "../src/omni/turns";
 import { cardPublish } from "./omni-card-samples";
 
 const revision = "2026-10-15T10:00:00Z";
@@ -133,6 +133,10 @@ test("something else on a ready draft cancels the pending draft: one card, one l
   assert.equal(listApprovals(config.ownerEmail, "pending").length, 0);
   const cancelled = listApprovals(config.ownerEmail, "cancelled");
   assert.deepEqual(cancelled.map((a) => a.id), [ready.approval!.id]);
+  const audit = auditRows().filter((r) => r.action === "approval.cancel");
+  assert.equal(audit.length, 1);
+  assert.equal(audit[0]!.approval_id, ready.approval!.id);
+  assert.equal(audit[0]!.actor, config.ownerEmail);
   await turnSettled(body.turnId!);
   assert.equal(said.length, 1);
   const send = await omniApi.request(`/approvals/${ready.approval!.id}/decision`, { method: "POST", headers: { ...ownerH(), "idempotency-key": "send-cancelled-0001" }, body: JSON.stringify({ decision: "send", digest: ready.approval!.digest }) });
@@ -149,4 +153,45 @@ test("something else on a working card is refused and changes nothing", async ()
   assert.equal(getCard(config.ownerEmail, card.id)!.state, "working");
   await turnSettled(first.turnId!);
   assert.equal(said.length, 1);
+});
+
+test("something else: a failing side effect never leaves a draft pending", async () => {
+  const card = await publish();
+  const ready = await (await choose(card.id, "a", "choose-then-instruct-2")).json() as Answer;
+  const off = subscribeNotices(() => { throw new Error("subscriber down"); });
+  try {
+    const res = await instruct(card.id, "Ask for the PDF first.");
+    assert.equal(res.status, 202);
+    const body = (await res.json()) as Answer;
+    assert.equal(body.card.state, "working");
+    await turnSettled(body.turnId!);
+  } finally { off(); }
+  assert.equal(listApprovals(config.ownerEmail, "pending").length, 0);
+  assert.deepEqual(listApprovals(config.ownerEmail, "cancelled").map((a) => a.id), [ready.approval!.id]);
+  const rows = auditRows().filter((r) => r.action === "approval.cancel");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.approval_id, ready.approval!.id);
+  assert.equal(rows[0]!.actor, config.ownerEmail);
+  assert.equal(rows[0]!.status, "ok");
+});
+
+test("something else on a ready draft while a turn runs in its thread: refused, card and draft untouched", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  stub = createHermesStub({ key: process.env.OMNI_HERMES_KEY!, script: async (ctx) => { said.push(ctx.message); await gate; return { acts: [{ say: "ok" }] }; } });
+  setHermesFetchForTests(stub.fetch);
+  const card = await publish();
+  const ready = await (await choose(card.id, "a", "choose-then-instruct-3")).json() as Answer;
+  const running = startTurn(card.threadId, "revise it", "direct-turn-0001");
+  assert.ok("turn" in running);
+  const res = await instruct(card.id, "Ask for the PDF first.", "instruct-busy-001");
+  assert.equal(res.status, 409);
+  assert.equal((await res.json() as { error: string }).error, "turn_running");
+  const after = getCard(config.ownerEmail, card.id)!;
+  assert.equal(after.state, "draft-ready");
+  assert.equal(after.chosenOptionId, "a");
+  assert.deepEqual(listApprovals(config.ownerEmail, "pending").map((a) => a.id), [ready.approval!.id]);
+  assert.equal(auditRows().filter((r) => r.action === "approval.cancel").length, 0);
+  release();
+  await turnSettled(running.turn.id);
 });
