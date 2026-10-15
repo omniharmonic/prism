@@ -208,7 +208,7 @@ struct Walk {
         var after: (@MainActor () async -> Void)?
         if let act { after = { await act(app) } }
         guard let session = app.session else { return XCTFail("the sample did not sign in") }
-        try await draw(name, settle: settle, SampleWindow(session: session), then: after)
+        try await draw(name, settle: settle, SampleWindow(session: session).environment(\.cardsNow, CardingSampleService.t0), then: after)
         app.session?.stop()
     }
 
@@ -268,7 +268,15 @@ struct Walk {
 
         // Approvals: the queue, and each kind in its thread.
         try await screen("needs-you-list", service: service, .needsYou)
-        try await screen("needs-you-nudges", service: nudging(), .needsYou)
+        try await screen("needs-you-sections", service: CardingSampleService.carding(), .needsYou)
+        let clear = CardingSampleService()
+        clear.cardItems = [CardingSampleService.working(), CardingSampleService.waiting()]
+        try await screen("needs-you-clear", service: clear, .needsYou)
+        let attention = nudging()
+        attention.laterItems = [NudgingSampleService.nudge("later", kind: "task", title: "Renew the domain", summary: "Snoozed until Monday.", reasons: ["Snoozed"])]
+        attention.audit = try? JSONDecoder().decode(NudgeWeeklyAudit.self, from: Data(#"{"caught":7,"missed":1,"noise":3,"replied":9,"unknownChat":2,"since":1792000000000,"through":1792600000000}"#.utf8))
+        let nudgeCenter = NudgeCenter(service: attention, sink: ErrorSink(onSignedOut: {}))
+        try await draw("settings-attention", size: CGSize(width: 620, height: 900), NavigationStack { AttentionSettingsView(center: nudgeCenter) })
 
         // Item cards: every state and source alone, then the long-text cases.
         for (name, card) in CardingSampleService.gallery() {

@@ -13,3 +13,11 @@ final class CardLayoutTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(CardMetrics.touch, 44)
     }
 }
+
+final class NeedsYouTextTests: XCTestCase {
+    func testTheEmptyStateSaysWhatIsInMotion() {
+        XCTAssertEqual(NeedsYouText.clear(inMotion: 0), "You're clear.")
+        XCTAssertEqual(NeedsYouText.clear(inMotion: 1), "You're clear. 1 thing is in motion.")
+        XCTAssertEqual(NeedsYouText.clear(inMotion: 3), "You're clear. 3 things are in motion.")
+    }
+}

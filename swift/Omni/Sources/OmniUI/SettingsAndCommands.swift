@@ -52,6 +52,12 @@ public struct SettingsView: View {
             if let skills = app.session?.skills {
                 Section("Agent") { NavigationLink("Skills") { SkillsView(model: skills) } }
             }
+            if let nudges = app.session?.nudges {
+                Section("Attention") {
+                    NavigationLink("Proactivity, audit and snoozed items") { AttentionSettingsView(center: nudges) }
+                        .accessibilityIdentifier("settings.attention")
+                }
+            }
             Section("Voice & Playback") {
                 Button("Voice & Playback Settings") {
                     let device = (app.session?.conversationAudio as? ConversationDevice) ?? ConversationDevice()

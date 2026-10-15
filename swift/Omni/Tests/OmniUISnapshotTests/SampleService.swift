@@ -236,6 +236,8 @@ class SampleService: OmniService, @unchecked Sendable {
 /// The sample gateway with the nudge queue switched on (Needs you then shows its nudge cards).
 final class NudgingSampleService: SampleService, NudgeService, @unchecked Sendable {
     var nudgeItems: [OmniNudge] = []
+    var laterItems: [OmniNudge] = []
+    var audit: NudgeWeeklyAudit?
 
     /// A nudge as the gateway sends it.
     static func nudge(_ id: String, kind: String, title: String, summary: String, reasons: [String], threadId: String? = nil) -> OmniNudge {
@@ -248,7 +250,8 @@ final class NudgingSampleService: SampleService, NudgeService, @unchecked Sendab
         return decode(object)
     }
 
-    func nudges(later: Bool) async throws -> [OmniNudge] { later ? [] : nudgeItems }
+    func nudges(later: Bool) async throws -> [OmniNudge] { later ? laterItems : nudgeItems }
+    func nudgeWeeklyAudit() async throws -> NudgeWeeklyAudit? { audit }
     func nudgeSettings() async throws -> NudgeSettings { NudgeSettings() }
     func saveNudgeSettings(_ settings: NudgeSettings) async throws -> NudgeSettings { settings }
     func actOnNudge(_ id: String, action: NudgeAction, until: Date?) async throws -> OmniNudge {

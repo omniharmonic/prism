@@ -333,73 +333,76 @@ struct ReviseSheet: View {
     }
 }
 
-/// Needs you: every draft waiting for a decision. (Nudges join this queue in M3.)
+enum NeedsYouText {
+    static func clear(inMotion: Int) -> String {
+        switch inMotion {
+        case 0: return "You're clear."
+        case 1: return "You're clear. 1 thing is in motion."
+        default: return "You're clear. \(inMotion) things are in motion."
+        }
+    }
+}
+
+/// A fixed clock for pictures; nil (the default) means the real time.
+private struct CardsClockKey: EnvironmentKey { static let defaultValue: Date? = nil }
+extension EnvironmentValues {
+    var cardsNow: Date? {
+        get { self[CardsClockKey.self] }
+        set { self[CardsClockKey.self] = newValue }
+    }
+}
+
+struct NeedsYouSectionHeader: View {
+    let title: String
+    let count: Int
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(title).font(.title3.weight(.semibold))
+            Text("\(count)").font(.callout).foregroundStyle(Color.quietText)
+            Spacer()
+        }
+        .frame(minHeight: CardMetrics.touch)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
+        .accessibilityIdentifier("needsYou.section.\(title.lowercased().replacingOccurrences(of: " ", with: "-"))")
+    }
+}
+
+/// Needs you: Decide (choose how to handle it), Approve (drafts ready to send) and In motion (Omni
+/// working or waiting). Nothing else at the top level: the proactivity dial, errors of the nudge
+/// sweep and the weekly audit are in Settings -> Attention.
 struct NeedsYouView: View {
     let session: SessionModel
     @Environment(\.navigator) private var navigator
-    @State private var showLater = false
+    @Environment(\.cardsNow) private var now
+    @State private var showsMotion = true
 
-    private func refresh() async { await session.approvals.refresh(); await session.nudges?.refresh() }
+    private func refresh() async {
+        await session.approvals.refresh()
+        await session.cards?.refresh()
+        await session.nudges?.refresh()
+    }
+
     var body: some View {
-        let pending = session.approvals.pending
-        let nudges = session.nudges?.items ?? []
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 16) {
-                if let center = session.nudges {
-                    DisclosureGroup("Proactivity") {
-                        Picker("Attention level", selection: Binding(get: { center.settings.dial }, set: { dial in
-                            Task { await center.save(NudgeSettings(dial: dial, killed: center.settings.killed)) }
-                        })) {
-                            ForEach(ProactivityDial.allCases, id: \.self) { dial in Text(dial.rawValue.capitalized).tag(dial) }
-                        }
-                        Toggle("Pause nudges", isOn: Binding(get: { center.settings.killed }, set: { killed in
-                            Task { await center.save(NudgeSettings(dial: center.settings.dial, killed: killed)) }
-                        }))
-                        Text("Off and Pause keep your queue available. Apple’s notification settings and Focus control delivery; Omni does not read your current Focus. Drafts always need your review.").font(.caption).foregroundStyle(.secondary)
-                    }.disabled(center.busy.contains("settings") || center.phase != .loaded)
-                    if let failure = center.phase.failure ?? center.failure {
-                        Label(failure, systemImage: "wifi.exclamationmark").foregroundStyle(.secondary)
-                        Button("Retry nudges") { Task { await center.refresh() } }.frame(minHeight: 44)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 16) {
+                    if let failure = session.cards?.phase.failure ?? session.approvals.phase.failure {
+                        Label(failure, systemImage: "wifi.exclamationmark").foregroundStyle(Color.quietText)
+                        Button("Try again") { Task { await refresh() } }.frame(minHeight: 44)
                     }
+                    if let cards = session.cards { sections(cards) } else { draftsOnly }
                 }
-                if let failure = session.approvals.phase.failure {
-                    Label(failure, systemImage: "wifi.exclamationmark").foregroundStyle(.secondary)
-                    Button("Retry drafts") { Task { await session.approvals.refresh() } }.frame(minHeight: 44)
-                }
-                if pending.isEmpty && nudges.isEmpty && session.approvals.phase.failure == nil && session.nudges?.phase.failure == nil {
-                    ContentUnavailableView("Nothing needs you", systemImage: "checkmark.circle", description: Text("Drafts and items needing your attention appear here. Nothing goes out without your tap."))
-                }
-                ForEach(nudges) { nudge in
-                    if let center = session.nudges { NudgeCardView(center: center, item: nudge) }
-                }
-                ForEach(pending) { card in
-                    VStack(alignment: .leading, spacing: 6) {
-                        ApprovalCardView(center: session.approvals, id: card.id)
-                        if let threadID = card.approval.threadId {
-                            Button { navigator.open(.thread(threadID)) } label: {
-                                Text("Open thread").frame(minHeight: 44).contentShape(Rectangle())
-                            }
-                            .buttonStyle(.borderless).font(.callout)
-                        }
-                    }
-                }
-                if let center = session.nudges {
-                    if let audit = center.audit {
-                        DisclosureGroup("Weekly reply audit") {
-                            Text("Caught \(audit.caught) · Missed \(audit.missed) · Not important \(audit.noise) · Unknown chat \(audit.unknownChat)")
-                                .font(.callout).fixedSize(horizontal: false, vertical: true)
-                            Text("Caught means viewed or delivered before your reply. Missed means no such evidence. Verified email and Matrix replies are included. Chat sources without trusted identity and reply timing remain unknown.")
-                                .font(.caption).foregroundStyle(Color.quietText)
-                        }
-                    }
-                    if !center.later.isEmpty {
-                        DisclosureGroup("Later", isExpanded: $showLater) {
-                            ForEach(center.later) { NudgeCardView(center: center, item: $0) }
-                        }
-                    }
-                }
+                .padding()
+                .frame(maxWidth: 820, alignment: .leading)
+                .frame(maxWidth: .infinity)
             }
-            .padding().frame(maxWidth: 820, alignment: .leading).frame(maxWidth: .infinity)
+            .onChange(of: session.cards?.focusedCardID, initial: true) { _, id in
+                guard let id else { return }
+                withAnimation { proxy.scrollTo(id, anchor: .top) }
+                // Scrolled: clear it so the same card can be focused again later.
+                session.cards?.focus(nil)
+            }
         }
         .navigationTitle("Needs you")
         .refreshable { await refresh() }
@@ -407,6 +410,99 @@ struct NeedsYouView: View {
         .toolbar { MacRefreshButton(refreshing: false) { Task { await refresh() } } }
         #endif
         .task { await refresh() }
+    }
+
+    @ViewBuilder private func sections(_ cards: CardsModel) -> some View {
+        let decide = cards.decide
+        let approve = cards.approve
+        let motion = cards.inMotion
+        let drafts = session.approvals.pending.filter { !cards.linkedApprovalIDs.contains($0.id) }
+        if decide.isEmpty, approve.isEmpty, drafts.isEmpty, cards.phase.failure == nil {
+            ContentUnavailableView {
+                Label("You're clear", systemImage: "checkmark.circle")
+            } description: {
+                Text(NeedsYouText.clear(inMotion: motion.count))
+            }
+            .accessibilityIdentifier("needsYou.clear")
+        }
+        if !decide.isEmpty {
+            NeedsYouSectionHeader(title: "Decide", count: decide.count)
+            ForEach(decide) { card in CardView(cards: cards, approvals: session.approvals, id: card.id, now: now).id(card.id) }
+        }
+        if !approve.isEmpty || !drafts.isEmpty {
+            NeedsYouSectionHeader(title: "Approve", count: approve.count + drafts.count)
+            ForEach(approve) { card in CardView(cards: cards, approvals: session.approvals, id: card.id, now: now).id(card.id) }
+            ForEach(drafts) { draft in loneDraft(draft) }
+        }
+        if !motion.isEmpty {
+            DisclosureGroup(isExpanded: $showsMotion) {
+                ForEach(motion) { CardMotionRow(card: $0).id($0.id) }
+            } label: {
+                NeedsYouSectionHeader(title: "In motion", count: motion.count)
+            }
+        }
+    }
+
+    /// Without the card routes (an older server): the drafts, as before.
+    @ViewBuilder private var draftsOnly: some View {
+        let pending = session.approvals.pending
+        if pending.isEmpty, session.approvals.phase.failure == nil {
+            ContentUnavailableView("Nothing needs you", systemImage: "checkmark.circle", description: Text("Drafts waiting for your decision appear here. Nothing goes out without your tap."))
+        }
+        ForEach(pending) { loneDraft($0) }
+    }
+
+    private func loneDraft(_ draft: ApprovalCard) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ApprovalCardView(center: session.approvals, id: draft.id)
+            if let threadID = draft.approval.threadId {
+                Button { navigator.open(.thread(threadID)) } label: { Text("Open thread").frame(minHeight: 44).contentShape(Rectangle()) }
+                    .buttonStyle(.borderless).font(.callout)
+            }
+        }
+    }
+}
+
+/// Settings -> Attention: what used to sit at the top of Needs you.
+struct AttentionSettingsView: View {
+    let center: NudgeCenter
+
+    var body: some View {
+        Form {
+            Section("Proactivity") {
+                Picker("Attention level", selection: Binding(get: { center.settings.dial }, set: { dial in
+                    Task { await center.save(NudgeSettings(dial: dial, killed: center.settings.killed)) }
+                })) {
+                    ForEach(ProactivityDial.allCases, id: \.self) { dial in Text(dial.rawValue.capitalized).tag(dial) }
+                }
+                Toggle("Pause nudges", isOn: Binding(get: { center.settings.killed }, set: { killed in
+                    Task { await center.save(NudgeSettings(dial: center.settings.dial, killed: killed)) }
+                }))
+                Text("Off and Pause keep Needs you available. Apple\u{2019}s notification settings and Focus control delivery; Omni does not read your current Focus. Drafts always need your review.")
+                    .font(.caption).foregroundStyle(Color.quietText)
+            }
+            .disabled(center.busy.contains("settings") || center.phase != .loaded)
+            if let failure = center.phase.failure ?? center.failure {
+                Section {
+                    Label(failure, systemImage: "wifi.exclamationmark").foregroundStyle(Color.quietText)
+                    Button("Try again") { Task { await center.refresh() } }.frame(minHeight: 44)
+                }
+            }
+            if let audit = center.audit {
+                Section("Weekly reply audit") {
+                    Text("Caught \(audit.caught) \u{B7} Missed \(audit.missed) \u{B7} Not important \(audit.noise) \u{B7} Unknown chat \(audit.unknownChat)")
+                        .font(.callout).fixedSize(horizontal: false, vertical: true)
+                    Text("Caught means viewed or delivered before your reply. Missed means no such evidence. Verified email and Matrix replies are included. Chat sources without trusted identity and reply timing remain unknown.")
+                        .font(.caption).foregroundStyle(Color.quietText)
+                }
+            }
+            if !center.later.isEmpty {
+                Section("Snoozed and hidden") { ForEach(center.later) { NudgeCardView(center: center, item: $0) } }
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Attention")
+        .task { await center.refresh() }
     }
 }
 
