@@ -272,6 +272,7 @@ struct Walk {
         let lower = CardingSampleService.carding()
         lower.cardItems = lower.cardItems.filter { $0.section != .decide }
         try await screen("needs-you-approve-motion", service: lower, .needsYou)
+        try await screen("thread-inline-card", service: CardingSampleService.carding(), .thread("card-thread"))
         let clear = CardingSampleService()
         clear.cardItems = [CardingSampleService.working(), CardingSampleService.waiting()]
         try await screen("needs-you-clear", service: clear, .needsYou)

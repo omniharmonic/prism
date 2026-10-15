@@ -44,6 +44,7 @@ public final class CardsModel {
 
     private var known: [String: OmniCard] = [:]
     private var dirty = false
+    private var refreshing = false
     private let service: any CardService
     private let nudges: NudgeCenter?
     private let sink: ErrorSink
@@ -81,10 +82,14 @@ public final class CardsModel {
     }
 
     public func refresh() async {
-        if phase == .loading { dirty = true; return }
+        if refreshing { dirty = true; return }
+        refreshing = true
+        defer { refreshing = false }
         repeat {
             dirty = false
-            phase = .loading
+            // Stale-while-refresh: once loaded, a background refresh keeps the last phase so
+            // Needs you never flashes "Checking what needs you…". A first load shows loading.
+            if phase != .loaded { phase = .loading }
             do {
                 let list = try await service.cards(section: nil)
                 merge(list.cards)
@@ -157,7 +162,7 @@ public final class CardsModel {
             // Someone else (or the sweep) already moved it: show what it is now, not the stale snapshot.
             if let fresh = try? await service.card(cardID) { put(fresh) } else {
                 // A refresh already running will be re-run; its copy replaces the optimistic one.
-                let coalesced = phase == .loading
+                let coalesced = refreshing
                 await refresh()
                 if !coalesced { rollBack(original, optimistic: optimistic) }
             }

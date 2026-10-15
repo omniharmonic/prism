@@ -6,6 +6,7 @@ struct TimelineRow: View {
     let item: TimelineItem
     let model: ThreadModel
     let approvals: ApprovalCenter
+    var cards: CardsModel? = nil
 
     var body: some View {
         switch item {
@@ -28,6 +29,8 @@ struct TimelineRow: View {
             RecordCardView(card: card)
         case .approval(let id):
             ApprovalCardView(center: approvals, id: id)
+        case .itemCard(let id):
+            if let cards { CardView(cards: cards, approvals: approvals, id: id, inThread: true) }
         case .turnEnded(let text):
             Label(text, systemImage: "stop.circle")
                 .font(.callout)

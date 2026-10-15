@@ -37,4 +37,20 @@ final class ExternalNavigationTests: XCTestCase {
         XCTAssertNil(PrismSourceLink(web: "https://example.test/collab/id?t=capability", noteID: "id")?.native)
         XCTAssertNil(PrismSourceLink(web: "https://example.test/page/other", noteID: "id")?.native)
     }
+
+    func testACardTapOpensNeedsYouAndFocusesThatCardOnce() {
+        var queue = ExternalNavigationQueue()
+        XCTAssertTrue(queue.receive(URL(string: "omni://card/card_0123456789abcdef01234567")!))
+        XCTAssertEqual(queue.take(signedIn: true, unlocked: true, navigationReady: true), .needsYou)
+        XCTAssertEqual(queue.takeFocusedCard(), "card_0123456789abcdef01234567")
+        XCTAssertNil(queue.takeFocusedCard())
+        XCTAssertTrue(queue.receive(URL(string: "omni://card/card_a")!))
+        XCTAssertTrue(queue.receive(URL(string: "omni://thread/t1")!))
+        XCTAssertEqual(queue.take(signedIn: true, unlocked: true, navigationReady: true), .thread("t1"))
+        XCTAssertNil(queue.takeFocusedCard(), "a later thread tap replaces the card focus")
+        XCTAssertFalse(queue.receive(URL(string: "omni://card/a%2Fb")!))
+        XCTAssertFalse(queue.receive(URL(string: "omni://card/")!))
+        XCTAssertFalse(queue.receive(URL(string: "omni://card/a%20b")!))
+        XCTAssertFalse(queue.receive(URL(string: "omni://card/a/b")!))
+    }
 }

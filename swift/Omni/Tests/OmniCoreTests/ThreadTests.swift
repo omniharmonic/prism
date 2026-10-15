@@ -273,6 +273,7 @@ final class ThreadModelTests: XCTestCase {
             case .tool(_, let name, let ok, _, let running): return "tool:\(name):\(ok.map(String.init) ?? "nil"):\(running)"
             case .card(_, let card): return "card:\(card.noteId)"
             case .approval(let id): return "approval:\(id)"
+            case .itemCard(let id): return "item_card:\(id)"
             case .turnEnded(let text): return "ended:\(text)"
             }
         }

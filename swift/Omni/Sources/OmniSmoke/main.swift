@@ -690,6 +690,7 @@ func run() async -> Int32 {
             case .tool: return "tool"
             case .card: return "card"
             case .approval: return "approval"
+            case .itemCard: return "item_card"
             case .turnEnded: return "ended"
             }
         }

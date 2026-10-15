@@ -25,6 +25,8 @@ private actor CardFake: CardService {
     var snoozes = 0
     var served: OmniCard?
     var duringChoose: (@Sendable () async -> Void)?
+    var duringList: (@Sendable () async -> Void)?
+    func setDuringList(_ hook: (@Sendable () async -> Void)?) { duringList = hook }
     init(_ list: [OmniCard]) { self.list = list }
     func serve(_ card: OmniCard?) { served = card }
     func setDuringChoose(_ hook: (@Sendable () async -> Void)?) { duringChoose = hook }
@@ -32,7 +34,8 @@ private actor CardFake: CardService {
     func replaceList(_ cards: [OmniCard]) { list = cards }
     func failNextChoose(_ errors: [any Error]) { chooseFailures = errors }
     func cards(section: CardSection?) async throws -> CardList {
-        CardList(cards: list, counts: .init(decide: list.filter { $0.section == .decide }.count, approve: list.filter { $0.section == .approve }.count, motion: list.filter { $0.section == .motion }.count))
+        if let hook = duringList { await hook() }
+        return CardList(cards: list, counts: .init(decide: list.filter { $0.section == .decide }.count, approve: list.filter { $0.section == .approve }.count, motion: list.filter { $0.section == .motion }.count))
     }
     func chooseCardOption(_ id: String, optionID: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult {
         chooseKeys.append(idempotencyKey)
@@ -296,4 +299,42 @@ final class NeedsYouRulesTests: XCTestCase {
         XCTAssertTrue(model.isShown("working"))
         XCTAssertFalse(model.isShown("not-loaded-yet"))
     }
+
+    func testAThreadPlacesItsCardInlineByTime() throws {
+        let card = sample("c1", created: 1_792_080_030)
+        let detail = try PrismJSON.decoder().decode(ThreadDetail.self, from: Data("""
+        {"thread":{"id":"t-c1","state":"waiting","unread":0,"pinned":false,"archived":false,"running":false,"lastSeq":2},
+         "messages":[{"id":"m1","role":"assistant","text":"Sam asked about the budget.","at":"2026-10-15T16:00:00.000Z"},
+                     {"id":"m2","role":"user","text":"Thanks","at":"2026-10-15T16:01:00.000Z"}],
+         "cards":[],"approvals":[],"activeTurnId":null,"itemCards":[]}
+        """.utf8))
+        let withCard = ThreadDetail(thread: detail.thread, messages: detail.messages, cards: [], approvals: [], activeTurnId: nil, itemCards: [card])
+        let rows = ThreadTimeline.history(withCard)
+        XCTAssertEqual(rows.map(\.id), ["m:0-m1", "ic:c1", "m:1-m2"])
+    }
+
+    func testABackgroundRefreshKeepsTheLoadedPhaseButAFirstLoadShowsLoading() async {
+        let fake = CardFake([sample("c1", created: 1)])
+        let cards = CardsModel(service: fake, nudges: nil, sink: ErrorSink(onSignedOut: {}))
+        let seen = PhaseLog()
+        await fake.setDuringList { await MainActor.run { seen.phases.append(cards.phase) } }
+        await cards.refresh()
+        XCTAssertEqual(seen.phases, [.loading], "a first load is loading")
+        await cards.refresh()
+        XCTAssertEqual(seen.phases, [.loading, .loaded], "a refresh after a load never flips back to loading")
+        XCTAssertEqual(cards.phase, .loaded)
+    }
+
+    func testAnItemCardEventForACardInTheThreadUpdatesItInPlace() throws {
+        let model = CardsModel(service: CardFake([]), nudges: nil, sink: ErrorSink(onSignedOut: {}))
+        let first = sample("c1", created: 1_792_080_030)
+        model.ingest([first])
+        model.ingest([first.with(state: .working, chosenOptionId: "a", section: .motion)])
+        XCTAssertEqual(model.card(for: "c1")?.state, .working)
+        XCTAssertEqual((model.decide + model.approve + model.inMotion).map(\.id), ["c1"], "one card, never two")
+        let detail = ThreadDetail(thread: try PrismJSON.decoder().decode(ThreadDetail.self, from: Data(#"{"thread":{"id":"t","state":"waiting","unread":0,"pinned":false,"archived":false,"running":false,"lastSeq":1},"messages":[],"cards":[],"approvals":[],"activeTurnId":null}"#.utf8)).thread, messages: [], cards: [], approvals: [], activeTurnId: nil, itemCards: [first])
+        XCTAssertEqual(ThreadTimeline.history(detail).map(\.id), ["ic:c1"])
+    }
 }
+
+@MainActor private final class PhaseLog { var phases: [LoadPhase] = [] }

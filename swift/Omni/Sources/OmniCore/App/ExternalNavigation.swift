@@ -3,22 +3,29 @@ import Foundation
 /// Holds a tap until authentication, privacy unlock and the destination view are ready.
 public struct ExternalNavigationQueue: Sendable {
     private var pending: Destination?
+    private var focusedCard: String?
     public init() {}
     @discardableResult public mutating func receive(_ url: URL) -> Bool {
         guard url.scheme?.lowercased() == "omni", url.user == nil, url.password == nil,
               url.port == nil, url.query == nil, url.fragment == nil,
-              let host = url.host, ["thread", "approval", "nudge"].contains(host),
+              let host = url.host, ["thread", "approval", "nudge", "card"].contains(host),
               url.pathComponents.count == 2 else { return false }
         let id = url.pathComponents[1]
         guard !id.isEmpty, id.utf8.count <= 256,
               id.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil else { return false }
         pending = host == "thread" ? .thread(id) : .needsYou
+        focusedCard = host == "card" ? id : nil
         return true
     }
     public mutating func take(signedIn: Bool, unlocked: Bool, navigationReady: Bool) -> Destination? {
         guard signedIn, unlocked, navigationReady else { return nil }
         defer { pending = nil }
         return pending
+    }
+    /// The card a notification tap named (after `take` delivered Needs you). Consumed once.
+    public mutating func takeFocusedCard() -> String? {
+        defer { focusedCard = nil }
+        return focusedCard
     }
 }
 

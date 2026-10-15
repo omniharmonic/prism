@@ -14,6 +14,8 @@ public enum TimelineItem: Identifiable, Equatable, Sendable {
     case card(id: String, card: RecordCard)
     /// Rendered from the ``ApprovalCenter`` by id, so every surface shows the same state.
     case approval(id: String)
+    /// An item card, rendered from CardsModel by id (Needs you shows the same object).
+    case itemCard(id: String)
     /// Why the last turn ended without finishing.
     case turnEnded(text: String)
 
@@ -25,6 +27,7 @@ public enum TimelineItem: Identifiable, Equatable, Sendable {
         case .tool(let id, _, _, _, _): return "t:\(id)"
         case .card(let id, _): return "c:\(id)"
         case .approval(let id): return "a:\(id)"
+        case .itemCard(let id): return "ic:\(id)"
         case .turnEnded: return "ended"
         }
     }
@@ -59,6 +62,9 @@ public enum ThreadTimeline {
         for approval in detail.approvals.sorted(by: { ($0.createdAt ?? .distantPast) < ($1.createdAt ?? .distantPast) }) {
             guard !excludingApprovals.contains(approval.id) else { continue }
             extras.append((approval.createdAt, .approval(id: approval.id)))
+        }
+        for card in detail.itemCards {
+            extras.append((card.createdAt, .itemCard(id: card.id)))
         }
         for extra in extras.sorted(by: { ($0.at ?? .distantFuture) < ($1.at ?? .distantFuture) }) {
             guard let at = extra.at, let index = rows.firstIndex(where: { ($0.at ?? .distantPast) > at }) else {
