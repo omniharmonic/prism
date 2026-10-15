@@ -45,6 +45,23 @@ export function emit(threadId: string, turnId: string | null, event: OmniEvent):
   return seq;
 }
 
+/** Listeners told when a turn in a thread has ended (done, error, cancelled, interrupted at boot). A listener
+ *  never affects the turn: its failure is logged. Registry rather than an import, so cards can hook in without a cycle. */
+type TurnEndedListener = (threadId: string, status: string) => void;
+const turnEndedListeners: TurnEndedListener[] = [];
+export function onTurnEnded(fn: TurnEndedListener): void {
+  turnEndedListeners.push(fn);
+}
+export function notifyTurnEnded(threadId: string, status: string): void {
+  for (const fn of turnEndedListeners) {
+    try {
+      fn(threadId, status);
+    } catch (e) {
+      console.error("omni: turn-ended listener failed", threadId, e);
+    }
+  }
+}
+
 export type StartTurn = { turn: TurnRow } | { active: TurnRow } | { replay: TurnRow };
 
 /** Claim + start a turn in the background. */
@@ -235,7 +252,8 @@ async function run(threadId: string, turnId: string, message: string, entry: Liv
     publishNotice({ type: "approval", id: a.id, op: "cancelled", threadId });
   }
   const cancelled = errorCode === "cancelled";
-  endTurn(turnId, cancelled ? "cancelled" : errorCode ? "error" : "done", errorCode);
+  const turnStatus = cancelled ? "cancelled" : errorCode ? "error" : "done";
+  endTurn(turnId, turnStatus, errorCode);
   const pendingHere = listApprovals(omniConfig.ownerEmail(), "pending").some((a) => a.threadId === threadId);
   const state: ThreadState = pendingHere ? "needs-you" : cancelled ? "waiting" : errorCode ? "needs-you" : "done";
   setThreadState(threadId, state);
@@ -243,6 +261,7 @@ async function run(threadId: string, turnId: string, message: string, entry: Liv
   if (!cancelled) bumpUnread(threadId);
   emit(threadId, turnId, { t: "status", state, ...(errorCode ? { reason: errorCode } : {}) });
   publishNotice({ type: "thread", id: threadId, op: state });
+  notifyTurnEnded(threadId, turnStatus);
   // A stream can survive backgrounding, and one device cannot speak for the others.
   // Send completion according to each device’s preview preference; the OS handles presentation.
   if (!cancelled && getThread(threadId)) pushOmni("OMNI_THREAD", threadId, !errorCode ? completedReply : undefined);

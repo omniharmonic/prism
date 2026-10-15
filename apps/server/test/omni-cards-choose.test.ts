@@ -150,7 +150,10 @@ test("something else on a working card is refused and changes nothing", async ()
   const again = await instruct(card.id, "Do another thing.", "instruct-second-1");
   assert.equal(again.status, 409);
   assert.equal((await again.json() as { error: string }).error, "turn_running");
-  assert.equal(getCard(config.ownerEmail, card.id)!.state, "working");
+  // The first turn may already have ended (the turn-ended hook returns the card to Decide); the refused one changed nothing.
+  const after = getCard(config.ownerEmail, card.id)!;
+  assert.ok(after.state === "working" || (after.state === "proposed" && after.outcomes.at(-1)!.action === "turn-ended"));
+  assert.equal(after.outcomes.filter((o) => o.action === "instruct").length, 1);
   await turnSettled(first.turnId!);
   assert.equal(said.length, 1);
 });

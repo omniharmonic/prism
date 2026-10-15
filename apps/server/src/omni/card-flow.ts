@@ -12,10 +12,10 @@ import { omniConfig } from "./config";
 import { approvalView, closeApproval, getApproval } from "./approvals";
 import { proposeApproval } from "./propose";
 import { recordProactiveOwnerTurn } from "./proactive";
-import { emit, startTurn, withNotes } from "./turns";
+import { emit, onTurnEnded, startTurn, withNotes } from "./turns";
 import { publishNotice, pushOmni } from "./bus";
 import { ensureSourceSession } from "./source-session";
-import { ACTED_STATES, REOPENABLE_STATES, CardError, cardBySource, cardSourceKeys, cardView, compareCardViews, finishCardAction, getCard, linkApproval, listOpenCards, parseCardInput, priorCardAction, releaseCardAction, reserveCardAction, transitionCard, upsertCard, type CardOption, type Card, type CardFact, type CardInput, type CardKind, type CardSection } from "./cards";
+import { ACTED_STATES, REOPENABLE_STATES, CardError, cardBySource, cardForApproval, cardsByThread, cardSourceKeys, cardView, compareCardViews, finishCardAction, getCard, linkApproval, listOpenCards, parseCardInput, priorCardAction, releaseCardAction, reserveCardAction, transitionCard, upsertCard, type CardOption, type Card, type CardFact, type CardInput, type CardKind, type CardSection, type CardState } from "./cards";
 
 const NOTE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 export interface CardPublish extends CardInput { evidence: Array<{ sourceId: string; revision: string }> }
@@ -112,7 +112,11 @@ export async function publishCard(owner: string, p: CardPublish, now: number = D
     if (reopens && u.changed && nudge) db.prepare("UPDATE omni_nudges SET dismissed=0, updated_at=? WHERE owner_email=? AND id=?").run(now, owner, nudge.id);
     return u;
   })();
-  if (r.changed) announceCard(r.card, r.created ? "created" : reopens ? "reopened" : "updated", { push: r.created || reopens });
+  if (r.changed) {
+    // A reopened card is a new question: a draft written against the old content must not stay sendable.
+    if (reopens) cancelPendingDrafts(owner, existing!.approvalIds, { via: "superseded", device: null }, `${p.sourceRevision}`, "superseded");
+    announceCard(r.card, r.created ? "created" : reopens ? "reopened" : "updated", { push: r.created || reopens });
+  }
   return { ...r, droppedFacts: dropped };
 }
 
@@ -270,13 +274,13 @@ export function instructPrompt(card: Card, text: string): string {
  *  Cancelled as the owner (audited like his own cancel) through the same close the decision route uses.
  *  The closes are pure database writes and all run first; the audit/notice/event side effects follow
  *  per approval and can never undo or skip a close (a failure is logged and the loop goes on). */
-function cancelPendingDrafts(owner: string, ids: string[], origin: { via: string; device: string | null }, key: string): void {
+function cancelPendingDrafts(owner: string, ids: string[], origin: { via: string; device: string | null }, key: string, prefix = "instruct"): void {
   const closed: Array<NonNullable<ReturnType<typeof getApproval>>> = [];
   for (const id of ids) {
     const a = getApproval(owner, id);
     // Not pending any more (decided, expired or revised since the card was last read): nothing left to cancel.
     if (!a || a.status !== "pending") continue;
-    if (closeApproval(id, "cancelled", origin.via, origin.device, `instruct-${sha256(`${id}:${key}`).slice(0, 40)}`)) closed.push(a);
+    if (closeApproval(id, "cancelled", origin.via, origin.device, `${prefix}-${sha256(`${id}:${key}`).slice(0, 40)}`)) closed.push(a);
   }
   for (const a of closed) {
     try {
@@ -305,3 +309,64 @@ export function instructCard(owner: string, cardId: string, text: string, key: s
     return answer;
   });
 }
+
+// ── the approval gate moves the card ───────────────────────────────────────
+
+/** A draft the card's own turn proposed (omni_propose in its thread): the card now waits for Send. */
+export function cardAfterProposal(owner: string, threadId: string | null, approvalId: string): Card | null {
+  if (!threadId) return null;
+  const card = cardsByThread(owner, threadId).find((c) => c.state === "working" || c.state === "proposed");
+  if (!card) return null;
+  const next = transitionCard(owner, card.id, ["working", "proposed"], "draft-ready", { action: "draft", approvalId }, { approvalId });
+  if (next) announceCard(next, "draft-ready", { push: true });
+  return next;
+}
+
+/** The owner's decision on a card's draft. Only the card's LATEST draft moves it; an older one that was
+ *  sent is recorded (the message did go out) without changing the state. A decision arriving while the
+ *  card is `working` (an older draft decided after an instruct): sent finishes the card, the rest leaves it. */
+export function cardAfterDecision(owner: string, approvalId: string, outcome: "sent" | "failed" | "unknown" | "cancelled" | "revised"): Card | null {
+  const card = cardForApproval(owner, approvalId);
+  if (!card) return null;
+  const log = { action: `approval-${outcome}`, approvalId };
+  if (card.approvalIds[card.approvalIds.length - 1] !== approvalId) {
+    if (outcome !== "sent") return null;
+    const next = transitionCard(owner, card.id, [card.state], card.state, log);
+    if (next) announceCard(next, "approval-sent", { push: false });
+    return next;
+  }
+  let from: CardState[];
+  let to: CardState;
+  if (card.state === "draft-ready") {
+    from = ["draft-ready"];
+    to = outcome === "sent" ? "sent" : outcome === "cancelled" ? "proposed" : outcome === "revised" ? "working" : "draft-ready";
+  } else if (card.state === "working") {
+    from = ["working"];
+    to = outcome === "sent" ? "sent" : "working";
+    if (outcome === "revised") return null;
+  } else return null;
+  const next = transitionCard(owner, card.id, from, to, log, outcome === "cancelled" && to === "proposed" ? { chosenOptionId: null } : {});
+  if (next) announceCard(next, to === card.state ? `approval-${outcome}` : to, { push: false });
+  return next;
+}
+
+/** Edit made a new approval for the same draft: the card follows the new one. */
+export function relinkApproval(owner: string, oldApprovalId: string, newApprovalId: string): Card | null {
+  const card = cardForApproval(owner, oldApprovalId);
+  if (!card) return null;
+  const next = linkApproval(owner, card.id, newApprovalId);
+  if (next) announceCard(next, "draft-edited", { push: false });
+  return next;
+}
+
+/** A turn in a card's thread ended and the card is still `working`: no draft was proposed and no new options
+ *  were posted, so the question is back with him (Decide). A drafted card is already `draft-ready` and is left alone. */
+export function cardAfterTurnEnded(threadId: string, status: string): void {
+  const owner = omniConfig.ownerEmail();
+  for (const c of cardsByThread(owner, threadId)) {
+    if (c.state !== "working") continue;
+    const next = transitionCard(owner, c.id, ["working"], "proposed", { action: "turn-ended", detail: status }, { chosenOptionId: null });
+    if (next) announceCard(next, "turn-ended", { push: false });
+  }
+}
+onTurnEnded(cardAfterTurnEnded);

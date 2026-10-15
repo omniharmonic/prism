@@ -47,6 +47,7 @@ import {
   listThreads,
   newId,
   sweepRunningTurns,
+  runningThreadIds,
   runningRunIds,
   omniAudit,
   threadCards,
@@ -54,7 +55,7 @@ import {
   type ThreadRow,
   type ThreadState,
 } from "../omni/store";
-import { cancelTurn, emit, liveTurnCount, startTurn, stopOrphanedRuns, withNotes } from "../omni/turns";
+import { cancelTurn, emit, liveTurnCount, notifyTurnEnded, startTurn, stopOrphanedRuns, withNotes } from "../omni/turns";
 import { config } from "../config";
 import { bareToolName } from "../omni/stream";
 import { publishNotice, pushOmni, subscribeNotices, subscribeThread, type ThreadMessage } from "../omni/bus";
@@ -88,7 +89,7 @@ import { priorNudgeSources, resolveNudgeSource, nudgeWeeklyAudit, latestNudgeAud
 import { startNudgeDelivery } from "../omni/nudge-delivery";
 import { resolveNote, readNoteContent } from "../omni/records";
 import { CardError, cardView, cardsByThread, getCard } from "../omni/cards";
-import { parseCardPublish, publishCard, listCardViews, snoozeCard, dismissCard, chooseCardOption, instructCard } from "../omni/card-flow";
+import { parseCardPublish, publishCard, listCardViews, snoozeCard, dismissCard, chooseCardOption, instructCard, cardAfterProposal, cardAfterDecision, relinkApproval } from "../omni/card-flow";
 import { readableNudgeText } from "../omni/titles";
 import { proactiveSourceHealth } from "../omni/source-health";
 import { syncAttentionPreferences, AttentionPreferenceError } from "../omni/attention-preferences";
@@ -107,7 +108,9 @@ export function mountOmni(app: Hono): void {
   // No in-memory stream survives a restart: a turn left `running` is interrupted — and the
   // Hermes run it was following is asked to stop (nobody is listening to it any more).
   const orphans = omniConfig.enabled() ? runningRunIds() : [];
+  const interrupted = omniConfig.enabled() ? runningThreadIds() : [];
   sweepRunningTurns();
+  for (const t of interrupted) notifyTurnEnded(t, "interrupted");
   if (orphans.length) stopOrphanedRuns(orphans);
   app.route("/api/omni", omniApi);
   if (omniConfig.enabled()) startNudgeDelivery();
@@ -701,6 +704,7 @@ omniApi.put("/approvals/:id", async (c) => {
   }
   const next = createApproval({ owner, threadId: a.threadId, kind: v.kind, payload: v.payload, summary: a.summary, ttlMs: omniConfig.approvalTtlMs(), revises: a.id });
   if (!closeApproval(a.id, "revised", o.via, o.device, null, next.id)) return c.json({ error: "already_decided" }, 409);
+  relinkApproval(owner, a.id, next.id);
   omniAudit({ actor: owner, via: o.via, action: "approval.edit", approvalId: a.id, threadId: a.threadId, digest: next.digest, status: "ok" });
   publishNotice({ type: "approval", id: next.id, op: "pending", threadId: a.threadId ?? undefined });
   return c.json({ approval: approvalView(next), replaced: a.id }, 201);
@@ -754,6 +758,7 @@ async function decide(c: Context): Promise<Response> {
       const r = startTurn(a.threadId, `Revise the ${a.kind} draft (approval ${a.id}) as follows. Propose the new draft with omni_propose; do not send anything.\n\n${feedback}`, `revise-${key}`.slice(0, 200));
       turnId = "turn" in r ? r.turn.id : "active" in r ? r.active.id : r.replay.id;
     }
+    if (a.kind !== "command") cardAfterDecision(owner, id, decision === "revise" && turnId ? "revised" : "cancelled");
     return c.json({ approval: approvalView(getApproval(owner, id)!), turnId });
   }
   // send: pre-check the executor so a disabled one costs nothing and keeps the approval pending.
@@ -785,6 +790,7 @@ async function decide(c: Context): Promise<Response> {
     return c.json({ error: out.detail.error ?? "executor_disabled", executor: exec.name }, 503);
   }
   finishApproval(id, out.status, out.detail);
+  cardAfterDecision(owner, id, out.status);
   omniAudit({ actor: owner, via: o.via, action: "approval.send", approvalId: id, threadId: a.threadId, digest, status: out.status, error: out.status === "sent" ? null : String(out.detail.error ?? "") || null });
   const done = getApproval(owner, id)!;
   publishNotice({ type: "approval", id, op: out.status, threadId: a.threadId ?? undefined });
@@ -988,7 +994,10 @@ omniApi.post("/hooks/propose", async (c) => {
     throw e;
   }
   const ttl = typeof b.expiresInSec === "number" && b.expiresInSec >= 60 && b.expiresInSec <= 7 * 86_400 ? b.expiresInSec * 1000 : omniConfig.approvalTtlMs();
-  const a = proposeApproval({ owner, threadId, kind: v.kind, payload: v.payload, summary: typeof b.summary === "string" ? b.summary : null, ttlMs: ttl, actor: "hermes", via: "service-token", push: true });
+  const a = proposeApproval({ owner, threadId, kind: v.kind, payload: v.payload, summary: typeof b.summary === "string" ? b.summary : null, ttlMs: ttl, actor: "hermes", via: "service-token", push: false });
+  // A draft for a card is announced as that card ("Draft ready to send"); any other draft as itself.
+  const carded = a.kind === "command" ? null : cardAfterProposal(owner, threadId, a.id);
+  if (!carded) pushOmni("OMNI_APPROVAL", a.id);
   return c.json({ id: a.id, digest: a.digest, status: a.status, expiresAt: new Date(a.expiresAt).toISOString() }, 201);
 });
 

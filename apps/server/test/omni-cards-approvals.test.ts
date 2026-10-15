@@ -1,0 +1,155 @@
+import { test, beforeEach, after } from "node:test";
+import assert from "node:assert/strict";
+process.env.OMNI_ENABLED = "true"; process.env.OMNI_SERVICE_TOKEN = "test-service-secret-0123456789";
+process.env.OMNI_HERMES_URL = "http://127.0.0.1:8642"; process.env.OMNI_HERMES_KEY = "test-hermes-key-0123456789";
+process.env.OMNI_PROTON_SEND = process.execPath; // "configured": the executor itself is the test's fake
+import { omniApi, setOmniExecutorForTests } from "../src/routes/omni";
+import { config } from "../src/config";
+import { resetDb, makeSession, sessionCookie } from "./helpers";
+import { createHermesStub } from "../scripts/lib/hermes-stub";
+import { setHermesFetchForTests } from "../src/omni/hermes-client";
+import { setOmniRecordSourcesForTests } from "../src/omni/records";
+import { resetOmniStoreForTests } from "../src/omni/store";
+import { resetNudgesForTests } from "../src/omni/nudges";
+import { resetCardsForTests, getCard, transitionCard } from "../src/omni/cards";
+import { proposeApproval } from "../src/omni/propose";
+import { setOmniPusherForTests } from "../src/omni/bus";
+import { getApproval, type ExecOutcome } from "../src/omni/approvals";
+import { turnSettled, notifyTurnEnded } from "../src/omni/turns";
+import { cardPublish } from "./omni-card-samples";
+
+const owner = config.ownerEmail;
+const revision = "2026-10-15T10:00:00Z";
+const J = { "content-type": "application/json" };
+const hook = { ...J, authorization: `Bearer ${process.env.OMNI_SERVICE_TOKEN}` };
+const ownerH = () => ({ ...J, cookie: sessionCookie(makeSession(config.ownerEmail)) });
+let executed = 0;
+let outcome: ExecOutcome = { status: "sent", detail: { executor: "test" } };
+let pushes: string[] = [];
+beforeEach(() => {
+  resetDb(); resetOmniStoreForTests(); resetNudgesForTests(); resetCardsForTests(); executed = 0; pushes = [];
+  outcome = { status: "sent", detail: { executor: "test" } };
+  setHermesFetchForTests(createHermesStub({ key: process.env.OMNI_HERMES_KEY!, script: () => ({ acts: [{ say: "On it." }] }) }).fetch);
+  setOmniExecutorForTests(async () => { executed += 1; return outcome; });
+  setOmniPusherForTests(async (_o, kind, id) => { pushes.push(`${kind}:${id}`); });
+  setOmniRecordSourcesForTests({ resolver: async ({ id }) => ({ id: id!, path: `mail/${id}`, tags: ["email"], updatedAt: revision }) });
+});
+after(() => { setHermesFetchForTests(null); setOmniExecutorForTests(null); setOmniPusherForTests(null); setOmniRecordSourcesForTests({ resolver: null }); });
+
+type Answer = { card: { state: string }; approval: { id: string; digest: string } | null; turnId: string | null };
+const publish = async (over: Record<string, unknown> = {}) =>
+  ((await (await omniApi.request("/hooks/cards", { method: "POST", headers: hook, body: JSON.stringify(cardPublish(over)) })).json()) as { card: { id: string; threadId: string } }).card;
+const choose = async (id: string, optionId: string, key: string) =>
+  (await (await omniApi.request(`/cards/${id}/choose`, { method: "POST", headers: { ...ownerH(), "idempotency-key": key }, body: JSON.stringify({ optionId }) })).json()) as Answer;
+const decide = (id: string, digest: string, decision: string, key: string, extra: Record<string, unknown> = {}) =>
+  omniApi.request(`/approvals/${id}/decision`, { method: "POST", headers: { ...ownerH(), "idempotency-key": key }, body: JSON.stringify({ decision, digest, ...extra }) });
+const propose = async (body: Record<string, unknown>) =>
+  (await (await omniApi.request("/hooks/propose", { method: "POST", headers: hook, body: JSON.stringify(body) })).json()) as { id: string; digest: string };
+
+test("Send on a card's draft marks the card sent and takes it out of Needs you", async () => {
+  const card = await publish();
+  const r = await choose(card.id, "a", "choose-key-0001");
+  assert.equal((await decide(r.approval!.id, r.approval!.digest, "send", "send-key-00001")).status, 200);
+  assert.equal(executed, 1);
+  assert.equal(getCard(owner, card.id)!.state, "sent");
+  const list = await (await omniApi.request("/cards", { headers: ownerH() })).json() as { cards: unknown[] };
+  assert.equal(list.cards.length, 0);
+});
+
+test("Cancel puts the card back in Decide; a failed send keeps it in Approve", async () => {
+  const card = await publish();
+  const r = await choose(card.id, "a", "choose-key-0001");
+  assert.equal((await decide(r.approval!.id, r.approval!.digest, "cancel", "cancel-key-0001")).status, 200);
+  assert.equal(getCard(owner, card.id)!.state, "proposed");
+  assert.equal(getCard(owner, card.id)!.chosenOptionId, null);
+  const other = await publish({ sourceKey: "mail2", itemRefs: ["mail2"] });
+  const r2 = await choose(other.id, "a", "choose-key-0002");
+  outcome = { status: "failed", detail: { executor: "test", error: "mailbox_full" } };
+  assert.equal((await decide(r2.approval!.id, r2.approval!.digest, "send", "send-key-00002")).status, 422);
+  assert.equal(getCard(owner, other.id)!.state, "draft-ready");
+  assert.ok(getCard(owner, other.id)!.outcomes.some((o) => o.action === "approval-failed"));
+});
+
+test("a draft the card's turn proposes makes it draft-ready; Edit follows the new approval; commands never touch cards", async () => {
+  const card = await publish();
+  const started = await choose(card.id, "b", "plan-key-0001");
+  await turnSettled(started.turnId!);
+  // The plan turn ended without a draft (the turn-ended hook put the card back in Decide); put it back to working as a running turn would.
+  transitionCard(owner, card.id, ["proposed"], "working", { action: "test-working" });
+  await propose({ kind: "command", payload: { tool: "terminal", command: "curl https://example.org", reason: "check the link", rule: "network" }, threadId: card.threadId });
+  assert.equal(getCard(owner, card.id)!.state, "working");
+  const p = await propose({ kind: "email-reply", payload: { noteId: "mail1", expectTo: ["sam@example.com"], body: "Hi Sam,\n\nMonday works better for me.\n\nBenjamin" }, threadId: card.threadId, summary: "Ask Sam for Monday" });
+  assert.equal(getCard(owner, card.id)!.state, "draft-ready");
+  assert.deepEqual(getCard(owner, card.id)!.approvalIds, [p.id]);
+  assert.ok(pushes.includes(`OMNI_CARD:${card.id}`));
+  assert.equal(pushes.includes(`OMNI_APPROVAL:${p.id}`), false, "one notification, the card's");
+  const edit = await omniApi.request(`/approvals/${p.id}`, { method: "PUT", headers: ownerH(), body: JSON.stringify({ digest: p.digest, payload: { noteId: "mail1", expectTo: ["sam@example.com"], body: "Hi Sam,\n\nMonday works better. Thanks!\n\nBenjamin" } }) });
+  assert.equal(edit.status, 201);
+  const edited = (await edit.json() as { approval: { id: string; digest: string } }).approval;
+  assert.deepEqual(getCard(owner, card.id)!.approvalIds, [p.id, edited.id]);
+  assert.equal((await decide(edited.id, edited.digest, "send", "send-key-00003")).status, 200);
+  assert.equal(getCard(owner, card.id)!.state, "sent");
+  assert.equal(getApproval(owner, p.id)!.status, "revised");
+});
+
+const sentPending = (cardId: string, over: Record<string, unknown> = {}) => {
+  const card = getCard(owner, cardId)!;
+  return proposeApproval({ owner, threadId: card.threadId, kind: "email-reply", payload: { noteId: "mail1", expectTo: ["sam@example.com"], body: "Hi Sam,\n\nOld draft.\n\nBenjamin", ...over }, summary: "old", ttlMs: 3600_000, actor: owner, via: "test", push: false });
+};
+
+test("R7b: sending an older pending draft while the card is working marks it sent; cancelling leaves it working", async () => {
+  const card = await publish();
+  const old = sentPending(card.id);
+  transitionCard(owner, card.id, ["proposed"], "working", { action: "instruct" }, { approvalId: old.id });
+  assert.equal((await decide(old.id, old.digest, "send", "send-key-00004")).status, 200);
+  assert.equal(getCard(owner, card.id)!.state, "sent");
+  const c2 = await publish({ sourceKey: "mail2", itemRefs: ["mail2"] });
+  const old2 = sentPending(c2.id);
+  transitionCard(owner, c2.id, ["proposed"], "working", { action: "instruct" }, { approvalId: old2.id });
+  assert.equal((await decide(old2.id, old2.digest, "cancel", "cancel-key-0002")).status, 200);
+  assert.equal(getCard(owner, c2.id)!.state, "working");
+});
+
+test("R7b: a decision on a draft that is not the card's latest never moves it, but a send is recorded", async () => {
+  const card = await publish();
+  const old = sentPending(card.id);
+  transitionCard(owner, card.id, ["proposed"], "working", { action: "instruct" }, { approvalId: old.id });
+  const newer = sentPending(card.id, { body: "Hi Sam,\n\nNewer.\n\nBenjamin" });
+  transitionCard(owner, card.id, ["working"], "draft-ready", { action: "draft" }, { approvalId: newer.id });
+  assert.equal((await decide(old.id, old.digest, "send", "send-key-00005")).status, 200);
+  const after = getCard(owner, card.id)!;
+  assert.equal(after.state, "draft-ready");
+  assert.ok(after.outcomes.some((o) => o.action === "approval-sent" && o.approvalId === old.id));
+  assert.equal((await decide(newer.id, newer.digest, "cancel", "cancel-key-0003")).status, 200);
+  assert.equal(getCard(owner, card.id)!.state, "proposed");
+});
+
+test("reopening a card supersedes its still-pending drafts", async () => {
+  const card = await publish();
+  const old = sentPending(card.id);
+  transitionCard(owner, card.id, ["proposed"], "waiting", { action: "waiting" }, { approvalId: old.id });
+  setOmniRecordSourcesForTests({ resolver: async ({ id }) => ({ id: id!, path: `mail/${id}`, tags: ["email"], updatedAt: "2026-10-15T11:00:00Z" }) });
+  const r2 = await omniApi.request("/hooks/cards", { method: "POST", headers: hook, body: JSON.stringify(cardPublish({ sourceRevision: "2026-10-15T11:00:00Z", evidence: [{ sourceId: "mail1", revision: "2026-10-15T11:00:00Z" }] })) });
+  assert.ok(r2.status < 300);
+  assert.equal(getCard(owner, card.id)!.state, "proposed");
+  assert.equal(getApproval(owner, old.id)!.status, "cancelled");
+  assert.equal((await decide(old.id, old.digest, "send", "send-key-00006")).status, 409);
+  assert.equal(executed, 0);
+});
+
+test("turn-ended: a plan turn that proposes nothing puts the card back in Decide; a drafted card is left alone", async () => {
+  const card = await publish();
+  const started = await choose(card.id, "b", "plan-key-0002");
+  assert.equal(getCard(owner, card.id)!.state, "working");
+  await turnSettled(started.turnId!);
+  const back = getCard(owner, card.id)!;
+  assert.equal(back.state, "proposed");
+  assert.equal(back.outcomes.at(-1)!.action, "turn-ended");
+  assert.equal(back.outcomes.at(-1)!.detail, "done");
+  const other = await publish({ sourceKey: "mail2", itemRefs: ["mail2"] });
+  transitionCard(owner, other.id, ["proposed"], "working", { action: "choose" });
+  await propose({ kind: "email-reply", payload: { noteId: "mail2", expectTo: ["sam@example.com"], body: "Hi Sam,\n\nHello.\n\nBenjamin" }, threadId: other.threadId });
+  assert.equal(getCard(owner, other.id)!.state, "draft-ready");
+  notifyTurnEnded(other.threadId, "error");
+  assert.equal(getCard(owner, other.id)!.state, "draft-ready");
+});
