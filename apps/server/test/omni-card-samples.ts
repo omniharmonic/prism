@@ -9,7 +9,7 @@ export const cardInput = (over: Record<string, unknown> = {}): Record<string, un
   urgency: "this-week",
   options: [
     { id: "a", label: "Say yes, Thursday afternoon", plan: "Reply confirming Thursday afternoon", produces: ["email-reply"],
-      draft: { kind: "email-reply", payload: { noteId: "mail1", expectTo: ["sam@example.com"], body: "Hi Sam,\n\nThursday afternoon works. I'll send comments by 4.\n\nBenjamin" } } },
+      draft: { kind: "email-reply", payload: { noteId: over.sourceKey ?? "mail1", expectTo: ["sam@example.com"], body: "Hi Sam,\n\nThursday afternoon works. I'll send comments by 4.\n\nBenjamin" } } },
     { id: "b", label: "Ask to push to Monday", plan: "Reply proposing Monday instead", produces: ["email-reply"] },
   ],
   recommended: "a",

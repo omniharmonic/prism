@@ -79,7 +79,7 @@ function line(v: unknown, field: string, max: number, required = true): string |
   return t;
 }
 
-function parseOption(raw: unknown, i: number, seen: Set<string>): CardOption {
+function parseOption(raw: unknown, i: number, seen: Set<string>, itemRefs: string[] = []): CardOption {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new CardError("invalid_options", 400, `options[${i}]: an object`);
   const o = raw as Record<string, unknown>;
   if (typeof o.id !== "string" || !OPTION_ID.test(o.id) || seen.has(o.id)) throw new CardError("invalid_options", 400, `options[${i}].id: unique, [a-z0-9-], at most 16`);
@@ -102,6 +102,9 @@ function parseOption(raw: unknown, i: number, seen: Set<string>): CardOption {
       if (e instanceof ApprovalInputError) throw new CardError("invalid_draft", 400, `options[${i}].draft: ${e.message}`);
       throw e;
     }
+    if (draft.kind === "email-reply" && !itemRefs.includes(String(draft.payload.noteId))) {
+      throw new CardError("invalid_options", 400, `options[${i}].draft.payload.noteId: an email-reply draft must reply to one of itemRefs`);
+    }
     if (!produces.includes(draft.kind)) throw new CardError("invalid_draft", 400, `options[${i}]: produces must list ${draft.kind}`);
   }
   return { id: o.id, label, plan, produces, draft };
@@ -122,17 +125,19 @@ export function parseCardInput(b: Record<string, unknown>): CardInput {
   });
   const ask = line(b.ask, "ask", 300, false);
   if (!has(CARD_URGENCIES, b.urgency)) throw new CardError("invalid_card", 400, `urgency: ${CARD_URGENCIES.join("|")}`);
-  if (!Array.isArray(b.options) || b.options.length < 2 || b.options.length > 4) throw new CardError("invalid_options", 400, "options: 2 to 4");
-  const seen = new Set<string>();
-  const options = b.options.map((o, i) => parseOption(o, i, seen));
-  const recommended = b.recommended === undefined || b.recommended === null ? null : String(b.recommended);
-  if (recommended !== null && !seen.has(recommended)) throw new CardError("invalid_options", 400, "recommended: one of the option ids");
-  const rec = options.find((o) => o.id === recommended);
-  if (rec && rec.produces.some((p) => SENDABLE_KINDS.has(p)) && !rec.draft) throw new CardError("invalid_options", 400, "recommended: an option that sends needs its draft");
   if (!Array.isArray(b.itemRefs) || b.itemRefs.length < 1 || b.itemRefs.length > 10 || b.itemRefs.some((x) => typeof x !== "string" || !NOTE_ID.test(x)) || !b.itemRefs.includes(b.sourceKey)) {
     throw new CardError("invalid_card", 400, "itemRefs: 1–10 note ids including sourceKey");
   }
-  return { sourceKey: b.sourceKey, sourceRevision, kind: b.kind, headline, context, ask, urgency: b.urgency, options, recommended, itemRefs: [...new Set(b.itemRefs as string[])] };
+  const itemRefs = [...new Set(b.itemRefs as string[])];
+  if (!Array.isArray(b.options) || b.options.length < 2 || b.options.length > 4) throw new CardError("invalid_options", 400, "options: 2 to 4");
+  const seen = new Set<string>();
+  const options = b.options.map((o, i) => parseOption(o, i, seen, itemRefs));
+  if (b.recommended !== undefined && b.recommended !== null && typeof b.recommended !== "string") throw new CardError("invalid_options", 400, "recommended: an option id string or null");
+  const recommended = b.recommended === undefined || b.recommended === null ? null : b.recommended;
+  if (recommended !== null && !seen.has(recommended)) throw new CardError("invalid_options", 400, "recommended: one of the option ids");
+  const rec = options.find((o) => o.id === recommended);
+  if (rec && rec.produces.some((p) => SENDABLE_KINDS.has(p)) && !rec.draft) throw new CardError("invalid_options", 400, "recommended: an option that sends needs its draft");
+  return { sourceKey: b.sourceKey, sourceRevision, kind: b.kind, headline, context, ask, urgency: b.urgency, options, recommended, itemRefs };
 }
 
 type Raw = {
@@ -213,10 +218,10 @@ export function transitionCard(
 export function replaceCardContent(owner: string, id: string, input: CardInput, from: CardState[], now: number = Date.now()): Card | null {
   return db.transaction((): Card | null => {
     const c = getCard(owner, id);
-    if (!c || !from.includes(c.state)) return null;
+    if (!c || !from.includes(c.state) || input.sourceKey !== c.sourceKey) return null;
     const outcomes = [...c.outcomes, { at: now, action: "agent-update" }].slice(-50);
-    db.prepare(`UPDATE omni_item_cards SET state='proposed', kind=?, headline=?, context=?, ask=?, urgency=?, options=?, recommended=?, digest=?, chosen_option_id=NULL, snoozed_until=NULL, outcomes=?, updated_at=? WHERE id=?`).run(
-      input.kind, input.headline, JSON.stringify(input.context), input.ask, input.urgency, JSON.stringify(input.options), input.recommended, contentDigest(input), JSON.stringify(outcomes), now, id);
+    db.prepare(`UPDATE omni_item_cards SET state='proposed', source_revision=?, item_refs=?, kind=?, headline=?, context=?, ask=?, urgency=?, options=?, recommended=?, digest=?, chosen_option_id=NULL, snoozed_until=NULL, outcomes=?, updated_at=? WHERE id=?`).run(
+      input.sourceRevision, JSON.stringify(input.itemRefs), input.kind, input.headline, JSON.stringify(input.context), input.ask, input.urgency, JSON.stringify(input.options), input.recommended, contentDigest(input), JSON.stringify(outcomes), now, id);
     return getCard(owner, id);
   })();
 }

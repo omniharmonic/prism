@@ -6,6 +6,7 @@ import { cardInput } from "./omni-card-samples";
 import {
   parseCardInput, upsertCard, transitionCard, getCard, cardSection, listOpenCards, cardView, linkApproval,
   cardForApproval, replaceCardContent, CardError, resetCardsForTests, compareCardViews,
+  cardsByThread, cardBySource, cardSourceKeys, ACTED_STATES, priorCardAction, reserveCardAction, finishCardAction, releaseCardAction,
 } from "../src/omni/cards";
 
 const owner = config.ownerEmail;
@@ -120,4 +121,74 @@ test("cardView: ISO times, section, no owner, never transitional", () => {
   assert.equal("owner" in v, false);
   assert.equal("digest" in v, false);
   assert.deepEqual((v.outcomes as Array<{ at: string }>)[0]!.at, "2026-10-15T16:00:00.000Z");
+});
+
+test("replaceCardContent: same source only; revision and refs are stored", () => {
+  const { card } = upsertCard(owner, parseCardInput(cardInput()), "t1", 1_000);
+  assert.equal(replaceCardContent(owner, card.id, parseCardInput(cardInput({ sourceKey: "other", itemRefs: ["other"] })), ["proposed"], 2_000), null);
+  const next = replaceCardContent(owner, card.id, parseCardInput(cardInput({ sourceRevision: "rev2", itemRefs: ["mail1", "mail9"], headline: "Sam sent a new budget" })), ["proposed"], 3_000)!;
+  assert.equal(next.sourceRevision, "rev2");
+  assert.deepEqual(next.itemRefs, ["mail1", "mail9"]);
+  assert.equal(getCard(owner, card.id)!.state, "proposed");
+});
+
+test("idempotent card actions: reserve once, replay the finished result, scoped per card", () => {
+  const a = upsertCard(owner, parseCardInput(cardInput({ sourceKey: "m1", itemRefs: ["m1"] })), "t1", 1_000).card;
+  const b = upsertCard(owner, parseCardInput(cardInput({ sourceKey: "m2", itemRefs: ["m2"] })), "t2", 1_000).card;
+  assert.equal(priorCardAction(owner, a.id, "k"), null);
+  assert.equal(reserveCardAction(owner, a.id, "k", "choose"), true);
+  assert.equal(reserveCardAction(owner, a.id, "k", "choose"), false);
+  assert.deepEqual(priorCardAction(owner, a.id, "k"), { action: "choose", status: null, response: null });
+  assert.equal(reserveCardAction(owner, b.id, "k", "choose"), true, "the same key on another card is independent");
+  finishCardAction(owner, a.id, "k", 200, { ok: true });
+  assert.deepEqual(priorCardAction(owner, a.id, "k"), { action: "choose", status: 200, response: { ok: true } });
+  releaseCardAction(owner, a.id, "k");
+  assert.equal(priorCardAction(owner, a.id, "k")!.status, 200, "release after finish is a no-op");
+  releaseCardAction(owner, b.id, "k");
+  assert.equal(priorCardAction(owner, b.id, "k"), null, "release of an unfinished reservation frees the key");
+  assert.equal(reserveCardAction(owner, b.id, "k", "choose"), true);
+});
+
+test("lookups: by thread, by source, source keys", () => {
+  const a = upsertCard(owner, parseCardInput(cardInput({ sourceKey: "m1", itemRefs: ["m1"] })), "t1", 1_000).card;
+  upsertCard(owner, parseCardInput(cardInput({ sourceKey: "m2", itemRefs: ["m2"] })), "t1", 2_000);
+  upsertCard(owner, parseCardInput(cardInput({ sourceKey: "m3", itemRefs: ["m3"] })), "t2", 3_000);
+  assert.equal(cardsByThread(owner, "t1").length, 2);
+  assert.equal(cardBySource(owner, "m1")!.id, a.id);
+  assert.equal(cardBySource(owner, "nope"), null);
+  assert.deepEqual([...cardSourceKeys(owner)].sort(), ["m1", "m2", "m3"]);
+});
+
+test("recommended must be a string or null", () => {
+  for (const recommended of [1, true, {}, ["a"]]) {
+    assert.equal(reason(() => parseCardInput(cardInput({ recommended }))).code, "invalid_options");
+  }
+  assert.equal(parseCardInput(cardInput({ recommended: null })).recommended, null);
+});
+
+test("a re-publish is ignored in every acted state, but updates a snoozed card", () => {
+  for (const state of ACTED_STATES) {
+    resetCardsForTests();
+    const { card } = upsertCard(owner, parseCardInput(cardInput()), "t1", 1_000);
+    assert.ok(transitionCard(owner, card.id, ["proposed"], state, { action: "x" }, {}, 2_000), state);
+    const r = upsertCard(owner, parseCardInput(cardInput({ headline: "A different headline" })), "t1", 3_000);
+    assert.equal(r.ignored, "owner_acted", state);
+    assert.equal(getCard(owner, card.id)!.headline, card.headline, state);
+  }
+  resetCardsForTests();
+  const { card } = upsertCard(owner, parseCardInput(cardInput()), "t1", 1_000);
+  transitionCard(owner, card.id, ["proposed"], "snoozed", { action: "snooze" }, { snoozedUntil: 9_000 }, 2_000);
+  const r = upsertCard(owner, parseCardInput(cardInput({ headline: "A different headline" })), "t1", 3_000);
+  assert.equal(r.changed, true);
+  assert.equal(r.card.headline, "A different headline");
+});
+
+test("an email-reply draft must reply to one of the card's itemRefs", () => {
+  const bad = cardInput({ options: [
+    { id: "a", label: "Say yes", plan: "Reply", produces: ["email-reply"], draft: { kind: "email-reply", payload: { noteId: "mail9", expectTo: ["sam@example.com"], body: "Yes." } } },
+    { id: "b", label: "Later", plan: "Nothing", produces: ["nothing"] },
+  ], recommended: null });
+  const r = reason(() => parseCardInput(bad));
+  assert.equal(r.code, "invalid_options");
+  assert.match(r.detail!, /^options\[0\]\.draft\.payload\.noteId/);
 });
