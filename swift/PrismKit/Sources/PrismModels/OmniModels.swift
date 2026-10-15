@@ -131,13 +131,28 @@ public struct ThreadDetail: Decodable, Sendable, Equatable {
     public let approvals: [Approval]
     /// Attach to it with the thread stream when non-nil.
     public let activeTurnId: String?
+    /// Item cards whose thread this is (latest state each).
+    public let itemCards: [OmniCard]
 
-    public init(thread: OmniThread, messages: [OmniMessage], cards: [RecordCard], approvals: [Approval], activeTurnId: String?) {
+    public init(thread: OmniThread, messages: [OmniMessage], cards: [RecordCard], approvals: [Approval], activeTurnId: String?, itemCards: [OmniCard] = []) {
         self.thread = thread
         self.messages = messages
         self.cards = cards
         self.approvals = approvals
         self.activeTurnId = activeTurnId
+        self.itemCards = itemCards
+    }
+
+    enum CodingKeys: String, CodingKey { case thread, messages, cards, approvals, activeTurnId, itemCards }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        thread = try c.decode(OmniThread.self, forKey: .thread)
+        messages = try c.decode([OmniMessage].self, forKey: .messages)
+        cards = try c.decode([RecordCard].self, forKey: .cards)
+        approvals = try c.decode([Approval].self, forKey: .approvals)
+        activeTurnId = try c.decodeIfPresent(String.self, forKey: .activeTurnId)
+        itemCards = try c.decodeIfPresent([OmniCard].self, forKey: .itemCards) ?? []
     }
 }
 
