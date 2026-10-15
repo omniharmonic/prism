@@ -767,6 +767,10 @@ export async function ingestMatrix(
     /** The owner's own person note, resolved from the pass's people index (never linked). */
     ownerPersonId?: (people: PeopleIndex) => string | null;
     ownerSenderIds?: (people: PeopleIndex) => string[];
+    /** The agent's own Matrix senders (agentSenderIds): never inbound, never owed. */
+    agentSenderIds?: readonly string[];
+    /** Whose owner ids these are (the vault): the last verified list is kept per key. */
+    identityKey?: string;
     /** PEOPLE_QUEUE_ON_INGEST: collects unresolved DM counterparts; flushed with the thread's note id. */
     reviewSink?: { collect(roomId: string): (r: PersonReview) => void; flush(roomId: string, noteId: string | null | undefined): void };
     /** Rooms an EARLIER pass failed on (its `failedRooms`), replayed before this
@@ -830,7 +834,7 @@ export async function ingestMatrix(
   }
   // Lean: rows only. A body is read by `loadThread`, for a note about to be written.
   const existing = await listThreadRows(vault);
-  if(opts.ownerSenderIds){try{people=await PeopleIndex.load(vault);ownerSenderIds=opts.ownerSenderIds(people);}catch{/* Missing verified owner identity stays unknown. */}}
+  if(opts.ownerSenderIds)ownerSenderIds=await loadOwnerSenderIds(vault,opts.ownerSenderIds,opts.identityKey??"default",(p)=>{people=p;});
   const byRoom = threadsByRoom(existing);
   await sweepOversizedThreads(vault, byRoom);
 
@@ -863,7 +867,7 @@ export async function ingestMatrix(
         };
         await resolveDisplayNames(client, rb);
         // A thread created here must be the one this pass's own batch appends to.
-        if (await ingestRoom(rb, vault, byRoom, { dedupe: true,selfUserId:ownerSenderIds, onCreated: (n) => byRoom.set(p.roomId, n) })) replayed.messages += gap.messages.length;
+        if (await ingestRoom(rb, vault, byRoom, { dedupe: true,selfUserId:ownerSenderIds,agentIds:opts.agentSenderIds, onCreated: (n) => byRoom.set(p.roomId, n) })) replayed.messages += gap.messages.length;
       }
       replayed.ok.push(p.roomId);
     } catch (e) {
@@ -953,7 +957,7 @@ export async function ingestMatrix(
       }
     }
     try {
-      await ingestRoom(rb, vault, byRoom, { dedupe, links,selfUserId:ownerSenderIds, ...(opts.storeParticipantIds ? { participantIds: memberIds ?? rb.memberIds } : {}) });
+      await ingestRoom(rb, vault, byRoom, { dedupe, links,selfUserId:ownerSenderIds,agentIds:opts.agentSenderIds, ...(opts.storeParticipantIds ? { participantIds: memberIds ?? rb.memberIds } : {}) });
       peopleLinked += links.length;
       // A thread created this pass has no id here yet; its counterpart queues on the next append.
       opts.reviewSink?.flush(rb.roomId, byRoom.get(rb.roomId)?.id);
@@ -1091,14 +1095,66 @@ export function lastMessageAtOf(note: Note): number {
  * used by the repair paths, whose timestamp boundary can overlap what the note
  * already holds.
  */
+/** The last owner sender ids that loaded, per vault: a failed people read falls back to them. */
+const lastOwnerSenderIds = new Map<string, string[]>();
+const ownerIdsWarned = new Set<string>();
+export function resetOwnerSenderIdsForTests(): void {
+  lastOwnerSenderIds.clear();
+  ownerIdsWarned.clear();
+}
+/**
+ * The owner's own Matrix ids for this pass. If the people index cannot be read, the owner is
+ * NOT silently forgotten (which would make every owner message look inbound): the last
+ * verified list is used, and with none the pass logs that self evidence is unknown — the
+ * evidence is then written as unknown (`lastMessageIsSelf: null`), never as "not self".
+ */
+async function loadOwnerSenderIds(vault: IngestVault, pick: (people: PeopleIndex) => string[], key: string, loaded: (p: PeopleIndex) => void): Promise<string[]> {
+  try {
+    const people = await PeopleIndex.load(vault);
+    loaded(people);
+    const ids = pick(people);
+    if (ids.length) {
+      lastOwnerSenderIds.set(key, ids);
+      ownerIdsWarned.delete(key);
+    } else if (!ownerIdsWarned.has(key)) {
+      ownerIdsWarned.add(key);
+      console.warn("[worker] matrix: no owner Matrix id is known (owner person note / PEOPLE_OWNER_*): reply evidence is written as unknown");
+    }
+    return ids;
+  } catch (e) {
+    const last = lastOwnerSenderIds.get(key);
+    console.warn(`[worker] matrix: people index unavailable (${String(e).slice(0, 200)}); ${last ? "using the last verified owner ids" : "no verified owner ids yet — reply evidence is written as unknown"}`);
+    return last ?? [];
+  }
+}
+
+/**
+ * The agent's OWN voices: messages Omni / Hermes wrote (its Matrix user, `@omni-agent:localhost`
+ * by default, and any bridge ghost that relays one of its bots — OMNI_AGENT_MATRIX_IDS), plus
+ * bridge management bots. Such a message is never someone the owner owes a reply to.
+ */
+export const DEFAULT_AGENT_MATRIX_IDS = ["@omni-agent:localhost"];
+export function agentSenderIds(env: string | undefined = process.env.OMNI_AGENT_MATRIX_IDS): string[] {
+  const listed = (env ?? "").split(",").map((v) => v.trim().toLowerCase()).filter((v) => /^@[^:\s]+:\S+$/.test(v));
+  return [...new Set([...DEFAULT_AGENT_MATRIX_IDS, ...listed])];
+}
+export interface EvidenceContext {
+  /** The agent's own senders (see `agentSenderIds`); bridge bots always count as agents when this is given. */
+  agentIds?: readonly string[];
+}
+
 /** Identity evidence is taken from Matrix event fields, never transcript text/display names. */
-export function lastMessageEvidence(messages: MatrixMessage[], previous?:Record<string,unknown>, selfUserId?:string|string[]|null):Record<string,unknown> {
+export function lastMessageEvidence(messages: MatrixMessage[], previous?:Record<string,unknown>, selfUserId?:string|string[]|null, ctx:EvidenceContext={}):Record<string,unknown> {
  const selfIds=new Set(Array.isArray(selfUserId)?selfUserId:selfUserId?[selfUserId]:[]);
+ const agents=ctx.agentIds?new Set(ctx.agentIds.map(a=>a.trim().toLowerCase())):null;
+ const isAgent=(sender:string)=>!!agents&&(agents.has(sender.toLowerCase())||isBridgeBot(sender));
+ // The agent's messages are neither inbound nor the owner's reply: chronology reads people only.
+ const people=agents?messages.filter(m=>!isAgent(m.sender)):messages;
  const chronology:Record<string,unknown>={};let inbound=Number(previous?.lastInboundMessageAt??0);
  if(selfIds.size){
-  for(const m of [...messages].sort((a,b)=>a.ts-b.ts)){
+  for(const m of [...people].sort((a,b)=>a.ts-b.ts)){
    if(!selfIds.has(m.sender))inbound=Math.max(inbound,m.ts);
-   else if(inbound>0&&inbound<m.ts&&m.ts>Number(previous?.lastSelfReplyAt??0)&&!messages.some(other=>other.ts===m.ts&&!selfIds.has(other.sender))){
+   else if(inbound>0&&inbound<m.ts&&m.ts>Number(previous?.lastSelfReplyAt??0)&&!people.some(other=>other.ts===m.ts&&!selfIds.has(other.sender))){
     chronology.lastSelfReplyAt=m.ts;chronology.lastReplyInboundAt=inbound;
    }
   }
@@ -1107,11 +1163,18 @@ export function lastMessageEvidence(messages: MatrixMessage[], previous?:Record<
  const at=Math.max(...messages.map(m=>m.ts));
  if(!Number.isFinite(at)||at<Number(previous?.lastMessageAt??0))return chronology;
  const latest=messages.filter(m=>m.ts===at),senders=new Set(latest.map(m=>m.sender));
+ const agentFlag=agents?{lastMessageIsAgent:false}:{};
+ // The latest word is the agent's own (its user, a relay of its bot, a bridge bot): owner-side,
+ // so it never reads as an inbound message waiting on the owner — whatever owner ids are known.
+ if(agents&&latest.every(m=>isAgent(m.sender))){
+  const message=latest[latest.length-1]!;
+  return {...chronology,lastMessageSender:message.sender,lastMessageEventId:message.eventId,lastMessageText:message.body.slice(0,1000),lastMessageIsSelf:true,lastMessageIsAgent:true};
+ }
  const sender=senders.size===1?latest[latest.length-1]?.sender:null;
  const conflicts=at===previous?.lastMessageAt&&previous?.lastMessageSender&&previous.lastMessageSender!==sender;
- if(!sender||conflicts)return {...chronology,lastMessageSender:null,lastMessageEventId:null,lastMessageText:null,lastMessageIsSelf:null};
+ if(!sender||conflicts)return {...chronology,lastMessageSender:null,lastMessageEventId:null,lastMessageText:null,lastMessageIsSelf:null,...agentFlag};
  const message=latest[latest.length-1]!;
- return {...chronology,lastMessageSender:message.sender,lastMessageEventId:message.eventId,lastMessageText:message.body.slice(0,1000),lastMessageIsSelf:selfIds.size?selfIds.has(message.sender):null};
+ return {...chronology,lastMessageSender:message.sender,lastMessageEventId:message.eventId,lastMessageText:message.body.slice(0,1000),lastMessageIsSelf:selfIds.size?selfIds.has(message.sender):null,...agentFlag};
 }
 
 async function ingestRoom(
@@ -1121,6 +1184,8 @@ async function ingestRoom(
   opts: {
     dedupe?: boolean;
     selfUserId?:string|string[]|null;
+    /** The agent's own senders (lastMessageEvidence). */
+    agentIds?: readonly string[];
     links?: NoteLinkInput[];
     /** Stable member ids to keep on the note (MATRIX_STORE_PARTICIPANT_IDS). */
     participantIds?: string[];
@@ -1153,7 +1218,7 @@ async function ingestRoom(
     const wanted = items;
     for (let attempt = 0; ; attempt++) {
       try {
-        await appendToThread(rb, vault, byRoom, note, lines, { platform, lastMessageAt, participants, linkAdd, participantIds: opts.participantIds,selfUserId:opts.selfUserId });
+        await appendToThread(rb, vault, byRoom, note, lines, { platform, lastMessageAt, participants, linkAdd, participantIds: opts.participantIds,selfUserId:opts.selfUserId,agentIds:opts.agentIds });
         break;
       } catch (e) {
         if (!isConflict(e) || attempt >= 1) throw e;
@@ -1185,7 +1250,7 @@ async function ingestRoom(
         platform,
         matrixRoomId: rb.roomId,
         lastMessageAt,
-        ...lastMessageEvidence(rb.messages,undefined,opts.selfUserId),
+        ...lastMessageEvidence(rb.messages,undefined,opts.selfUserId,{agentIds:opts.agentIds}),
         messageCount: lines.length,
         participants,
         ...(opts.participantIds ? { participantIds: mergeIds(undefined, opts.participantIds) } : {}),
@@ -1221,7 +1286,7 @@ async function appendToThread(
   byRoom: Map<string, Note>,
   note: Note,
   lines: string[],
-  ctx: { platform: string; lastMessageAt: number; participants: string[]; linkAdd: { links?: { add: NoteLinkInput[] } }; participantIds?: string[];selfUserId?:string|string[]|null },
+  ctx: { platform: string; lastMessageAt: number; participants: string[]; linkAdd: { links?: { add: NoteLinkInput[] } }; participantIds?: string[];selfUserId?:string|string[]|null;agentIds?:readonly string[] },
 ): Promise<void> {
   const { platform, lastMessageAt, participants, linkAdd } = ctx;
   const cas = note.updatedAt ? { ifUpdatedAt: note.updatedAt } : {};
@@ -1239,7 +1304,7 @@ async function appendToThread(
     // Monotonic: a bridge backfilling a gap posts OLD timestamps late, and
     // must not rewind the high-water mark the repair sweep compares against.
     lastMessageAt: Math.max(lastMessageAt, lastMessageAtOf(note)),
-    ...lastMessageEvidence(rb.messages,prev,ctx.selfUserId),
+    ...lastMessageEvidence(rb.messages,prev,ctx.selfUserId,{agentIds:ctx.agentIds}),
     messageCount: prevCount + lines.length,
     ...(mergedParticipants.length ? { participants: mergedParticipants } : {}),
     ...(ctx.participantIds ? { participantIds: mergeIds(prev.participantIds, ctx.participantIds) } : {}),
@@ -1325,6 +1390,8 @@ export async function reconcileMatrix(
   vault: IngestVault,
   opts: {
     upTo: string;
+    /** The agent's own Matrix senders (agentSenderIds): never inbound, never owed. */
+    agentSenderIds?: readonly string[];
     maxRepairs?: number;
     cap?: number;
     concurrency?: number;
@@ -1480,7 +1547,7 @@ export async function reconcileMatrix(
           messages: gap.messages,
         };
         await resolveDisplayNames(client, rb);
-        if (await ingestRoom(rb, vault, byRoom, { dedupe: true })) {
+        if (await ingestRoom(rb, vault, byRoom, { dedupe: true, agentIds: opts.agentSenderIds })) {
           repaired++;
           messages += gap.messages.length;
         }

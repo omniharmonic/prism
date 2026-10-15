@@ -21,7 +21,7 @@ import { getVaultRegistry, getWorkerCursor, setWorkerCursor, listVaultMirrors } 
 import { getSecret, secretsConfigured, otherSecretOwners } from "../secrets";
 import { config, type VaultEntry } from "../config";
 import { vault, vaultClient } from "../parachute";
-import { MatrixClient, ingestMatrix, reconcileMatrix, owedDue, type IngestVault, type MatrixCreds, type OwedRoom, type RoomReplay } from "./matrix";
+import { MatrixClient, ingestMatrix, reconcileMatrix, owedDue, agentSenderIds, type IngestVault, type MatrixCreds, type OwedRoom, type RoomReplay } from "./matrix";
 import { FathomClient, ingestFathom } from "./fathom";
 import { FirefliesClient, FirefliesError, ingestAndCleanupFireflies, type FirefliesBudget, type FirefliesVault } from "./fireflies";
 import { ClickUpClient, ingestClickUp, type ClickUpCredential, type ClickUpVault } from "./clickup";
@@ -325,6 +325,7 @@ export async function runMatrixReconcileSweep(
   overrides: { deadlineMs?: number; now?: () => number; concurrency?: number; probeShare?: number; maxRepairs?: number; retryOnly?: boolean; retryMax?: number; wallNow?: () => number } = {},
 ): Promise<Awaited<ReturnType<typeof reconcileMatrix>>> {
   const r = await reconcileMatrix(client, ingestVault, {
+    agentSenderIds: agentSenderIds(),
     upTo,
     maxRepairs: overrides.maxRepairs ?? config.matrixReconcilePerSweep,
     deadlineMs: overrides.deadlineMs ?? config.matrixReconcileDeadlineMs,
@@ -404,6 +405,8 @@ async function runMatrixPass(entry: VaultEntry, deps: MatrixPassDeps): Promise<n
     storeParticipantIds: config.matrixStoreParticipantIds,
     selfUserId,
     ownerSenderIds: (people: PeopleIndex) => [...ownerProfile(people.identity, ownerConfigFor(entry.id)).matrixIds],
+    agentSenderIds: agentSenderIds(),
+    identityKey: entry.id,
     // Identity layer (only with MATRIX_LINK_EXISTING): never link the owner's own
     // note; queue DM counterparts that have a candidate but no exact match.
     ...(config.matrixLinkExisting

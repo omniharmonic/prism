@@ -113,3 +113,11 @@ test("trashed source cannot be re-proposed or privately started before the next 
  assert.equal((await post("/hooks/nudges",candidate,hook)).status,422);
  assert.equal((await post(`/nudges/${n.id}/start`,{action:"start-working"},{...owner(),"idempotency-key":"trashed-source-start-12345"})).status,422);
 });
+test("nudge hook: a slug title and raw preview are stored as a readable title and plain summary",async()=>{
+ setOmniRecordSourcesForTests({resolver:async({id})=>id==="source1"?{id,path:"vault/tasks/app-2-app-2-defined",tags:["task"]}:null,content:async()=>"# App 2 is defined\n\nBody"});
+ try{
+  const r=await post("/hooks/nudges",{...candidate,title:"app-2-app-2-defined",summary:"# App 2 is defined\n\n**Next:** confirm the [scope](https://x.example)"},hook);assert.equal(r.status,201);
+  const n=await r.json() as {candidate:Candidate};
+  assert.equal(n.candidate.title,"App 2 is defined");assert.equal(n.candidate.summary,"Next: confirm the scope");
+ }finally{setOmniRecordSourcesForTests({content:null});}
+});

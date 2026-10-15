@@ -8,7 +8,7 @@ import { mountOmni, omniApi } from "../src/routes/omni";
 import { makeSession, sessionCookie } from "./helpers";
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { buildToday, buildTasksPage, type Dispatch } from "../src/omni/today";
+import { buildToday, buildTasksPage, resetTodayTitlesForTests, type Dispatch } from "../src/omni/today";
 import { resetOmniStoreForTests } from "../src/omni/store";
 import { resetDb } from "./helpers";
 import { encodeCursor, decodeCursor, type QuerySpec } from "@prism/core/database";
@@ -16,6 +16,7 @@ import { encodeCursor, decodeCursor, type QuerySpec } from "@prism/core/database
 beforeEach(() => {
   resetDb();
   resetOmniStoreForTests();
+  resetTodayTitlesForTests();
 });
 
 const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json" } });
@@ -141,4 +142,29 @@ test("Omni task dispatcher preserves selected vault and caller credentials", asy
   const response = await app.request("/api/omni/tasks", { headers: { cookie, "x-prism-vault": "selected-vault" } });
   assert.equal(response.status, 200, await response.clone().text());
   assert.equal(((await response.json()) as { tasks: Array<{ noteId: string }> }).tasks[0]?.noteId, "t1");
+});
+
+test("readable titles: an untitled row is named by its first H1 (read once per revision), else its path leaf in words", async () => {
+  const reads: string[] = [];
+  const bodies: Record<string, string | null> = { t1: "Intro line\n\n# Call **Dana** about the lease\n", t2: "no heading", m1: "# Ops sync" };
+  const dispatch: Dispatch = async (path, init) => {
+    if (init.method === "GET") {
+      const id = decodeURIComponent(path.split("/").pop()!);
+      reads.push(id);
+      return bodies[id] === null ? json({ error: "not_found" }, 404) : json({ id, content: bodies[id] });
+    }
+    return tagOf(init.body) === "meeting"
+      ? json({ rows: [{ id: "m1", path: "meetings/ops-sync", updatedAt: "u1", metadata: { date: "2026-10-09", start: "2026-10-09T15:00:00Z" } }] })
+      : json({ rows: [
+          { id: "t1", path: "tasks/app-2-app-2-defined", updatedAt: "u1", metadata: { status: "open" } },
+          { id: "t2", path: "tasks/file_the-taxes", updatedAt: "u1", metadata: { status: "open" } },
+          { id: "t3", path: "tasks/titled", updatedAt: "u1", metadata: { title: "Already titled", status: "open" } },
+        ] });
+  };
+  const t = (await buildToday(dispatch, "2026-10-09", { retryDelayMs: 1 })) as unknown as { agenda: Array<{ title: string; start: string }>; tasks: Array<{ noteId: string; title: string }> };
+  assert.deepEqual(t.tasks.map((x) => x.title), ["Call Dana about the lease", "File the taxes", "Already titled"]);
+  assert.deepEqual(t.agenda.map((x) => [x.title, x.start]), [["Ops sync", "2026-10-09T15:00:00Z"]]);
+  assert.deepEqual(reads.sort(), ["m1", "t1", "t2"], "titled rows are never read");
+  await buildToday(dispatch, "2026-10-09", { retryDelayMs: 1 });
+  assert.equal(reads.length, 3, "an unchanged note is read once");
 });

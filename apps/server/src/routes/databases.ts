@@ -107,6 +107,7 @@ import {
   type FieldHints,
   type MeResolver,
   type QueryInput,
+  type QuerySpec,
   type SchemaField,
   type TagSchema,
 } from "@prism/core/database";
@@ -1019,13 +1020,19 @@ const ROW_META = ["title", "type", "prism_type", "icon", "cover", "coverY", WRIT
 
 /**
  * Listing cache (review H1): ONE canonical listing per (vault, source) — the tag's
- * schema keys + row/permission keys, or whole metadata for a tag with no schema —
- * so `fields` only shapes the response and can never force a fresh vault list.
+ * schema keys + row/permission keys, or whole metadata for a tag with no schema.
+ * A view may also name keys its tag's schema does not declare (Today's agenda asks a
+ * `meeting` for `start`/`end`/`location`/`meetLink`): those are added to the listing,
+ * and the entry keeps the UNION of every key asked for while it lives, so the same
+ * views share one listing and a key already held never forces a fresh vault list.
+ * Only which keys the vault returns changes — the rows, and who may see them, do not.
  * Typed-task inventory uses a bounded metadata-only vault listing; the same
  * permission filtering still runs before the task scan cap.
  * LRU-bounded by entries AND total rows.
  */
-interface ListEntry { expires: number; value: Promise<Note[]>; rows: number }
+interface ListEntry { expires: number; value: Promise<Note[]>; rows: number; keys: Set<string> | null }
+/** A bound on the keys one listing carries: past it the union restarts from what this request needs. */
+const LIST_KEYS_MAX = 400;
 const listCache = new Map<string, ListEntry>();
 let listRows = 0;
 let limits: { entries: number; rows: number } | null = null;
@@ -1053,11 +1060,19 @@ function watchListings(entry: VaultEntry): void {
   subscribeTreeChanges(entry, () => evictVaultListings(entry)).catch(() => { watchedListings.delete(entry.id); });
 }
 
-async function canonicalListing(entry: VaultEntry, tag: string | null): Promise<Note[]> {
+/** Every metadata key `spec` names — shown, filtered, sorted, grouped or calculated. */
+function keysTheViewReads(spec: QuerySpec): string[] {
+  const keys = new Set(metadataKeysFor({ ...spec, fields: spec.fields ?? [] }) ?? []);
+  keys.delete("title");
+  return [...keys];
+}
+
+async function canonicalListing(entry: VaultEntry, tag: string | null, wanted: readonly string[] = []): Promise<Note[]> {
   watchListings(entry);
   const k = JSON.stringify([entry.id, tag]);
   const hit = listCache.get(k);
-  if (hit && hit.expires > Date.now()) {
+  const fresh = !!hit && hit.expires > Date.now();
+  if (hit && fresh && (hit.keys === null || wanted.every((w) => hit.keys!.has(w)))) {
     listCache.delete(k); // LRU touch
     listCache.set(k, hit);
     return hit.value;
@@ -1066,9 +1081,14 @@ async function canonicalListing(entry: VaultEntry, tag: string | null): Promise<
   const schema = tag ? (await vaultSchemas(entry)).get(tag) : undefined;
   const schemaKeys = Object.keys(schema?.fields ?? {});
   // + the assignee spellings "assigned to me" reads (my-tasks.ts); `assigned` is in the task schema.
-  const keys = schemaKeys.length ? [...new Set([...schemaKeys, ...ROW_META, ...PERMISSION_KEYS, "assigned", "assignee", "assigneeEmail", "assignee_email"])] : undefined;
-  const value = vaultClient(entry.id).listNotes({ ...(tag ? { tags: [tag] } : {}), includeContent: false, includeMetadata: keys, orderBy: "updated_at", limit: RAW_MAX });
-  const e: ListEntry = { expires: Date.now() + LIST_TTL_MS, value, rows: 0 };
+  let keys: Set<string> | null = null;
+  if (schemaKeys.length) {
+    keys = new Set([...schemaKeys, ...ROW_META, ...PERMISSION_KEYS, "assigned", "assignee", "assigneeEmail", "assignee_email", ...wanted]);
+    // A listing still fresh but missing a key: the new one carries both sets of keys.
+    if (fresh && hit?.keys && keys.size + hit.keys.size <= LIST_KEYS_MAX) for (const w of hit.keys) keys.add(w);
+  }
+  const value = vaultClient(entry.id).listNotes({ ...(tag ? { tags: [tag] } : {}), includeContent: false, includeMetadata: keys ? [...keys] : undefined, orderBy: "updated_at", limit: RAW_MAX });
+  const e: ListEntry = { expires: Date.now() + LIST_TTL_MS, value, rows: 0, keys };
   listCache.set(k, e);
   value.then((notes) => {
     if (listCache.get(k) !== e) return;
@@ -1119,7 +1139,9 @@ databasesApi.post("/query", async (c) => {
   }
   let notes: Note[];
   try {
-    notes = await canonicalListing(entry, spec.includeTypedTasks ? null : spec.tags[0]!);
+    // The keys this view reads (its `fields`, filter, sort, group and calculations) are
+    // fetched even when the tag's schema does not declare them.
+    notes = await canonicalListing(entry, spec.includeTypedTasks ? null : spec.tags[0]!, keysTheViewReads(spec));
   } catch (e) {
     return vaultFailure(c, e);
   }

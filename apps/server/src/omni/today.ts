@@ -16,7 +16,7 @@ import { listNudges } from "./nudges";
 import { listApprovals, approvalView, expireApprovals } from "./approvals";
 import { getThread, runningThreadIds } from "./store";
 import { omniConfig } from "./config";
-import { leafTitle } from "@prism/core/pages";
+import { firstHeading, omniTitle } from "./titles";
 
 export type Dispatch = (path: string, init: { method: string; body?: unknown }) => Promise<Response>;
 
@@ -30,9 +30,52 @@ export function localDate(d = new Date()): string {
 }
 export const validDate = (s: string | undefined): s is string => !!s && DATE_RE.test(s) && !Number.isNaN(Date.parse(s));
 
-type Row = { id: string; path: string | null; metadata: Record<string, unknown> };
+type Row = { id: string; path: string | null; metadata: Record<string, unknown>; updatedAt?: string | null };
 const s = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
-const title = (r: Row): string => s(r.metadata.title) ?? leafTitle(r.path ?? r.id, r.metadata) ?? r.id;
+
+/**
+ * Readable titles (omni/titles.ts): `metadata.title`, else the body's first H1, else the path
+ * leaf in words. A listing carries no body, so the H1 of an UNTITLED row is read through the
+ * same gateway (`GET /api/notes/:id`, the caller's own credential) — at most
+ * HEADING_READS rows per answer, in parallel, each given up after HEADING_TIMEOUT_MS — and
+ * remembered per (note, updatedAt), so an unchanged note is read once.
+ */
+const HEADING_READS = 20;
+const HEADING_TIMEOUT_MS = 2_500;
+const HEADING_CACHE_MAX = 2_000;
+const headingCache = new Map<string, string | null>();
+export function resetTodayTitlesForTests(): void {
+  headingCache.clear();
+}
+async function headingsFor(dispatch: Dispatch, rows: Row[]): Promise<Map<string, string | null>> {
+  const out = new Map<string, string | null>();
+  const todo: Row[] = [];
+  for (const r of rows) {
+    if (s(r.metadata.title)) continue;
+    const key = `${r.id}\u0000${r.updatedAt ?? ""}`;
+    if (headingCache.has(key)) out.set(r.id, headingCache.get(key)!);
+    else if (todo.length < HEADING_READS) todo.push(r);
+  }
+  await Promise.all(todo.map(async (r) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const read = dispatch(`/api/notes/${encodeURIComponent(r.id)}`, { method: "GET" }).then(async (res) => (res.ok ? ((await res.json()) as { content?: unknown }).content : undefined), () => undefined).catch(() => undefined);
+      const content = await Promise.race([read, new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), HEADING_TIMEOUT_MS); })]);
+      if (typeof content !== "string") return;
+      const h1 = firstHeading(content);
+      out.set(r.id, h1);
+      headingCache.set(`${r.id}\u0000${r.updatedAt ?? ""}`, h1);
+      while (headingCache.size > HEADING_CACHE_MAX) headingCache.delete(headingCache.keys().next().value!);
+    } catch {
+      /* the readable path leaf stands in */
+    } finally {
+      clearTimeout(timer);
+    }
+  }));
+  return out;
+}
+const titler = (headings: Map<string, string | null>) => (r: Row): string =>
+  s(r.metadata.title) ?? headings.get(r.id) ?? omniTitle({ id: r.id, path: r.path, metadata: r.metadata });
 
 /** How long to wait before the one retry of a section whose query failed on the vault side. */
 const RETRY_DELAY_MS = 750;
@@ -75,11 +118,11 @@ export async function buildToday(dispatch: Dispatch, date: string, opts: { retry
     limit: 100,
     fields: ["title", "start", "end", "location", "meetLink", "event_status", "date"],
   }, retryDelayMs)
-    .then(({ rows }) =>
-      rows
-        .filter((r) => r.metadata.event_status !== "cancelled")
-        .map((r) => ({ noteId: r.id, title: title(r), start: s(r.metadata.start), end: s(r.metadata.end), location: s(r.metadata.location), meetLink: s(r.metadata.meetLink), link: link(r.id) })),
-    )
+    .then(async ({ rows }) => {
+      const live = rows.filter((r) => r.metadata.event_status !== "cancelled");
+      const title = titler(await headingsFor(dispatch, live));
+      return live.map((r) => ({ noteId: r.id, title: title(r), start: s(r.metadata.start), end: s(r.metadata.end), location: s(r.metadata.location), meetLink: s(r.metadata.meetLink), link: link(r.id) }));
+    })
     .catch((e: Error) => {
       errors.agenda = e.message;
       return null;
@@ -92,18 +135,21 @@ export async function buildToday(dispatch: Dispatch, date: string, opts: { retry
     limit: 50,
     fields: ["title", "status", "due", "deadline", "priority", "omni_thread"],
   }, retryDelayMs)
-    .then(({ rows, identity }) => ({
-      identity: identity ?? null,
-      rows: rows.map((r) => ({
-        noteId: r.id,
-        title: title(r),
-        status: s(r.metadata.status),
-        due: s(r.metadata.due) ?? s(r.metadata.deadline),
-        priority: s(r.metadata.priority),
-        threadId: s(r.metadata.omni_thread),
-        link: link(r.id),
-      })),
-    }))
+    .then(async ({ rows, identity }) => {
+      const title = titler(await headingsFor(dispatch, rows));
+      return {
+        identity: identity ?? null,
+        rows: rows.map((r) => ({
+          noteId: r.id,
+          title: title(r),
+          status: s(r.metadata.status),
+          due: s(r.metadata.due) ?? s(r.metadata.deadline),
+          priority: s(r.metadata.priority),
+          threadId: s(r.metadata.omni_thread),
+          link: link(r.id),
+        })),
+      };
+    })
     .catch((e: Error) => {
       errors.tasks = e.message;
       return null;
@@ -140,6 +186,7 @@ export async function buildTasksPage(dispatch: Dispatch, cursor?: string, opts: 
     ...(cursor ? { cursor } : {}),
   }, opts.retryDelayMs ?? RETRY_DELAY_MS);
   const origin = omniConfig.appOrigin();
+  const title = titler(await headingsFor(dispatch, page.rows));
   return {
     tasks: page.rows.map((r) => ({ noteId: r.id, title: title(r), status: s(r.metadata.status), due: s(r.metadata.due) ?? s(r.metadata.deadline), priority: s(r.metadata.priority), threadId: s(r.metadata.omni_thread), link: `${origin}/page/${encodeURIComponent(r.id)}` })),
     next: page.next ?? null, total: page.total ?? null,
