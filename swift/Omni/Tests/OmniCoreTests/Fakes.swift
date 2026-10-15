@@ -120,6 +120,7 @@ final class FakeService: OmniService, @unchecked Sendable {
     private var _patches = Queue<OmniThread>()
     private var _patchCalls: [String] = []
     private var _readCalls: [String] = []
+    var cardList: [OmniCard] = []
     private var _holdDetail = false
     private var _detailGate: CheckedContinuation<Void, Never>?
     var readCalls: [String] { locked { _readCalls } }
@@ -429,3 +430,14 @@ func eventually(_ what: String = "condition", file: StaticString = #filePath, li
 }
 
 let noSleep: @Sendable (Duration) async throws -> Void = { _ in await Task.yield() }
+
+extension FakeService: CardService {
+    func cards(section: CardSection?) async throws -> CardList {
+        let open = cardList.filter { $0.section != nil }
+        return CardList(cards: open, counts: .init(decide: open.filter { $0.section == .decide }.count, approve: open.filter { $0.section == .approve }.count, motion: open.filter { $0.section == .motion }.count))
+    }
+    func chooseCardOption(_ id: String, optionID: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult { throw PrismError.invalidRequest("fake") }
+    func instructCard(_ id: String, text: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult { throw PrismError.invalidRequest("fake") }
+    func snoozeCard(_ id: String, until: Date) async throws -> OmniCard { throw PrismError.invalidRequest("fake") }
+    func dismissCard(_ id: String, reason: CardDismissReason) async throws -> OmniCard { throw PrismError.invalidRequest("fake") }
+}
