@@ -54,15 +54,15 @@ struct DestinationView: View {
     var body: some View {
         switch destination {
         case .today, nil:
-            TodayView(session: session)
+            TodayView(session: session).screenActions(session)
         case .needsYou:
-            NeedsYouView(session: session)
+            NeedsYouView(session: session).screenActions(session)
         case .thread(let id):
             ThreadView(session: session, model: session.threadModel(for: id)).id(id)
         case .newThread:
             NewThreadView(session: session)
         case .recurring:
-            JobsView(model: session.jobs)
+            JobsView(model: session.jobs).screenActions(session)
         }
     }
 }
@@ -279,31 +279,11 @@ struct SplitMainView: View {
             .refreshable { await session.threads.refresh() }
             #endif
             .searchable(text: $threads.searchText, isPresented: $searchPresented, placement: .sidebar, prompt: "Search threads")
-            .toolbar {
-                #if os(iOS)
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        showingSettings = true
-                    } label: {
-                        Label("Settings", systemImage: "gearshape")
-                    }
-                    .accessibilityIdentifier("settings.open")
-                }
-                #endif
-                ToolbarItem {
-                    Button("Voice", systemImage: "waveform") { session.requestNewVoice() }
-                        .accessibilityIdentifier("voice.new")
-                }
-                ToolbarItem {
-                    Button {
-                        session.requestNewThread()
-                    } label: {
-                        Label("New Thread", systemImage: "square.and.pencil")
-                    }
-                    .help("New thread (⌘N)")
-                    .accessibilityIdentifier("thread.new")
-                }
-            }
+            #if os(iOS)
+            // Settings lives in the sidebar's bar. Voice and New Chat are in the content's bar
+            // (`ScreenActions`), so they stay when the sidebar is put away.
+            .toolbar { SettingsToolbarButton(isPresented: $showingSettings) }
+            #endif
         } detail: {
             #if os(iOS)
             NavigationStack {
@@ -352,29 +332,21 @@ struct TabMainView: View {
             SwiftUI.Tab("Today", systemImage: "sun.max", value: Tab.today) {
                 NavigationStack {
                     TodayView(session: session)
-                        .toolbar {
-                            ToolbarItem(placement: .topBarTrailing) {
-                                Button("Voice", systemImage: "waveform") { session.requestNewVoice() }
-                                    .accessibilityIdentifier("voice.new")
-                            }
-                            ToolbarItem(placement: .topBarTrailing) {
-                                Button {
-                                    showingSettings = true
-                                } label: {
-                                    Label("Settings", systemImage: "gearshape")
-                                }
-                                .accessibilityIdentifier("settings.open")
-                            }
-                        }
+                        .toolbar { SettingsToolbarButton(isPresented: $showingSettings) }
+                        .screenActions(session)
                 }
             }
             SwiftUI.Tab("Needs you", systemImage: "hand.raised", value: Tab.needsYou) {
-                NavigationStack { NeedsYouView(session: session) }
+                NavigationStack {
+                    NeedsYouView(session: session)
+                        .toolbar { SettingsToolbarButton(isPresented: $showingSettings) }
+                        .screenActions(session)
+                }
             }
             .badge(session.approvals.pendingCount)
             SwiftUI.Tab("Threads", systemImage: "bubble.left.and.text.bubble.right", value: Tab.threads) {
                 NavigationStack(path: $path) {
-                    ThreadListScreen(session: session, showingNewThread: $showingNewThread)
+                    ThreadListScreen(session: session, showingSettings: $showingSettings)
                         .navigationDestination(for: Destination.self) { destination in
                             if destination == .newThread, voiceChatHandoff.isPresented {
                                 ZStack {
@@ -533,7 +505,7 @@ struct SearchExit: View {
 
 struct ThreadListScreen: View {
     @Bindable var session: SessionModel
-    @Binding var showingNewThread: Bool
+    @Binding var showingSettings: Bool
 
     var body: some View {
         @Bindable var threads = session.threads
@@ -553,21 +525,8 @@ struct ThreadListScreen: View {
         .searchable(text: $threads.searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search threads")
         .scrollDismissesKeyboard(.immediately)
         .refreshable { await session.threads.refresh() }
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("Voice", systemImage: "waveform") { session.requestNewVoice() }
-                    .accessibilityLabel("Start voice session")
-                    .accessibilityIdentifier("voice.new")
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    session.requestNewThread()
-                } label: {
-                    Label("New Thread", systemImage: "square.and.pencil")
-                }
-                .accessibilityIdentifier("thread.new")
-            }
-        }
+        .toolbar { SettingsToolbarButton(isPresented: $showingSettings) }
+        .screenActions(session)
         .task(id: threads.searchText) {
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }

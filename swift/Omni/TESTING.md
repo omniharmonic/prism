@@ -9,7 +9,7 @@ sent).
 
 | Layer | What it proves | Command | Needs |
 |---|---|---|---|
-| Unit tests (`Tests/OmniCoreTests`, 99 tests) | Every rule in OmniCore, with a fake server | `swift test --skip OmniUISnapshotTests` | nothing |
+| Unit tests (`Tests/OmniCoreTests`, 260 tests) | Every rule in OmniCore, with a fake server | `swift test --skip OmniUISnapshotTests` | nothing |
 | Mac snapshots (`Tests/OmniUISnapshotTests`) | Every Mac screen draws, in light, dark and a narrow window; the app's text colours meet 4.5:1 | `swift test --filter OmniUISnapshotTests` | nothing; nothing appears on screen |
 | UI tests (`UITests/`, XCUITest) | The real app, tapped and typed into, on iPhone and iPad (and the Mac, once allowed) | `Scripts/uitest.sh iphone` · `ipad` · `mac` · `all` | dev backend |
 | Smoke (`Sources/OmniSmoke`) | The same calls the app makes, through its own view models, incl. the real sign-in | `Scripts/smoke.sh` | dev backend |
@@ -96,7 +96,7 @@ launched with `OMNI_UITEST=1`:
   animation to end before each step; a spinner removed mid-transition had it waiting a minute
   at a time — one test took 19 minutes instead of one);
 - `OMNI_UITEST_FAULTS` changes a few answers to show states the dev backend cannot produce:
-  `digest-mismatch`, `today-partial`, `today-fail`, `threads-fail`, `jobs-fail`, `sample-data`;
+  `digest-mismatch`, `markdown-sample`, `today-partial`, `today-fail`, `threads-fail`, `jobs-fail`, `sample-data`;
 - it refuses any server that is not `http://127.0.0.1:<port>`.
 
 `Scripts/check-release.sh` checks the source (the file and every use of it sit inside
@@ -117,7 +117,8 @@ release.
 | `test08Approvals` | The queue; all six kinds with their full text; Send → "sending is switched off — nothing was sent"; Edit; Revise; Cancel Draft with its confirmation; a draft that fails its fingerprint has no Send |
 | `test09SettingsAndSignOut` | Settings; Diagnostics; Copy All; Sign Out with its confirmation; back at sign-in |
 | `test10MacKeysAndWindow` (Mac) | ⌘N, the cursor in the composer, Shift-Return, Return, ⌘R, ⌘F, ⌘, |
-| `AccessibilityAuditTests` (iOS) | `performAccessibilityAudit` on sign-in, Today, Needs you, Threads, Recurring, a thread with a draft, a thread with a record card, New Thread, Settings |
+| `AccessibilityAuditTests` (iOS) | `performAccessibilityAudit` on sign-in, Today, Needs you, Threads, Recurring, a thread with a draft, a thread with a record card, New Chat, Settings |
+| `PhaseOneTests` | New Chat in the bar of Today, Needs you, Recurring, a thread and the Threads list (on iPad with the sidebar put away), labelled "New Chat", opening the composer; Settings on each iPhone tab; a markdown answer drawn as blocks (`markdown-sample` fault) |
 
 **What the accessibility audit asserts, and what it only reports.** A finding fails the test
 when it is a touch target that is too small, an element with no or an unhelpful description, a
@@ -151,7 +152,7 @@ swift test --filter OmniUISnapshotTests        # writes qa/screenshots/omni/mac/
 ```
 
 `Tests/OmniUISnapshotTests` hosts the app's own SwiftUI views in a window that is never shown
-(transparent, behind everything, never key) and draws them into PNGs: 36 screens × light,
+(transparent, behind everything, never key) and draws them into PNGs: 38 screens × light,
 dark, narrow. (`OMNI_SNAPSHOT_DIR=<folder>` writes them somewhere else.) The data is an in-memory gateway (`SampleService`), shaped as the real one
 answers. Safe to run while you work: nothing appears, nothing takes focus.
 

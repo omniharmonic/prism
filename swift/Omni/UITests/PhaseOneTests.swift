@@ -26,7 +26,7 @@ final class PhaseOneTests: OmniUITestCase {
 
         // Needs you.
         go(.needsYou)
-        see("Email Kevin about the buoy spec")
+        see("APPROVE")
         collapseSidebar()
         shot("p1-needs-you")
         newChat(from: "Needs you")

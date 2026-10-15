@@ -239,7 +239,7 @@ struct DiagnosticsSection: View {
     }
 }
 
-/// The Mac menu commands: ⌘N new thread, ⌘F search, ⌘. stop, ⌘R refresh. (⌘, is the
+/// The Mac menu commands: ⌘N new chat, ⌘F search, ⌘. stop, ⌘R refresh. (⌘, is the
 /// Settings scene's own.)
 public struct OmniCommands: Commands {
     private let app: AppModel
@@ -250,7 +250,7 @@ public struct OmniCommands: Commands {
 
     public var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            Button("New Thread") { app.session?.requestNewThread() }
+            Button("New Chat") { app.session?.requestNewThread() }
                 .keyboardShortcut("n", modifiers: .command)
                 .disabled(app.session == nil || PrivacyLock.shared.locked)
         }

@@ -43,7 +43,8 @@ struct UserBubble: View {
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 3) {
-            Text(text)
+            // As typed: inline markdown (bold, code, links) is drawn; `#` and `-` stay as written.
+            Text(MarkdownBlocks.inline(text))
                 .textSelection(.enabled)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
@@ -55,31 +56,26 @@ struct UserBubble: View {
         .frame(maxWidth: .infinity, alignment: .trailing)
         .padding(.leading, 48)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("You: \(text)\(caption.map { ". \($0)" } ?? "")")
+        .accessibilityLabel("You: \(String(MarkdownBlocks.inline(text).characters))\(caption.map { ". \($0)" } ?? "")")
     }
 }
 
+/// An answer, its markdown drawn as blocks (`MarkdownText`) — also while it streams in.
 struct AgentText: View {
     let text: String
     let streaming: Bool
 
     var body: some View {
-        HStack(alignment: .lastTextBaseline, spacing: 6) {
-            Text(rendered)
+        VStack(alignment: .leading, spacing: 6) {
+            MarkdownText(markdown: text, streaming: streaming)
                 .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
             if streaming {
                 ProgressView().controlSize(.mini).accessibilityLabel("Omni is still writing")
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Omni: \(text)")
-    }
-
-    /// Inline markdown (bold, links, code) with the line breaks kept as written.
-    private var rendered: AttributedString {
-        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace, failurePolicy: .returnPartiallyParsedIfPossible)
-        return (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
+        .accessibilityLabel("Omni: \(streaming ? MarkdownBlocks.parse(text).map(\.plainText).filter { !$0.isEmpty }.joined(separator: "\n") : MarkdownBlocks.plainText(text))")
     }
 }
 

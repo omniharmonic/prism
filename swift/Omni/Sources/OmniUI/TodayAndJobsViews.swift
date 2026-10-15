@@ -149,20 +149,10 @@ struct TodayView: View {
         }
         .navigationTitle(Date.now.formatted(.dateTime.weekday(.wide).month().day()))
         .refreshable { await model.refresh() }
-        .toolbar {
-            ToolbarItem {
-                if model.isRefreshing, model.hasContent {
-                    ProgressView().controlSize(.small).accessibilityLabel("Refreshing")
-                } else {
-                    Button {
-                        Task { await model.refresh() }
-                    } label: {
-                        Label("Refresh", systemImage: "arrow.clockwise")
-                    }
-                    .help("Refresh (⌘R)")
-                }
-            }
-        }
+        #if os(macOS)
+        // iPhone and iPad pull the list down to refresh.
+        .toolbar { MacRefreshButton(refreshing: model.isRefreshing && model.hasContent) { Task { await model.refresh() } } }
+        #endif
         .task { await model.refresh() }
     }
     @ViewBuilder private func taskRow(_ task: OmniToday.TaskItem) -> some View {
@@ -244,15 +234,9 @@ struct JobsView: View {
         .sheet(item: $editing) { JobEditor(model: model, job: $0) }
         .toolbar { if model.canManage { Button("Add Job", systemImage: "plus") { adding = true } } }
         .refreshable { await model.refresh() }
-        .toolbar {
-            ToolbarItem {
-                Button {
-                    Task { await model.refresh() }
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
-            }
-        }
+        #if os(macOS)
+        .toolbar { MacRefreshButton(refreshing: false) { Task { await model.refresh() } } }
+        #endif
         .task { await model.refresh() }
     }
 }

@@ -177,7 +177,7 @@ struct Walk {
         service.addThread("nudge-thread", "Reply to Dana about Friday", state: "done", preview: "I can draft the reply.", messages: [("user", "Reply to Dana about Friday."), ("assistant", "I can draft the reply when you are ready.")])
         service.nudgeItems = [
             NudgingSampleService.nudge("reply", kind: "reply-owed", title: "Dana is waiting for an answer", summary: "Dana asked on **Tuesday** whether Friday at ten works for the spec review.\n\n- She needs the two quotes\n- Kevin is copied", reasons: ["Waiting 2 days", "Known collaborator"], threadId: "nudge-thread"),
-            NudgingSampleService.nudge("task", kind: "task-due", title: "Renew the domain", summary: "The domain renewal is due tomorrow.", reasons: ["Due tomorrow"]),
+            NudgingSampleService.nudge("task", kind: "task", title: "Renew the domain", summary: "The domain renewal is due tomorrow.", reasons: ["Due tomorrow"]),
         ]
         return service
     }

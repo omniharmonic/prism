@@ -56,11 +56,17 @@ keeps its sign-in there (see "Decisions" below).
   forget), a "Can't connect" screen with Try Again, and a confirmed 401 → back to sign-in
   on the same server.
 - **Threads**, grouped by state in the product spec's words: Needs you · Working ·
-  Waiting · Scheduled · Done. Search, new thread, unread dots, refresh, loading and empty
+  Waiting · Scheduled · Done. Search, New Chat, unread dots, pull-to-refresh, loading and empty
   states. A thread the agent no longer has is shown dimmed as "No longer available";
   opening it says so once (no retries) with **Remove from List** and **Check Again**. Any
   thread can be archived from its row's menu (right-click).
-- **Thread view.** History, a composer (Return sends, Shift-Return starts a new line),
+- **One bar everywhere.** Every top-level screen and every thread has **Voice** and **New
+  Chat** at the trailing end of its bar (on iPad and Mac the content's bar, so they stay when
+  the sidebar is put away). Settings: the leading button on iPhone's Today, Needs you and
+  Threads; the sidebar's bar on iPad; Omni → Settings (⌘,) on the Mac. Lists refresh by
+  pulling down on iPhone and iPad; the Mac keeps a Refresh button and ⌘R.
+- **Thread view.** History, answers drawn as markdown blocks (headings, lists, quotes, code,
+  rules, tables, links — `MarkdownBlocks` + `MarkdownText`, Foundation's parser), a composer (Return sends, Shift-Return starts a new line),
   live streaming, tool chips, record cards that open the note in Prism, Stop, plain-language
   errors, automatic re-attach, and agent-initiated messages arriving on an open thread.
 - **Approvals**, as a card in the thread and in **Needs you**: every field and the whole
@@ -70,7 +76,7 @@ keeps its sign-in there (see "Decisions" below).
 - **Today** reads the day’s agenda and tasks, names unavailable sections, and keeps
   previous content when refresh fails. **Recurring** creates and edits guarded local agent
   jobs, dispatches Run Now, and manages schedules; legacy script runners remain read-only.
-- Mac keys: ⌘N new thread · ⌘F search · ⌘. stop · ⌘R refresh (whatever the window shows) ·
+- Mac keys: ⌘N new chat · ⌘F search · ⌘. stop · ⌘R refresh (whatever the window shows) ·
   ⌘, settings.
 - **iPhone and iPad.** iPhone: tabs Today · Needs you · Threads. iPad: the Mac's sidebar
   beside the content, in portrait too; a narrow iPad window gets the iPhone's tabs. The
@@ -90,7 +96,7 @@ extended record/context inspection remain separate follow-ups; installed local s
 | `Sources/OmniCore` | View models, stores, navigation state, plain-language errors. No SwiftUI. Everything behind protocols (`OmniService`, `SessionAuth`, `ServerProbe`), so it is tested with fakes |
 | `Sources/OmniUI` | The shared SwiftUI screens |
 | `Sources/OmniSmoke` | A command-line walk through the same calls, against the dev gateway |
-| `Tests/OmniCoreTests` | 99 tests, no network |
+| `Tests/OmniCoreTests` | 260 tests, no network |
 | `Tests/OmniUISnapshotTests` | Draws every Mac screen off-screen from sample data (PNGs); checks the app's colours for contrast |
 | `UITests/` | XCUITest: the walk through every screen on iPhone and iPad (and the Mac), the accessibility audit — see [TESTING.md](TESTING.md) |
 | `Scripts/` | `smoke.sh`, `uitest.sh` (UI tests + screenshots), `check-release.sh` (the test sign-in is not in a Release build), `gallery.sh` |

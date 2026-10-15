@@ -49,7 +49,9 @@ struct ThreadView: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 0) {
-                    Text(barTitle).font(.headline).lineLimit(1)
+                    // Voice and New Chat share the bar: a title a little too long for what is
+                    // left is drawn a little smaller rather than cut.
+                    Text(barTitle).font(.headline).lineLimit(1).minimumScaleFactor(0.75).allowsTightening(true)
                     if let state = model.thread.map({ $0.gone ? "No longer available" : ThreadGrouping.title(for: $0.state) }) {
                         Text(state).font(.caption).foregroundStyle(Color.quietText)
                             .lineLimit(1)
@@ -84,7 +86,8 @@ struct ThreadView: View {
         }
         #endif
         .toolbar {
-            ToolbarItem {
+            // Voice here talks in this thread; New Chat leaves it for a new one.
+            ToolbarItemGroup(placement: .primaryAction) {
                 Button("Voice", systemImage: "waveform") {
                     session.showVoice(in: model.threadID); voiceExpanded = true
                 }
@@ -92,6 +95,7 @@ struct ThreadView: View {
                 .accessibilityLabel("Voice")
                 .accessibilityIdentifier("voice.open")
                 .disabled(model.isUnavailable)
+                NewChatButton(session: session)
             }
         }
         .onAppear {
@@ -349,7 +353,7 @@ struct Composer<Accessory: View>: View {
     }
 }
 
-/// ⌘N: an empty composer. Sending creates the thread and opens it.
+/// ⌘N, or New Chat in any bar: an empty composer. Sending creates the thread and opens it.
 struct NewThreadView: View {
     let session: SessionModel
     @State private var text = ""
@@ -360,7 +364,7 @@ struct NewThreadView: View {
             GeometryReader { area in
                 ScrollView {
                     ContentUnavailableView {
-                        Label(session.newThreadUsesVoice ? "New voice conversation" : "New thread", systemImage: session.newThreadUsesVoice ? "waveform" : "square.and.pencil")
+                        Label(session.newThreadUsesVoice ? "New voice conversation" : "New chat", systemImage: session.newThreadUsesVoice ? "waveform" : "square.and.pencil")
                     } description: {
                         Text("Say what you want done. Omni works on it in its own thread and asks before anything goes out.")
                     }
@@ -394,7 +398,7 @@ struct NewThreadView: View {
             .fixedSize(horizontal: false, vertical: true)
             .layoutPriority(1)
         }
-        .navigationTitle("New Thread")
+        .navigationTitle("New Chat")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif

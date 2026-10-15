@@ -59,3 +59,20 @@ private actor NudgeFake: NudgeService {
         XCTAssertTrue(center.busy.isEmpty)
     }
 }
+
+final class NudgeKindTests: XCTestCase {
+    func testEveryServerKindHasAReadableLabel() {
+        XCTAssertEqual(NudgeKind.label("reply-owed"), "Reply owed")
+        XCTAssertEqual(NudgeKind.label("unprocessed"), "Unread message")
+        XCTAssertEqual(NudgeKind.label("task"), "Task due")
+        XCTAssertEqual(NudgeKind.label("commitment"), "Commitment")
+        XCTAssertEqual(NudgeKind.label("meeting"), "Meeting")
+        XCTAssertEqual(NudgeKind.label("job"), "Job")
+        XCTAssertEqual(NudgeKind.label("freshness"), "Data freshness")
+    }
+
+    func testAnUnknownKindIsStillReadable() {
+        XCTAssertEqual(NudgeKind.label("travel-plan"), "Travel plan")
+        XCTAssertEqual(NudgeKind.label(""), "Nudge")
+    }
+}
