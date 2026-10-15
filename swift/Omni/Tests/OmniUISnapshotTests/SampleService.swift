@@ -36,7 +36,7 @@ class SampleService: OmniService, @unchecked Sendable {
     // MARK: Building the sample
 
     @discardableResult
-    func addThread(_ id: String, _ title: String, state: String = "done", preview: String? = nil, unread: Int = 0, gone: Bool = false, waitingOn: String? = nil, messages: [(String, String)] = [], tools: [String] = [], cards: [[String: Any]] = [], approvals: [[String: Any]] = [], live: [OmniStreamEnvelope] = []) -> String {
+    func addThread(_ id: String, _ title: String, state: String = "done", preview: String? = nil, unread: Int = 0, gone: Bool = false, waitingOn: String? = nil, messages: [(String, String)] = [], tools: [String] = [], cards: [[String: Any]] = [], approvals: [[String: Any]] = [], itemCards: [OmniCard] = [], live: [OmniStreamEnvelope] = []) -> String {
         var row: [String: Any] = ["id": id, "title": title, "state": state, "unread": unread, "pinned": false, "archived": false, "running": state == "working", "lastSeq": 0, "source": "text", "gone": gone, "lastActivityAt": "2026-10-09T15:0\(threadRows.count % 10):00.000Z"]
         if let preview { row["preview"] = preview }
         if let waitingOn { row["waitingOn"] = waitingOn }
@@ -49,7 +49,7 @@ class SampleService: OmniService, @unchecked Sendable {
         }
         lock.withLock {
             threadRows.append(row)
-            details[id] = ["thread": row, "messages": stored, "cards": cards, "approvals": approvals, "activeTurnId": state == "working" ? "turn-\(id)" : NSNull()]
+            details[id] = ["thread": row, "messages": stored, "cards": cards, "itemCards": (try? JSONSerialization.jsonObject(with: PrismJSON.encoder().encode(itemCards))) ?? [], "approvals": approvals, "activeTurnId": state == "working" ? "turn-\(id)" : NSNull()]
             approvalRows.append(contentsOf: approvals.filter { $0["status"] as? String == "pending" })
             if !live.isEmpty { liveStreams[id] = live }
         }
@@ -275,4 +275,97 @@ final class SampleSettings: SettingsStore, @unchecked Sendable {
     init(_ value: String?) { self.value = value }
     func serverURL() -> String? { lock.withLock { value } }
     func setServerURL(_ value: String?) { lock.withLock { self.value = value } }
+}
+
+/// The sample gateway with item cards (Needs you's three sections, cards inline in a thread).
+/// Every name, address and date is made up.
+final class CardingSampleService: SampleService, CardService, @unchecked Sendable {
+    var cardItems: [OmniCard] = []
+
+    static let t0 = Date(timeIntervalSince1970: 1_792_080_000)
+    static let replyDraft = OmniCard.Draft(kind: .emailReply, payload: ["noteId": "01JEXAMPLE0000000000000002", "expectTo": ["sam@example.com"], "body": "Hi Sam,\n\nThursday afternoon works. I'll go through the budget sheet and send comments by 4.\n\nBenjamin"])
+
+    static func proposed() -> OmniCard {
+        OmniCard(id: "card-budget", sourceKey: "01JEXAMPLE0000000000000002", kind: .email, state: .proposed,
+                 headline: "Sam asks whether you can review the grant budget before Friday",
+                 context: [.init(text: "You're free Thu 2–4", source: "calendar"), .init(text: "Grant due Fri 5pm", source: "01JPROJECT"), .init(text: "Last talked Oct 2", source: "01JPERSON")],
+                 ask: "Review the budget sheet and reply with comments", urgency: .today,
+                 options: [
+                    .init(id: "yes-thu", label: "Say yes, Thursday afternoon", plan: "Reply confirming Thursday afternoon", produces: ["email-reply"], draft: replyDraft),
+                    .init(id: "monday", label: "Ask to push to Monday", plan: "Reply proposing Monday", produces: ["email-reply"], draft: nil),
+                    .init(id: "kevin", label: "Hand to Kevin", plan: "Forward to Kevin with a note", produces: ["email"], draft: nil),
+                 ],
+                 recommended: "yes-thu", itemRefs: ["01JEXAMPLE0000000000000002"], threadId: "card-thread",
+                 createdAt: t0.addingTimeInterval(-7_200), updatedAt: t0, section: .decide)
+    }
+    static func draftReady() -> OmniCard {
+        OmniCard(id: "card-ready", sourceKey: "01JEXAMPLE0000000000000003", kind: .email, state: .draftReady, headline: "Dana asked whether Friday at ten works for the spec review",
+                 context: [.init(text: "Friday 10–11 is free", source: "calendar")], urgency: .thisWeek,
+                 options: [.init(id: "yes", label: "Say yes", plan: "Confirm Friday at ten", produces: ["email-reply"], draft: replyDraft), .init(id: "later", label: "Ask for the afternoon", plan: "Propose 2pm", produces: ["email-reply"], draft: nil)],
+                 recommended: "yes", itemRefs: ["01JEXAMPLE0000000000000003"], threadId: "card-thread", approvalIds: ["apr-card"], chosenOptionId: "yes",
+                 createdAt: t0.addingTimeInterval(-3_600), updatedAt: t0, section: .approve)
+    }
+    static func invite() -> OmniCard {
+        OmniCard(id: "card-invite", sourceKey: "01JEXAMPLE0000000000000004", kind: .invite, state: .proposed, headline: "Ana invited you to the retreat planning call on Tuesday at 3",
+                 context: [.init(text: "Tuesday 3–4 clashes with the hardware sync", source: "calendar")], urgency: .thisWeek,
+                 options: [
+                    .init(id: "accept", label: "Accept", plan: "RSVP yes", produces: ["calendar-rsvp"], draft: .init(kind: .calendarRSVP, payload: ["eventId": "evt_example_1", "response": "accepted"])),
+                    .init(id: "later-week", label: "Ask Ana for Thursday", plan: "Message Ana proposing Thursday", produces: ["message"], draft: nil),
+                 ],
+                 recommended: "accept", itemRefs: ["01JEXAMPLE0000000000000004"], threadId: "card-thread-2", createdAt: t0.addingTimeInterval(-86_400), updatedAt: t0, section: .decide)
+    }
+    static func task() -> OmniCard {
+        OmniCard(id: "card-task", sourceKey: "01JEXAMPLE0000000000000005", kind: .task, state: .proposed, headline: "Renewing the domain is due tomorrow",
+                 context: [.init(text: "Card on file expires this month", source: "01JEXAMPLE0000000000000005")], urgency: .whenever,
+                 options: [.init(id: "friday", label: "Do it Friday morning", plan: "Add a task for Friday 9am", produces: ["task"], draft: nil), .init(id: "kevin", label: "Ask Kevin to renew it", plan: "Message Kevin", produces: ["message"], draft: nil)],
+                 recommended: nil, itemRefs: ["01JEXAMPLE0000000000000005"], threadId: "card-thread-3", createdAt: t0.addingTimeInterval(-172_800), updatedAt: t0, section: .decide)
+    }
+    static func working() -> OmniCard { proposed().with(state: .working, chosenOptionId: "monday", section: .motion) }
+    static func waiting() -> OmniCard {
+        let c = invite().with(state: .waiting, chosenOptionId: "later-week", section: .motion)
+        return OmniCard(id: "card-waiting", sourceKey: c.sourceKey, kind: c.kind, state: c.state, headline: "Scheduling with Ana — waiting on her reply since Tuesday", context: c.context, urgency: c.urgency, options: c.options, recommended: c.recommended, itemRefs: c.itemRefs, threadId: c.threadId, chosenOptionId: c.chosenOptionId, createdAt: c.createdAt, updatedAt: c.updatedAt, section: .motion)
+    }
+    static func sent() -> OmniCard { draftReady().with(state: .sent, chosenOptionId: "yes", section: nil) }
+    static func transitional() -> OmniCard {
+        OmniCard(id: "nud-sample", sourceKey: "01JEXAMPLE0000000000000006", kind: .message, state: .proposed, headline: "Kevin is waiting for an answer about the mooring quote",
+                 context: [.init(text: "He asked in the hardware room yesterday.", source: nil)], urgency: .thisWeek, itemRefs: ["01JEXAMPLE0000000000000006"],
+                 createdAt: t0.addingTimeInterval(-5_400), updatedAt: t0, section: .decide, transitional: true, nudgeId: "nud-sample")
+    }
+    /// Review Focus 4: a 160-character headline, four 200-character facts, four 80-character options.
+    static func long() -> OmniCard {
+        let fact = String(repeating: "The venue needs a final head count, the catering order and the deposit before the holiday weekend. ", count: 2).prefix(200)
+        return OmniCard(id: "card-long", sourceKey: "01JEXAMPLE0000000000000007", kind: .email, state: .proposed,
+                        headline: String("The retreat venue wants the final head count, the dietary list, the room plan and the deposit confirmed before the long weekend, and asks about parking".prefix(160)),
+                        context: (0..<4).map { _ in .init(text: String(fact), source: "calendar") }, ask: "Confirm the numbers or ask for more time", urgency: .today,
+                        options: (1...4).map { i in .init(id: "o\(i)", label: String("Option \(i): reply with the numbers we have and promise the rest by Thursday noon, sorry".prefix(80)), plan: "Reply", produces: ["email-reply"], draft: i == 1 ? replyDraft : nil) },
+                        recommended: "o1", itemRefs: ["01JEXAMPLE0000000000000007"], threadId: "card-thread", createdAt: t0.addingTimeInterval(-600), updatedAt: t0, section: .decide)
+    }
+    static func gallery() -> [(String, OmniCard)] {
+        [("proposed", proposed()), ("draft-ready", draftReady()), ("invite", invite()), ("task", task()), ("working", working()), ("waiting", waiting()), ("sent", sent()), ("transitional", transitional())]
+    }
+    /// Everything at once, plus the draft's approval and the card thread with a card inline.
+    static func carding() -> CardingSampleService {
+        let service = CardingSampleService()
+        service.addThread("card-thread", "Sam's grant budget", state: "waiting", preview: "I drafted a reply for you to review.",
+                          messages: [("assistant", "Sam asked whether you can review the grant budget before Friday. I prepared three ways to answer.")],
+                          approvals: [SampleService.draft("apr-card", thread: "card-thread", kind: "email-reply", payload: ["noteId": "01JEXAMPLE0000000000000002", "expectTo": ["sam@example.com"], "body": "Hi Sam,\n\nThursday afternoon works. I'll go through the budget sheet and send comments by 4.\n\nBenjamin"])],
+                          itemCards: [proposed()])
+        service.cardItems = [proposed(), draftReady(), invite(), task(), working(), waiting(), transitional()]
+        return service
+    }
+
+    func cards(section: CardSection?) async throws -> CardList {
+        if failReads { throw PrismError.unreachable("sample") }
+        let open = cardItems.filter { $0.section != nil }
+        return CardList(cards: open, counts: .init(decide: open.filter { $0.section == .decide }.count, approve: open.filter { $0.section == .approve }.count, motion: open.filter { $0.section == .motion }.count))
+    }
+    func card(_ id: String) async throws -> OmniCard {
+        if failReads { throw PrismError.unreachable("sample") }
+        guard let found = cardItems.first(where: { $0.id == id }) else { throw PrismError.invalidRequest("sample") }
+        return found
+    }
+    func chooseCardOption(_ id: String, optionID: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult { throw PrismError.invalidRequest("sample") }
+    func instructCard(_ id: String, text: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult { throw PrismError.invalidRequest("sample") }
+    func snoozeCard(_ id: String, until: Date) async throws -> OmniCard { throw PrismError.invalidRequest("sample") }
+    func dismissCard(_ id: String, reason: CardDismissReason) async throws -> OmniCard { throw PrismError.invalidRequest("sample") }
 }

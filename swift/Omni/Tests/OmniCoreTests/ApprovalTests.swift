@@ -107,6 +107,31 @@ final class ApprovalCenterTests: XCTestCase {
         XCTAssertNil(center.card(for: "new")!.statusLine())
     }
 
+    func testLoadFetchesOnlyTheDraftsTheCenterHasNotSeen() async {
+        let center = make()
+        center.ingest([Fixture.approval("known")])
+        service.approvalReads(.success(Fixture.approval("elsewhere")))
+        let all = await center.load(["known", "elsewhere", "elsewhere"])
+        XCTAssertTrue(all)
+        XCTAssertEqual(service.approvalReadIDs, ["elsewhere"], "a draft already held is not read again, and none is read twice")
+        XCTAssertNotNil(center.card(for: "elsewhere"))
+        XCTAssertTrue(center.card(for: "elsewhere")!.canOfferSend(), "a draft made elsewhere is a normal pending draft here")
+        let none = await center.load(["known", "elsewhere"])
+        XCTAssertTrue(none)
+        XCTAssertEqual(service.approvalReadIDs.count, 1)
+    }
+
+    func testLoadSaysSoWhenADraftCouldNotBeRead() async {
+        let center = make()
+        service.approvalReads(.failure(PrismError.unreachable("down")))
+        let loaded = await center.load(["gone"])
+        XCTAssertFalse(loaded)
+        XCTAssertNil(center.card(for: "gone"))
+        service.approvalReads(.success(Fixture.approval("gone")))
+        let again = await center.load(["gone"])
+        XCTAssertTrue(again, "asking again reads it again")
+    }
+
     func testADigestMismatchIsNeverOfferedForSendAndNothingIsSent() async {
         let tampered = Fixture.approval("apr1", digest: String(repeating: "0", count: 64))
         XCTAssertFalse(tampered.digestMatchesPayload)

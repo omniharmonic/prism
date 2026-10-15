@@ -37,7 +37,7 @@ final class MacSnapshotTests: XCTestCase {
         for variant in Self.variants {
             var walk = Walk(variant: variant, root: Self.outputRoot)
             try await walk.run()
-            XCTAssertGreaterThan(walk.count, 25, "fewer screens than expected were drawn for \(variant.folder)")
+            XCTAssertGreaterThan(walk.count, 35, "fewer screens than expected were drawn for \(variant.folder)")
         }
     }
 
@@ -71,6 +71,23 @@ struct SampleWindow: View {
         .environment(\.navigator, Navigator { session.destination = $0 })
         .task { await session.threads.refresh() }
         .task { await session.approvals.refresh() }
+    }
+}
+
+/// One card on its own, at a column's width.
+struct CardHarness: View {
+    let cards: CardsModel
+    let approvals: ApprovalCenter
+    let id: String
+    /// A window cannot be taller than the display, so a tall card is drawn in slices: this many points scrolled up.
+    var slice: CGFloat = 0
+    var body: some View {
+        // Not a ScrollView: the picture shows the card from its top, however tall it grows.
+        GeometryReader { _ in
+            CardView(cards: cards, approvals: approvals, id: id).padding()
+                .offset(y: -slice)
+        }
+            .task { await approvals.refresh() }
     }
 }
 
@@ -252,6 +269,27 @@ struct Walk {
         // Approvals: the queue, and each kind in its thread.
         try await screen("needs-you-list", service: service, .needsYou)
         try await screen("needs-you-nudges", service: nudging(), .needsYou)
+
+        // Item cards: every state and source alone, then the long-text cases.
+        for (name, card) in CardingSampleService.gallery() {
+            let service = CardingSampleService.carding()
+            let sink = ErrorSink(onSignedOut: {})
+            let model = CardsModel(service: service, nudges: nil, sink: sink)
+            model.ingest([card])
+            try await draw("card-\(name)", size: CGSize(width: 560, height: 700), CardHarness(cards: model, approvals: ApprovalCenter(service: service, sink: sink), id: card.id))
+        }
+        let longService = CardingSampleService.carding()
+        let longSink = ErrorSink(onSignedOut: {})
+        let longModel = CardsModel(service: longService, nudges: nil, sink: longSink)
+        longModel.ingest([CardingSampleService.long()])
+        let longApprovals = ApprovalCenter(service: longService, sink: longSink)
+        let sliceHeight: CGFloat = 780
+        for (name, type, slices) in [("card-long-text", DynamicTypeSize.large, 2), ("card-long-text-xxxl", .xxxLarge, 2), ("card-long-text-accessibility", .accessibility3, 2)] {
+            for index in 0..<slices {
+                try await draw("\(name)-\(index + 1)", size: CGSize(width: 430, height: sliceHeight),
+                               CardHarness(cards: longModel, approvals: longApprovals, id: "card-long", slice: CGFloat(index) * (sliceHeight - 40)).environment(\.dynamicTypeSize, type))
+            }
+        }
         for (index, entry) in Self.kinds.enumerated() {
             try await screen("approval-\(entry.kind)", service: service, .thread("n\(index)"))
         }

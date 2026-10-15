@@ -247,6 +247,23 @@ public final class ApprovalCenter {
         }
     }
 
+    /// Read the drafts this center has not seen (a card's draft that was made on another
+    /// device or by the agent), so a card never waits on one that nobody fetched. Drafts already
+    /// held are not read again. True when every id is held afterwards.
+    @discardableResult
+    public func load(_ ids: [String]) async -> Bool {
+        var seen: Set<String> = []
+        let missing = ids.filter { cards[$0] == nil && seen.insert($0).inserted }
+        for id in missing {
+            do {
+                ingest([try await service.approval(id)])
+            } catch {
+                _ = sink.describe(error, reading: true)
+            }
+        }
+        return ids.allSatisfy { cards[$0] != nil }
+    }
+
     /// Read one approval again (the Reload button on a mismatch or a conflict).
     public func reload(_ id: String) async {
         guard var card = cards[id], !card.isBusy else { return }
