@@ -12,7 +12,8 @@
  *
  * Request bodies are exactly what Prism sent before the provider layer
  * (`{model, messages, stream:false, max_tokens?, response_format?}` — no temperature),
- * so routing an existing job through here changes nothing on the wire.
+ * so routing an existing job through here changes nothing on the wire. The one
+ * addition, `reasoning_effort`, is sent only when a caller asks for it.
  */
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
@@ -47,6 +48,8 @@ export interface CompletionRequest {
   maxTokens?: number;
   timeoutMs: number;
   signal?: AbortSignal;
+  /** Sent as `reasoning_effort` when set ("none" turns a reasoning model's thinking off). */
+  reasoningEffort?: string;
 }
 
 /** Bounded response (never buffer an unbounded body from a model server). */
@@ -149,6 +152,7 @@ export function openAICompatible(target: OpenAICompatibleTarget, fetchImpl: Fetc
           messages: messages(req),
           stream: false,
           response_format: { type: "json_schema", json_schema: { name: req.schemaName, strict: true, schema: req.schema } },
+          ...(req.reasoningEffort ? { reasoning_effort: req.reasoningEffort } : {}),
         },
         { timeoutMs: req.timeoutMs, signal: req.signal },
       );
