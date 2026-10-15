@@ -1507,8 +1507,9 @@ export const DEVICE_BOOTSTRAP_COOLDOWN_MS = 24 * 60 * 60_000;
 /**
  * May this account sign a device in WITHOUT an existing device's approval (review C1)?
  * Only if it has never had a device, or its last device stopped being live more than
- * 24 h ago and that end was not session-triggered. (No session path can revoke devices
- * today; `last_end_via = 'session'` keeps the door shut if one is ever added.)
+ * 24 h ago and that end was a device self-revoke or a natural expiry. Any other recorded
+ * end (`last_end_via` of 'session', 'token' or 'replay') keeps the door shut (R4 M-d);
+ * `insertDeviceToken` clears the latch, since a new device needs approval or open bootstrap.
  */
 export function deviceBootstrapOpen(email: string): boolean {
   const t = now();
