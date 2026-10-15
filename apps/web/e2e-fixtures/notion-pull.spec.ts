@@ -205,7 +205,10 @@ test("Page tree (Browse drawer): pulling down refetches the tree; the Refresh bu
   await expect(drawer).toBeVisible();
   const reads = () => page.evaluate(() => (window as any).prismFixtureReads.tree as number);
   const before = await reads();
-  await drag(page, drawer.getByRole("navigation", { name: "Workspace destinations" }), 0, 220);
+  const destinations = drawer.getByRole("navigation", { name: "Workspace destinations" });
+  // The drawer slides in; a drag measured mid-slide starts off-screen and touches nothing.
+  await expect.poll(async () => (await destinations.boundingBox())?.x ?? -1).toBeGreaterThanOrEqual(0);
+  await drag(page, destinations, 0, 220);
   await expect(said(drawer)).toHaveText("Pages updated");
   await expect.poll(reads).toBeGreaterThan(before);
   const afterPull = await reads();
