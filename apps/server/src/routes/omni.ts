@@ -16,7 +16,10 @@
  *    They can PROPOSE and announce; they can never decide or execute anything.
  *  - Approval decisions additionally need a HUMAN origin (session/device; a client's
  *    `X-Prism-Action-Origin: agent` downgrade is honoured), the digest the person saw and
- *    an `Idempotency-Key`; execution goes only through Prism's live-action routes.
+ *    an `Idempotency-Key`; execution goes only through Prism's live-action routes or the
+ *    agent repo's send scripts, which can send only with a one-time grant (send-grant.ts).
+ *  - `POST /approvals/:id/send-grant/verify` (a send script proving it was launched by an
+ *    executor): loopback only; the grant in the body is the whole credential.
  */
 import { apnsApplicationForDevice, apnsEnabled, isApnsToken, isApnsEnvironment, isNotificationPreview, saveApnsToken, removeApnsTokenForDevice } from "../apns";
 import { proactiveIntake, acknowledgeProactiveIntake } from "../omni/proactive-intake";
@@ -81,6 +84,7 @@ import {
 import { buildToday, buildTasksPage, localDate, validDate, type Dispatch } from "../omni/today";
 import { runProtonSend } from "../omni/proton-send";
 import { runTweetSend } from "../omni/tweet-send";
+import { consumeSendGrant } from "../omni/send-grant";
 
 import { DIALS, type InterruptContext } from "../omni/nudge-policy";
 import { priorNudgeSources, resolveNudgeSource, nudgeWeeklyAudit, latestNudgeAudit, FRESHNESS_SUBSYSTEMS, NUDGE_KINDS, upsertNudge, listNudges, getNudge, nudgeAction, nudgeSettings, setNudgeSettings, bindNudgeThread, type Candidate } from "../omni/nudges";
@@ -154,8 +158,8 @@ const liveActionExecutor: Executor = async ({ kind, payload, approvalId, headers
 /** Approved emails go to proton_send.py unless OMNI_EMAIL_EXECUTOR=live-actions (option B). */
 const defaultExecutor: Executor = (o) =>
   (o.kind === "email" || o.kind === "email-reply") && omniConfig.emailExecutor() === "proton-send"
-    ? runProtonSend(o.kind, o.payload)
-    : o.kind === "tweet" ? runTweetSend(o.payload) : liveActionExecutor(o);
+    ? runProtonSend(o.kind, o.payload, o.approvalId)
+    : o.kind === "tweet" ? runTweetSend(o.payload, o.approvalId) : liveActionExecutor(o);
 let executor: Executor = defaultExecutor;
 export function setOmniExecutorForTests(e: Executor | null): void {
   executor = e ?? defaultExecutor;
@@ -179,9 +183,17 @@ const hookAuthorized = (c: Context): boolean => {
   return a.length === b.length && timingSafeEqual(a, b);
 };
 
+/** The one route a SEND SCRIPT calls (send-grant.ts): loopback only; the one-time grant
+ *  in the body is its whole credential. It can only consume a grant an executor minted. */
+const GRANT_VERIFY_PATH = /^(\/api\/omni)?\/approvals\/[^/]+\/send-grant\/verify$/;
+
 omniApi.use("*", async (c, next) => {
   if (c.req.path.startsWith("/api/omni/hooks/") || c.req.path.startsWith("/hooks/")) {
     if (!hookAuthorized(c)) return c.json({ error: "forbidden" }, 403);
+    return next();
+  }
+  if (GRANT_VERIFY_PATH.test(c.req.path)) {
+    if (c.req.method !== "POST" || !isLocalRequest((k) => c.req.header(k))) return c.json({ error: "forbidden" }, 403);
     return next();
   }
   const via = requestVia(c);
@@ -789,6 +801,21 @@ async function decide(c: Context): Promise<Response> {
 }
 omniApi.post("/approvals/:id/decision", decide);
 omniApi.post("/approvals/:id/decide", decide);
+
+/**
+ * A send script, launched by an executor above, proves it was: it presents the one-time
+ * grant it was handed and the digest of exactly what it is about to send. The grant is
+ * consumed whatever the verdict. 200 = go ahead (once); anything else = do not send.
+ */
+omniApi.post("/approvals/:id/send-grant/verify", async (c) => {
+  const id = c.req.param("id") ?? "";
+  const b = await jsonBody(c);
+  if (!b) return bad(c, "a JSON object body is required");
+  const owner = omniConfig.ownerEmail();
+  const v = consumeSendGrant(id, b.token, b.digest, (aid) => getApproval(owner, aid)?.status ?? null);
+  omniAudit({ actor: "send-script", via: "send-grant", action: "approval.grant", approvalId: id, digest: typeof b.digest === "string" ? b.digest : null, status: v.ok ? "ok" : "refused", error: v.ok ? null : v.error });
+  return v.ok ? c.json({ ok: true, approvalId: id }) : c.json({ ok: false, error: v.error }, 403);
+});
 
 // ── jobs (Hermes cron) ──────────────────────────────────────────────────────
 

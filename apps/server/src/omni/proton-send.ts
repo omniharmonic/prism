@@ -8,7 +8,11 @@
  * Invariants:
  *  - Fixed argv; every user value is its own argv element after a flag, the body goes
  *    on stdin. No shell.
- *  - The child gets an allowlisted env (HOME/USER/PATH/locale/TZ) — never a Prism secret.
+ *  - The child gets an allowlisted env (HOME/USER/PATH/locale/TZ) — never a Prism secret —
+ *    plus ONE one-time send grant (send-grant.ts) bound to this approval and the digest
+ *    of exactly these recipients/subject/body. proton_send.py verifies (and consumes) it
+ *    with this server over loopback before it opens the SMTP socket; without it the
+ *    script refuses ("Sends must be approved in Omni").
  *    proton_send.py reads the Bridge password from the Keychain and its Parachute token
  *    from the agent repo's own .env.
  *  - Outcome is conservative: only a refusal that provably happened before the SMTP
@@ -20,6 +24,7 @@ import { existsSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
 import { omniConfig } from "./config";
 import type { ApprovalKind, ExecOutcome } from "./approvals";
+import { emailSendDigest, GRANT_ENV, mintSendGrant, revokeSendGrant } from "./send-grant";
 
 const ENV_KEYS = ["HOME", "USER", "LOGNAME", "PATH", "LANG", "TMPDIR", "TZ"];
 
@@ -62,6 +67,7 @@ const PRE_SEND = [
   /^ERROR: No Parachute note/m,
   /^ERROR: Cannot parse a reply address/m,
   /^ERROR: Refusing to send/m,
+  /^ERROR: Sends must be approved in Omni/m,
   /^ERROR: Body is \d+ chars/m,
   /^ERROR: cannot reach Proton Bridge SMTP/m,
   /^ERROR: .*does not offer STARTTLS/m,
@@ -105,7 +111,7 @@ export function setProtonSpawnerForTests(s: Spawner | null): void {
 
 const scrub = (s: string): string => s.replace(/[A-Za-z0-9+/=_-]{32,}/g, "[redacted]").slice(-400);
 
-export async function runProtonSend(kind: ApprovalKind, payload: Record<string, unknown>): Promise<ExecOutcome> {
+export async function runProtonSend(kind: ApprovalKind, payload: Record<string, unknown>, approvalId: string): Promise<ExecOutcome> {
   const script = omniConfig.protonSendPath();
   if (!script || !protonSendConfigured()) return { status: "disabled", detail: { error: "executor_disabled", executor: "proton-send" } };
   const args = protonSendArgs(kind, payload, omniConfig.ownerEmail());
@@ -114,12 +120,21 @@ export async function runProtonSend(kind: ApprovalKind, payload: Record<string, 
   const env: Record<string, string> = {};
   for (const k of ENV_KEYS) if (process.env[k]) env[k] = process.env[k]!;
   for (const [k, v] of Object.entries(process.env)) if (k.startsWith("LC_") && v) env[k] = v;
-  const r = await spawner(omniConfig.protonPython(), [script, ...args], {
-    cwd: dirname(dirname(script)), // the agent repo root (scripts/proton_send.py)
-    env,
-    input: body,
-    timeoutMs: omniConfig.protonSendTimeoutMs(),
-  });
+  if (kind !== "email" && kind !== "email-reply") return { status: "failed", detail: { error: "invalid_payload", executor: "proton-send" } };
+  const grant = mintSendGrant(approvalId, emailSendDigest(kind, payload));
+  env[GRANT_ENV.token] = grant;
+  env[GRANT_ENV.approval] = approvalId;
+  let r: Awaited<ReturnType<Spawner>>;
+  try {
+    r = await spawner(omniConfig.protonPython(), [script, ...args], {
+      cwd: dirname(dirname(script)), // the agent repo root (scripts/proton_send.py)
+      env,
+      input: body,
+      timeoutMs: omniConfig.protonSendTimeoutMs(),
+    });
+  } finally {
+    revokeSendGrant(grant); // unused (the script refused early, or never started): withdrawn
+  }
   const detail: Record<string, unknown> = { executor: "proton-send", exitCode: r.code };
   if (r.code === 0) {
     const m = r.stdout.match(/\{[\s\S]*\}\s*$/);

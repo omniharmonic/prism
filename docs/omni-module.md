@@ -307,7 +307,35 @@ gateway stores what was proposed, and the app's decision must carry that digest.
 
 ### Email executor: `proton_send.py` (option B)
 
-`src/omni/proton-send.ts`. Fixed argv (`send --approved --json --body-file - --subject … --to … [--cc …] [--allow-external]`), each value one argv element, no shell; the body on stdin; cwd = the agent repo root; env = HOME/USER/LOGNAME/PATH/LANG/LC_*/TMPDIR/TZ only — never a Prism secret, never `PROTON_SEND_ALLOW_EXTERNAL`. `--allow-external` is passed when a recipient is not the owner, but third-party mail still needs `PROTON_SEND_ALLOW_EXTERNAL=1` in the AGENT repo's `.env` — the recipient policy stays in `proton_send.py`. A reply sends exactly the recipients shown on the card (`expectTo`); the note supplies the subject and threading headers. Outcome: exit 0 → `sent` (+ `messageId`); a refusal `proton_send.py` raises before it opens the SMTP socket (markdown, recipient guard, Bridge unreachable / pin / login) → `failed`; a refused SMTP exchange, a timeout or a signal → `unknown`. Tests: `test/omni-proton-send.test.ts` (fake spawner). Later: port the two guards into live actions and switch `OMNI_EMAIL_EXECUTOR`.
+`src/omni/proton-send.ts`. Fixed argv (`send --approved --json --body-file - --subject … --to … [--cc …] [--allow-external]`), each value one argv element, no shell; the body on stdin; cwd = the agent repo root; env = HOME/USER/LOGNAME/PATH/LANG/LC_*/TMPDIR/TZ only — never a Prism secret, never `PROTON_SEND_ALLOW_EXTERNAL`. `--allow-external` is passed when a recipient is not the owner, but third-party mail still needs `PROTON_SEND_ALLOW_EXTERNAL=1` in the AGENT repo's `.env` — the recipient policy stays in `proton_send.py`. A reply sends exactly the recipients shown on the card (`expectTo`); the note supplies the subject and threading headers. The child also gets a one-time send grant for this approval and these exact bytes (below); without it `proton_send.py` refuses. Outcome: exit 0 → `sent` (+ `messageId`); a refusal `proton_send.py` raises before it opens the SMTP socket (markdown, recipient guard, send grant, Bridge unreachable / pin / login) → `failed`; a refused SMTP exchange, a timeout or a signal → `unknown`. Tests: `test/omni-proton-send.test.ts` (fake spawner). Later: port the two guards into live actions and switch `OMNI_EMAIL_EXECUTOR`.
+
+### One-time send grants (the "one door", 2026-10-15)
+
+Owner requirement: nothing is sent to another person unless he approved that EXACT
+message from a signed-in device. Prism's in-process senders (`/api/actions/*`) already
+require a human-origin credential. The agent repo's send scripts (`proton_send.py`,
+`omni_tweet_send.py`, `twitter_post.py`, `matrix_reader.py send|send-to`) are separate
+processes anyone on the Mini could start, so they now refuse to send unless they hold a
+ONE-TIME SEND GRANT that this server minted (`src/omni/send-grant.ts`):
+
+- Minted only by the email/tweet executors, only after `claimApproval` atomically claimed a
+  pending, unexpired, digest-matched approval on a human-origin decision.
+- Handed to the child in its environment (`PRISM_SEND_GRANT`, `PRISM_SEND_GRANT_APPROVAL`),
+  never argv; stored here only as a SHA-256 hash; in memory (a restart revokes all).
+- Lives ≤ 60 s; single use (consumed on first presentation, whatever the verdict); revoked
+  as soon as the child exits.
+- Bound to (approval id, send digest). The send digest is a length-prefixed SHA-256 over
+  exactly the fields the script will put on the wire (email: to, cc, subject,
+  reply_to_note, in_reply_to, references, body; tweet: text; message: room_id, body),
+  computed independently by the script from its own argv/stdin
+  (`scripts/send_grant.py`, golden vectors shared by both test suites).
+- Verified by `POST /api/omni/approvals/:id/send-grant/verify {token, digest}` — loopback
+  only (`isLocalRequest`), no session or service token (the grant is the credential); the
+  approval must still be `approved` (claimed, unfinished). 200 `{ok:true}` = send once;
+  anything else = 403 and the script exits with "Sends must be approved in Omni" (→ `failed`).
+  Every verification is in `omni_audit` (`approval.grant`).
+
+Tests: `test/omni-send-grant.test.ts`.
 
 ## Change channel and push
 
