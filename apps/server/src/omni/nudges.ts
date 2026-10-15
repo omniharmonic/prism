@@ -1,5 +1,6 @@
 /** Owner-local nudge ledger. Source uniqueness and push claims survive restarts. No outward actions here. */
 import { db } from "../db";
+import { cardSourceKeys } from "./cards";
 import { attentionPreferences } from "./attention-preferences";
 import { omniConfig } from "./config";
 import { newId } from "./store";
@@ -113,7 +114,8 @@ export function nudgeWeeklyAudit(owner:string,replies:{sourceId:string;repliedAt
 /** A digest consumes one interruption budget slot, while each included item claims its surface atomically. */
 export const claimNudgeDigest=db.transaction((owner:string,now=Date.now()):{ids:string[];claims:number[]}|null=>{
  const settings=nudgeSettings(owner),count=rateCount(owner,now);
- const eligible=listNudges(owner,false,now).filter(n=>interruptDecision(n,settings.context,settings.dial,settings.killed,count,now,attentionPreferences(owner))==="digest");
+ const carded=cardSourceKeys(owner);
+ const eligible=listNudges(owner,false,now).filter(n=>!carded.has(n.candidate.sourceId)&&interruptDecision(n,settings.context,settings.dial,settings.killed,count,now,attentionPreferences(owner))==="digest");
  if(!eligible.length)return null;
  const clock=localClock(now),slot=`${clock.date}:${clock.hour}`;
  if(!db.prepare("INSERT OR IGNORE INTO omni_nudge_digest_slots(owner_email,slot,claimed_at) VALUES(?,?,?)").run(owner,slot,now).changes)return null;
