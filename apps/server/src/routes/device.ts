@@ -68,6 +68,7 @@ import {
   setDeviceAuthCodeDevice,
   type DeviceAuthRequestRow,
 } from "../db";
+import { clearConfirmation, confirmationState, needsDeviceConfirmation, requestConfirmation, requestHints } from "../auth/device-confirm";
 
 export const deviceAuth = new Hono();
 
@@ -284,18 +285,32 @@ deviceAuth.post("/device/approve", async (c) => {
   if (!f.csrf || !safeEqual(f.csrf, consentCsrf(f.req, sid))) return errorPage(c, 403, "Invalid form token.");
   const req = getDeviceAuthRequest(f.req);
   if (!req) return errorPage(c, 400, "This sign-in request expired or was already used.");
-  deleteDeviceAuthRequest(req.id);
-  clearReqCookie(c);
-  setDoneCookie(c, f.decision === "approve" ? "approved" : "denied");
 
   if (f.decision !== "approve") {
+    deleteDeviceAuthRequest(req.id);
+    clearReqCookie(c);
+    setDoneCookie(c, "denied");
     return c.redirect(withParams(req.redirect_uri, { error: "access_denied", state: req.state }));
   }
+  // One door (review R2-1): with a live device on the account, a session's consent is not
+  // enough — an existing device must approve this exact sign-in in Omni. The request stays
+  // parked; this browser waits on /auth/device/wait.
+  if (needsDeviceConfirmation(s.email)) {
+    requestConfirmation(req, s.email, req.label ?? defaultLabelFor(req.client_id), requestHints((k) => c.req.header(k)));
+    return waitingPage(c);
+  }
+  deleteDeviceAuthRequest(req.id);
+  clearReqCookie(c);
+  setDoneCookie(c, "approved");
+  return mintCodeAndRedirect(c, req, s.email);
+});
+
+function mintCodeAndRedirect(c: Context, req: DeviceAuthRequestRow, email: string) {
   const code = randomId(32);
   const now = Date.now();
   insertDeviceAuthCode({
     code_hash: sha256hex(code),
-    email: s.email,
+    email,
     client_id: req.client_id,
     code_challenge: req.code_challenge,
     redirect_uri: req.redirect_uri,
@@ -304,6 +319,44 @@ deviceAuth.post("/device/approve", async (c) => {
     expires_at: now + AUTH_CODE_TTL_MS,
   });
   return c.redirect(withParams(req.redirect_uri, { code, state: req.state }));
+}
+
+function waitingPage(c: Context) {
+  c.header("Refresh", "3; url=/auth/device/wait");
+  return page(
+    c,
+    200,
+    "Approve on your device",
+    `<meta http-equiv="refresh" content="3; url=/auth/device/wait">` +
+      `<h1>Approve this sign-in on a device you already use</h1>` +
+      `<p>Open the Omni app on your phone, iPad or Mac: the request is waiting under <strong>Needs you</strong> as “Sign in a new device”. ` +
+      `This page continues by itself once you approve.</p>` +
+      `<p class="muted">Denying it there, or 10 minutes without an answer, cancels this sign-in.</p>`,
+  );
+}
+
+/** The parked request, once an existing device decided (polled by the waiting page). */
+deviceAuth.get("/device/wait", (c) => {
+  const req = pendingDeviceRequest(c);
+  if (!req) {
+    const done = getCookie(c, DONE_COOKIE);
+    if (done === "approved" || done === "denied") return alreadyDecidedPage(c, done);
+    return errorPage(c, 400, "This sign-in request expired or was already used.");
+  }
+  const s = readSession(c);
+  if (!s) return errorPage(c, 401, "You're not signed in.");
+  const st = confirmationState(req.id);
+  if (st.state === "pending") return waitingPage(c);
+  if (st.state === "none") return errorPage(c, 400, "This sign-in request was not approved here. Start again from the app.");
+  deleteDeviceAuthRequest(req.id);
+  clearConfirmation(req.id);
+  clearReqCookie(c);
+  if (st.state === "denied" || st.email !== s.email) {
+    setDoneCookie(c, "denied");
+    return c.redirect(withParams(req.redirect_uri, { error: "access_denied", state: req.state }));
+  }
+  setDoneCookie(c, "approved");
+  return mintCodeAndRedirect(c, req, st.email);
 });
 
 // ---------------------------------------------------------------- token
@@ -353,6 +406,9 @@ deviceAuth.post("/device/revoke", async (c) => {
   // revokes ITSELF (sign out).
   const id = f.device_id ?? who.deviceId;
   if (!id) return c.json({ error: "bad_request" }, 400);
+  // One door (R2-1): a browser session cannot revoke devices — emptying the account would
+  // reopen first-device bootstrap for whoever holds that session. Revoke from a device.
+  if (!who.deviceId) return c.json({ error: "device_required", detail: "revoke devices from the Omni or Prism app on a signed-in device" }, 403);
   const row = getDeviceToken(id);
   if (!row || (row.email !== who.email && who.email !== config.ownerEmail)) return c.json({ error: "not_found" }, 404);
   await revokeDevice(row.id);
@@ -382,6 +438,7 @@ deviceAuth.get("/devices", (c) => {
 deviceAuth.delete("/devices/:id", async (c) => {
   const who = identity(c);
   if (!who) return c.json({ error: "unauthorized" }, 401);
+  if (!who.deviceId) return c.json({ error: "device_required", detail: "revoke devices from the Omni or Prism app on a signed-in device" }, 403);
   const row = getDeviceToken(c.req.param("id"));
   // 404 (not 403) for someone else's device: don't confirm it exists.
   if (!row || (row.email !== who.email && who.email !== config.ownerEmail)) return c.json({ error: "not_found" }, 404);

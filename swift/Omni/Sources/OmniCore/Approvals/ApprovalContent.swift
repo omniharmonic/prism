@@ -24,6 +24,9 @@ public struct ApprovalContent: Equatable, Sendable {
     /// One line for a list row: "Email to kevin@example.com".
     public var headline: String {
         if let what = fields.first(where: { $0.key == "title" }), kindLabel == "Command" { return what.value }
+        if kindLabel == Self.deviceSignInLabel {
+            return fields.first(where: { $0.key == "label" }).map { "\(kindLabel): \($0.value)" } ?? kindLabel
+        }
         if let to = fields.first(where: { ["to", "expectTo", "attendees", "roomId"].contains($0.key) }) {
             return "\(kindLabel) to \(to.value)"
         }
@@ -87,6 +90,11 @@ public struct ApprovalContent: Equatable, Sendable {
             return Spec(label: "Tweet", fields: [], body: "text")
         case .walletProposal:
             return Spec(label: "Wallet proposal", fields: [("to", "To"), ("amount", "Amount"), ("token", "Token"), ("chain", "Chain")], body: "purpose")
+        case .deviceSignIn:
+            // Someone is signing a new device in as the owner. The name is what that device
+            // says about ITSELF — labelled as a claim; where it returns to and when it asked
+            // are facts the server recorded.
+            return Spec(label: deviceSignInLabel, fields: [("label", "Device (its own name for itself)"), ("redirectUri", "Returns to"), ("requestedAt", "Requested"), ("ipHint", "From (approximate)"), ("userAgentHint", "App or browser"), ("clientId", "Client")], body: nil)
         case .command:
             // What was flagged and why, then the exact command (any other tool's whole input
             // is listed below as it is — nothing rides along unseen).
@@ -115,7 +123,10 @@ public struct ApprovalContent: Equatable, Sendable {
     }
 
     /// The payload keys that hold a moment (RFC 3339) and are shown as a date and time.
-    static let timeKeys: Set<String> = ["start", "end"]
+    static let timeKeys: Set<String> = ["start", "end", "requestedAt"]
+
+    /// The kind label of a device sign-in (also its card's header).
+    public static let deviceSignInLabel = "Sign in a new device"
 
     /// "Wed, Oct 14, 2026 at 10:00 AM MDT" for a stored RFC 3339 moment: the same instant,
     /// in this device's zone, with the zone named. nil when the text is not a moment — it is

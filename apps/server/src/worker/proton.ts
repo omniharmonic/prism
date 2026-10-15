@@ -472,7 +472,7 @@ function imapSessionOf(client: import("imapflow").ImapFlow): ImapSession {
 
 // ── intents ──────────────────────────────────────────────────────────────────
 
-export type ProtonIntentAction = "create" | "update-flags" | "skip-collision" | "skip-too-large" | "skip-poison";
+export type ProtonIntentAction = "create" | "update-flags" | "skip-collision" | "skip-too-large" | "skip-poison" | "skip-sign-in";
 /** `shadow` (nothing written), `applied`, `logged` (decided not to write), `failed`. */
 export type ProtonIntentEffect = "shadow" | "applied" | "logged" | "failed";
 
@@ -549,7 +549,7 @@ export const LIST_METADATA_KEYS = ["source", "messageId", "mailbox", "uid", "isU
  */
 export interface MailboxSkips {
   uidValidity: string;
-  uids: Record<string, { reason: "too-large" | "collision" | "poison" | "parse-error"; attempts: number }>;
+  uids: Record<string, { reason: "too-large" | "collision" | "poison" | "parse-error" | "sign-in"; attempts: number }>;
 }
 export const POISON_ATTEMPTS = 3;
 const SKIPS_CAP = 5000;
@@ -600,6 +600,14 @@ export interface ProtonPassResult {
 const isConflict = (e: unknown): boolean => /\b409\b|conflict/i.test(String((e as Error)?.message ?? e)) || (e as { status?: number })?.status === 409;
 
 /** UTC midnight of (now − days): the script's `strftime("%d-%b-%Y")` on a UTC datetime. */
+/** A Prism sign-in email: from MAGIC_FROM with a sign-in subject, or carrying a sign-in link. */
+export function isPrismSignInMail(m: { from: string; subject: string; body: string }): boolean {
+  const ours = extractEmailAddress(config.magicFrom).toLowerCase();
+  const from = extractEmailAddress(m.from).toLowerCase();
+  if (ours && from === ours && /sign[- ]?in|log[- ]?in|new device/i.test(m.subject)) return true;
+  return /\/auth\/(callback|device)[^\s"'<>]*[?&](token|code)=/i.test(m.body);
+}
+
 export function sinceDate(now: number, days: number): Date {
   const d = new Date(now - days * 86_400_000);
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
@@ -812,6 +820,14 @@ export async function syncProton(source: ImapSource, vault: ProtonVault, opts: P
       throw new ParseFailure(String((e as Error)?.message ?? e));
     }
     delete sk.uids[String(uid)]; // parsed fine: forget earlier parse errors
+    if (isPrismSignInMail(m)) {
+      // One door (review R2-1): a sign-in link is a credential. It is never copied into the
+      // vault, where any vault reader (an agent included) could redeem it.
+      res.skipped++;
+      sk.uids[String(uid)] = { reason: "sign-in", attempts: 0 };
+      intent({ action: "skip-sign-in", effect: "logged", mailbox, uid, reason: "Prism sign-in email (not stored)" });
+      return;
+    }
     if (idx.byMid.has(m.messageId)) return; // header fetch disagreed with the full parse; the note exists
     const ids = { pathHash: pathHashOf(path), messageIdSha: messageIdShaOf(m.messageId) };
     const hashes = { contentSha256: sha(content), metadataHashes: keyHashes(metadata) };

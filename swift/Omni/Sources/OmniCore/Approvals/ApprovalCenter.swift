@@ -85,21 +85,39 @@ public struct ApprovalCard: Equatable, Sendable, Identifiable {
     /// A paused tool call of a running turn (kind `command`), not a draft: approving it lets
     /// that exact call run once; there is nothing to edit or revise.
     public var isCommand: Bool { approval.kind == .command }
+    /// A new device asking to sign in as the owner: Approve / Deny, never edited or revised.
+    public var isDeviceSignIn: Bool { approval.kind == .deviceSignIn }
 
     /// Send is offered only for a pending draft whose payload matches its digest.
     public func canOfferSend(now: Date = Date()) -> Bool { standing(now: now) == .pending && !isBusy }
     public func canOfferCancel(now: Date = Date()) -> Bool { standing(now: now) == .pending && !isBusy }
-    public func canOfferEdit(now: Date = Date()) -> Bool { standing(now: now) == .pending && !isBusy && ApprovalDraft(approval) != nil }
+    public func canOfferEdit(now: Date = Date()) -> Bool { standing(now: now) == .pending && !isBusy && !isDeviceSignIn && ApprovalDraft(approval) != nil }
+    /// Revise asks the agent for a new draft — meaningless for a paused command or a sign-in.
+    public func canOfferRevise(now: Date = Date()) -> Bool { canOfferCancel(now: now) && !isCommand && !isDeviceSignIn }
 
     /// Known before any press: this server would refuse to send this kind right now.
     public var sendingSwitchedOff: String? {
         guard let executor = approval.executor, !executor.canSend else { return nil }
         if isCommand { return "Approving commands is switched off on this server." }
+        if isDeviceSignIn { return "Approving sign-ins is switched off on this server." }
         return executor.available ? "Sending is switched off on this server." : "This server can't send this kind of thing yet."
     }
 
     /// The standing in words. nil while it is simply waiting.
     public func statusLine(now: Date = Date()) -> String? {
+        if isDeviceSignIn {
+            switch standing(now: now) {
+            case .pending: return "A device is asking to sign in as you. Approve only if you started this sign-in yourself, just now. If you didn't, deny it."
+            case .mismatch: return "This doesn't match the fingerprint the server gave for it, so Omni won't offer to approve it. Reload it."
+            case .expired: return "No answer in time — the device was not signed in."
+            case .sending: return "Approving…"
+            case .sent: return "Approved — that device can finish signing in."
+            case .failed: return "The sign-in could not be completed."
+            case .unknown: return "Approved, but the server did not confirm the outcome. Check your devices in Settings."
+            case .cancelled, .revised: return "Denied — the device was not signed in."
+            case .other(let status): return "Status: \(status)."
+            }
+        }
         if isCommand {
             switch standing(now: now) {
             case .pending: return "Omni has paused here. It runs exactly this if you approve, and nothing if you don't."
@@ -297,9 +315,9 @@ public final class ApprovalCenter {
         defer { cards[id]?.activity = .idle }
 
         if decision == .send {
-            let reason = "send this \(card.content.kindLabel.lowercased())"
+            let reason = card.isDeviceSignIn ? "approve this device sign-in" : "send this \(card.content.kindLabel.lowercased())"
             guard await confirmation.confirm(reason: reason) else {
-                cards[id]?.notice = .init(tone: .info, text: "Not sent — it wasn't confirmed on this device.")
+                cards[id]?.notice = .init(tone: .info, text: card.isDeviceSignIn ? "Not approved — it wasn't confirmed on this device." : "Not sent — it wasn't confirmed on this device.")
                 return
             }
         }

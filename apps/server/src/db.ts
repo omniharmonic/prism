@@ -1382,6 +1382,24 @@ const selectSession = db.prepare("SELECT * FROM sessions WHERE id = ?");
 const deleteSession = db.prepare("DELETE FROM sessions WHERE id = ?");
 const rehashSession = db.prepare("UPDATE OR IGNORE sessions SET id = ? WHERE id = ?");
 
+/**
+ * Rewrite every legacy plaintext session row to its hashed key (review R2-1: not only on
+ * next use — a dormant row is still a replayable cookie for whoever reads this file).
+ * Idempotent; runs once when this module loads.
+ */
+export function rehashLegacySessions(): number {
+  const rows = db.prepare("SELECT id FROM sessions WHERE id NOT LIKE 'h:%'").all() as Array<{ id: string }>;
+  const tx = db.transaction(() => {
+    for (const r of rows) {
+      rehashSession.run(sessionKey(r.id), r.id);
+      deleteSession.run(r.id); // a duplicate the UPDATE OR IGNORE skipped
+    }
+  });
+  tx();
+  return rows.length;
+}
+rehashLegacySessions();
+
 export function createSession(id: string, email: string, ttlMs: number): void {
   insertSession.run(sessionKey(id), email, now(), now() + ttlMs);
 }

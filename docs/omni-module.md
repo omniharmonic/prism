@@ -706,3 +706,25 @@ visibly. Configuration, limits and the trusted local-admin filesystem boundary a
 remain rollout checks; no installed skill was modified during implementation.
 
 Reviewed M3 schedules can expose Run, Resume and name/schedule editing when `OMNI_REVIEWED_JOB_SCRIPTS_DIR` points to the local Hermes scripts directory. The server rechecks the three known wrapper basenames and SHA-256 bytes at every operation; symlinks, changed wrappers, monitors and nonlocal delivery fail closed. Prompt, script and delivery remain immutable. The six unrelated legacy script jobs remain read-only apart from Pause/Delete. Capabilities returned by `/jobs` drive the native controls; a successful Run receipt indicates background dispatch, not successful completion. Local filesystem administrators are trusted; this pinning is not an OS sandbox against concurrent privileged filesystem replacement.
+
+## New devices need an existing device (one door, 2026-10-15 — review R2-1)
+
+A magic link can be read by anything that reads the owner's mailbox, so a browser session
+alone no longer signs a NEW device in once the owner already has one:
+
+- **Bootstrap** (the owner has zero live device tokens, or Omni is off): consent works as
+  before.
+- **Otherwise** pressing Approve on the consent page parks the request and shows "Approve this
+  sign-in on a device you already use" (the page polls `/auth/device/wait`). Prism creates a
+  `device-sign-in` approval (payload: `clientId`, the client's CLAIMED `label`, `redirectUri`,
+  `requestedAt`, coarse `ipHint` / `userAgentHint`) in the Omni app's Needs you. Approving it
+  needs a `pd_` device credential and the exact digest, like any approval; it cannot be edited
+  or proposed through the hook. Approve → the waiting browser gets its code; Deny or 10
+  minutes → `access_denied`. Code: `src/auth/device-confirm.ts`, `routes/device.ts`.
+- **Revocation by session is refused** (`DELETE /auth/devices/:id`, `POST /auth/device/revoke`
+  by id → 403 `device_required`), so a stolen session cannot empty the account to reopen
+  bootstrap. Revoke from a device; revoking with the token itself (RFC 7009) still works. If
+  every device is lost, wait for the idle expiry or revoke on the Mini directly.
+- Session ids are stored hashed; plaintext rows are rehashed at startup.
+- Prism sign-in mail (from `MAGIC_FROM` with a sign-in subject, or carrying an
+  `/auth/callback|device …token|code=` link) is never ingested into the vault.

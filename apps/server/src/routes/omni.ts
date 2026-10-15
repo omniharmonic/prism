@@ -62,6 +62,7 @@ import { bareToolName } from "../omni/stream";
 import { publishNotice, pushOmni, subscribeNotices, subscribeThread, type ThreadMessage } from "../omni/bus";
 import {
   APPROVAL_KINDS,
+  SERVER_ONLY_KINDS,
   ApprovalInputError,
   applyReplyContext,
   approvalView,
@@ -715,6 +716,7 @@ omniApi.put("/approvals/:id", async (c) => {
   if (seen !== a.digest) return c.json({ error: "digest_mismatch", detail: "the draft changed since it was shown" }, 409);
   // A paused tool call is approved as written or not at all: Hermes is holding that exact call.
   if (a.kind === "command") return bad(c, "a command cannot be edited: deny it and ask for another");
+  if (SERVER_ONLY_KINDS.includes(a.kind)) return bad(c, "a sign-in request cannot be edited: approve or deny it");
   let v;
   try {
     v = validatePayload(a.kind, b.payload);
@@ -796,6 +798,14 @@ async function decide(c: Context): Promise<Response> {
   }
   if (!claimApproval(id, digest, o.via, o.device, key)) return c.json({ error: "already_decided" }, 409);
   omniAudit({ actor: owner, via: o.via, action: "approval.approve", approvalId: id, threadId: a.threadId, digest, status: "ok" });
+  if (a.kind === "device-sign-in") {
+    // Nothing is sent: the parked sign-in request (routes/device.ts) sees `sent` on its next
+    // poll and finishes the code exchange for exactly the client and redirect shown.
+    finishApproval(id, "sent", { executor: "device-sign-in" });
+    const doneA = getApproval(owner, id)!;
+    publishNotice({ type: "approval", id, op: "sent" });
+    return c.json({ approval: approvalView(doneA) });
+  }
   if (a.kind === "command") {
     // Nothing is executed here. The approval is now `approved`; the plugin that paused the
     // call sees it on its next poll, lets that exact call run, and reports how it ended.
@@ -836,12 +846,14 @@ omniApi.post("/approvals/:id/send-grant/verify", async (c) => {
   // Unauthenticated (the grant is the credential), so bounded: a flood is refused, and
   // only presentations of a REAL grant are audited (an unknown token proves nothing and
   // must not be able to fill the audit table).
-  const retry = consumeRateLimit("omni-send-grant-verify", 60, 60_000);
+  const id = c.req.param("id") ?? "";
+  // Per approval (a flood against one id cannot starve another approval's real send),
+  // plus a generous global ceiling.
+  const retry = consumeRateLimit(`omni-send-grant-verify:${id.slice(0, 100)}`, 20, 60_000) ?? consumeRateLimit("omni-send-grant-verify", 600, 60_000);
   if (retry !== null) {
     c.header("Retry-After", String(retry));
     return c.json({ ok: false, error: "rate_limited" }, 429);
   }
-  const id = c.req.param("id") ?? "";
   const b = await jsonBody(c);
   if (!b) return bad(c, "a JSON object body is required");
   const owner = omniConfig.ownerEmail();
@@ -1035,6 +1047,7 @@ omniApi.post("/hooks/propose", async (c) => {
     if (typeof b.threadId !== "string" || !SESSION_ID_RE.test(b.threadId)) return bad(c, "threadId: a thread (Hermes session) id");
     threadId = b.threadId;
   }
+  if (typeof b.kind === "string" && SERVER_ONLY_KINDS.includes(b.kind)) return bad(c, `kind: ${b.kind} is created by Prism itself`);
   let v;
   try {
     v = validatePayload(b.kind, b.payload);

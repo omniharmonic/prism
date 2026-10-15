@@ -294,3 +294,25 @@ fetch `TypeError`): serve the last good response, else fail as before. The key i
 server + vault + workspace + capability-link + path. Bounded LRU: 300 entries / 64 MB,
 a body over 16 MB is not cached. Cleared on sign-out, when a native session ends, and when the signed-in
 email changes. The write outbox (`offline/outbox.ts`) is independent and works in both modes.
+
+## New devices need an existing device (one door, 2026-10-15 — review R2-1)
+
+A magic link can be read by anything that reads the owner's mailbox, so a browser session
+alone no longer signs a NEW device in once the owner already has one:
+
+- **Bootstrap** (the owner has zero live device tokens, or Omni is off): consent works as
+  before.
+- **Otherwise** pressing Approve on the consent page parks the request and shows "Approve this
+  sign-in on a device you already use" (the page polls `/auth/device/wait`). Prism creates a
+  `device-sign-in` approval (payload: `clientId`, the client's CLAIMED `label`, `redirectUri`,
+  `requestedAt`, coarse `ipHint` / `userAgentHint`) in the Omni app's Needs you. Approving it
+  needs a `pd_` device credential and the exact digest, like any approval; it cannot be edited
+  or proposed through the hook. Approve → the waiting browser gets its code; Deny or 10
+  minutes → `access_denied`. Code: `src/auth/device-confirm.ts`, `routes/device.ts`.
+- **Revocation by session is refused** (`DELETE /auth/devices/:id`, `POST /auth/device/revoke`
+  by id → 403 `device_required`), so a stolen session cannot empty the account to reopen
+  bootstrap. Revoke from a device; revoking with the token itself (RFC 7009) still works. If
+  every device is lost, wait for the idle expiry or revoke on the Mini directly.
+- Session ids are stored hashed; plaintext rows are rehashed at startup.
+- Prism sign-in mail (from `MAGIC_FROM` with a sign-in subject, or carrying an
+  `/auth/callback|device …token|code=` link) is never ingested into the vault.

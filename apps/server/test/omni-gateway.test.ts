@@ -889,7 +889,7 @@ test("OMNI_EXECUTORS=off: nothing Omni proposes is sent, even with every family 
   });
   const h = (await (await req("/health", { headers: owner() })).json()) as { executors: Record<string, { enabled: boolean }> };
   // Every sender is off. `command` is not a sender (Hermes runs its own paused call; OMNI_COMMAND_APPROVALS is its switch).
-  assert.deepEqual(Object.entries(h.executors).map(([k, e]) => [k, e.enabled]), [["email", false], ["email-reply", false], ["message", false], ["calendar-rsvp", false], ["calendar-invite", false], ["tweet", false], ["wallet-proposal", false], ["command", true]]);
+  assert.deepEqual(Object.entries(h.executors).map(([k, e]) => [k, e.enabled]), [["email", false], ["email-reply", false], ["message", false], ["calendar-rsvp", false], ["calendar-invite", false], ["tweet", false], ["wallet-proposal", false], ["command", true], ["device-sign-in", true]], "a sign-in approval is not a send: the off switch does not apply");
   for (const [kind, payload] of [["email", draft], ["message", { roomId: "!r:example.test", body: "hi" }], ["calendar-invite", { title: "Sync", start: "2026-10-09T17:00:00Z", end: "2026-10-09T17:30:00Z" }]] as const) {
     const p = await propose(kind, payload as Record<string, unknown>);
     const r = await decide(p.id, { decision: "send", digest: p.digest }, { ...owner(), "idempotency-key": key() });

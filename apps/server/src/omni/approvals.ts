@@ -33,7 +33,9 @@ import { buildReply } from "../actions/email";
 import { protonSendConfigured } from "./proton-send";
 import { tweetSendConfigured } from "./tweet-send";
 
-export const APPROVAL_KINDS = ["email", "email-reply", "message", "calendar-rsvp", "calendar-invite", "tweet", "wallet-proposal", "command"] as const;
+export const APPROVAL_KINDS = ["email", "email-reply", "message", "calendar-rsvp", "calendar-invite", "tweet", "wallet-proposal", "command", "device-sign-in"] as const;
+/** Kinds only Prism itself creates (never proposable through the hook, never editable). */
+export const SERVER_ONLY_KINDS: readonly string[] = ["device-sign-in"];
 export type ApprovalKind = (typeof APPROVAL_KINDS)[number];
 export type ApprovalStatus = "pending" | "approved" | "sent" | "failed" | "unknown" | "expired" | "cancelled" | "revised";
 
@@ -125,6 +127,19 @@ export function validatePayload(kind: unknown, raw: unknown): { kind: ApprovalKi
         token: str(b.token, "token", 32, false),
         chain: str(b.chain, "chain", 32),
         purpose: str(b.purpose, "purpose", 1000),
+      });
+      break;
+    case "device-sign-in":
+      // A new app asking to sign in as the owner while he already has a device (review
+      // R2-1). Created by Prism's device-authorization route, never by a proposer. The
+      // label is the CLIENT's claim; the redirect target is server-validated.
+      payload = pick({
+        clientId: str(b.clientId, "clientId", 100),
+        label: str(b.label, "label", 200),
+        redirectUri: str(b.redirectUri, "redirectUri", 2000),
+        requestedAt: str(b.requestedAt, "requestedAt", 64),
+        ipHint: str(b.ipHint, "ipHint", 64, false),
+        userAgentHint: str(b.userAgentHint, "userAgentHint", 200, false),
       });
       break;
     case "command": {
@@ -287,7 +302,7 @@ export function executorFor(kind: ApprovalKind): { name: string; available: bool
   const e = executorOf(kind);
   // OMNI_EXECUTORS=off wins over every family flag: nothing Omni proposes can be sent. A
   // `command` is not a send (Hermes runs its own paused call); it has its own switch.
-  return kind !== "command" && (omniConfig.executorsOff() || !omniConfig.executorKindAllowed(kind)) ? { ...e, enabled: false } : e;
+  return kind !== "command" && kind !== "device-sign-in" && (omniConfig.executorsOff() || !omniConfig.executorKindAllowed(kind)) ? { ...e, enabled: false } : e;
 }
 function executorOf(kind: ApprovalKind): { name: string; available: boolean; enabled: boolean } {
   switch (kind) {
@@ -303,6 +318,9 @@ function executorOf(kind: ApprovalKind): { name: string; available: boolean; ena
     case "calendar-rsvp":
     case "calendar-invite":
       return { name: "prism-live-actions:calendar", available: true, enabled: config.actionsCalendarEnabled };
+    case "device-sign-in":
+      // Not a send: approving lets the parked sign-in request finish (routes/device.ts).
+      return { name: "device-sign-in", available: true, enabled: true };
     case "tweet":
       return { name: "approved-tweet", available: true, enabled: tweetSendConfigured() };
     case "message":
