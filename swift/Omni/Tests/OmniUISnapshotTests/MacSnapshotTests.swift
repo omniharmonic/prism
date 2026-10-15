@@ -163,10 +163,22 @@ struct Walk {
         service.addThread("scheduled", "Check the forecast on Friday", state: "scheduled", preview: "I will check on Friday morning.", messages: [("user", "Check the marine forecast on Friday morning and tell me if the crossing is on."), ("assistant", "I will check on Friday morning and tell you.")])
         service.addThread("unread", "Find the grant deadline", state: "done", preview: "One more thing: the portal closes at 5 pm Eastern.", unread: 1, messages: [("user", "Find the grant deadline."), ("assistant", "The deadline is **November 3**."), ("assistant", "One more thing: the portal closes at 5 pm Eastern, not midnight.")], tools: ["prism_search"])
         service.addThread("done", "Update the task for Dana", state: "done", preview: "Done — the task is due Friday.", messages: [("user", "Mark the call with Dana as due Friday."), ("assistant", "Done — the task is due Friday.")], tools: ["prism_update_note"], cards: [["kind": "record", "noteId": "note1", "op": "updated", "type": "task", "title": "Call Dana about the buoy spec", "path": "tasks/call-dana", "summary": "properties status, due", "updatedAt": "2026-10-09T15:00:06.000Z", "links": ["prism": "https://prism.example.com/page/note1"], "private": false]])
+        service.addThread("markdown", "Compare mooring suppliers", state: "done", preview: "Harbour Rope & Chain is the safest choice.", messages: [("user", "Compare the **three** mooring suppliers — the list is in [the spec](https://example.com/spec)."), ("assistant", UITestLaunch.markdownSample)])
         service.addThread("gone", "Plan the retreat agenda", state: "done", gone: true)
         service.addJob("0a1b2c3d4e5f", "Morning brief", schedule: "0 7 * * *", enabled: true, lastStatus: "ok")
         service.addJob("f5e4d3c2b1a0", "Inbox sweep", schedule: "*/30 * * * *", enabled: false, lastStatus: "error", lastError: "The mail bridge did not answer.")
         service.addJob("a0b1c2d3e4f5", "Weekly review", schedule: "0 16 * * 5", enabled: true, lastStatus: "ok")
+        return service
+    }
+
+    /// The sample with two nudges in the queue: one tied to a thread, one not.
+    func nudging() -> NudgingSampleService {
+        let service = NudgingSampleService()
+        service.addThread("nudge-thread", "Reply to Dana about Friday", state: "done", preview: "I can draft the reply.", messages: [("user", "Reply to Dana about Friday."), ("assistant", "I can draft the reply when you are ready.")])
+        service.nudgeItems = [
+            NudgingSampleService.nudge("reply", kind: "reply-owed", title: "Dana is waiting for an answer", summary: "Dana asked on **Tuesday** whether Friday at ten works for the spec review.\n\n- She needs the two quotes\n- Kevin is copied", reasons: ["Waiting 2 days", "Known collaborator"], threadId: "nudge-thread"),
+            NudgingSampleService.nudge("task", kind: "task", title: "Renew the domain", summary: "The domain renewal is due tomorrow.", reasons: ["Due tomorrow"]),
+        ]
         return service
     }
 
@@ -235,9 +247,11 @@ struct Walk {
         try await screen("thread-followup", service: service, .thread("unread"))
         try await screen("thread-waiting", service: service, .thread("waiting"))
         try await screen("thread-gone", service: service, .thread("gone"))
+        try await screen("thread-markdown", service: service, .thread("markdown"))
 
         // Approvals: the queue, and each kind in its thread.
         try await screen("needs-you-list", service: service, .needsYou)
+        try await screen("needs-you-nudges", service: nudging(), .needsYou)
         for (index, entry) in Self.kinds.enumerated() {
             try await screen("approval-\(entry.kind)", service: service, .thread("n\(index)"))
         }

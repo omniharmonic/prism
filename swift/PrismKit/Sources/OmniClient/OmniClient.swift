@@ -319,8 +319,10 @@ public struct OmniClient: Sendable {
 
     // MARK: Native push
 
-    public func registerPush(token: String, environment: String, preview: String = "generic") async throws -> Bool {
-        struct Body: Encodable { let token: String; let environment: String; let preview: String }
+    /// `preview` nil leaves it out: the server keeps the device's stored choice, or applies its
+    /// default for Omni (`title_preview`). Send a value only when the person chose one.
+    public func registerPush(token: String, environment: String, preview: String? = nil) async throws -> Bool {
+        struct Body: Encodable { let token: String; let environment: String; let preview: String? }
         struct Answer: Decodable { let ok: Bool; let apnsEnabled: Bool }
         let answer: Answer = try await transport.send(.json("POST", "\(Self.base)/push", body: Body(token: token, environment: environment, preview: preview)))
         return answer.apnsEnabled

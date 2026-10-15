@@ -97,7 +97,8 @@ struct ApprovalCardView: View {
         }
         if let body = content.body {
             Divider()
-            // The whole text, never shortened: what is approved is what is seen.
+            // The whole text, never shortened, and verbatim (not rendered as
+            // markdown): what is approved is exactly what will be sent.
             Text(body).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 .accessibilityLabel("Text: \(body)")
         }
@@ -375,8 +376,10 @@ struct NeedsYouView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         ApprovalCardView(center: session.approvals, id: card.id)
                         if let threadID = card.approval.threadId {
-                            Button("Open thread") { navigator.open(.thread(threadID)) }
-                                .buttonStyle(.borderless).font(.callout).frame(minHeight: 44)
+                            Button { navigator.open(.thread(threadID)) } label: {
+                                Text("Open thread").frame(minHeight: 44).contentShape(Rectangle())
+                            }
+                            .buttonStyle(.borderless).font(.callout)
                         }
                     }
                 }
@@ -400,7 +403,9 @@ struct NeedsYouView: View {
         }
         .navigationTitle("Needs you")
         .refreshable { await refresh() }
-        .toolbar { ToolbarItem { Button { Task { await refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") } } }
+        #if os(macOS)
+        .toolbar { MacRefreshButton(refreshing: false) { Task { await refresh() } } }
+        #endif
         .task { await refresh() }
     }
 }
@@ -413,16 +418,21 @@ struct NudgeCardView: View {
     @State private var showHealth = false
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            Text(NudgeKind.label(item.candidate.kind))
+                .font(.caption.weight(.semibold))
+                .textCase(.uppercase)
+                .foregroundStyle(Color.quietText)
+                .accessibilityLabel("Kind: \(NudgeKind.label(item.candidate.kind))")
             Text(item.candidate.title).font(.headline)
-            Text(item.candidate.summary).font(.body)
+            MarkdownText(markdown: item.candidate.summary).textSelection(.enabled)
             Text(item.candidate.reasons.joined(separator: " · ")).font(.callout).foregroundStyle(.secondary)
             ViewThatFits(in: .horizontal) {
                 HStack { primaryActions }
                 VStack(alignment: .leading) { primaryActions }
             }.controlSize(.regular).fixedSize(horizontal: false, vertical: true)
             ViewThatFits(in: .horizontal) {
-                HStack { sourceAction; Spacer(minLength: 8); moreActions }
-                VStack(alignment: .leading) { sourceAction; moreActions }
+                HStack { openThreadAction; sourceAction; Spacer(minLength: 8); moreActions }
+                VStack(alignment: .leading) { openThreadAction; sourceAction; moreActions }
             }.buttonStyle(.borderless).font(.callout)
 
         }
@@ -442,6 +452,15 @@ struct NudgeCardView: View {
             }.padding().frame(minWidth: 280, idealWidth: 400)
         }
         .task(id: item.updatedAt) { await center.markSeen(item.id, updatedAt: item.updatedAt) }
+    }
+    /// The conversation this nudge already has (as an approval card's "Open thread").
+    @ViewBuilder private var openThreadAction: some View {
+        if let threadID = item.threadId {
+            Button { navigator.open(.thread(threadID)) } label: { Text("Open").frame(minHeight: 44).contentShape(Rectangle()) }
+                .accessibilityLabel("Open conversation")
+                .accessibilityHint("Opens the conversation for this item")
+                .accessibilityIdentifier("nudge.open")
+        }
     }
     @ViewBuilder private var sourceAction: some View {
         if let source = item.candidate.operationalSource {

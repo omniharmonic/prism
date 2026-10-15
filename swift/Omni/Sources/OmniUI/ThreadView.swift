@@ -48,14 +48,26 @@ struct ThreadView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                VStack(spacing: 0) {
-                    Text(barTitle).font(.headline).lineLimit(1)
-                    if let state = model.thread.map({ $0.gone ? "No longer available" : ThreadGrouping.title(for: $0.state) }) {
-                        Text(state).font(.caption).foregroundStyle(Color.quietText)
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
+                let state = model.thread.map { $0.gone ? "No longer available" : ThreadGrouping.title(for: $0.state) }
+                // Voice and New Chat share the bar. The title and its state on one line each when
+                // the title fits; a longer title takes both lines instead of being cut (its state
+                // is still read out, and shown in the list).
+                ViewThatFits(in: .horizontal) {
+                    VStack(spacing: 0) {
+                        Text(barTitle).font(.headline).lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                        if let state {
+                            Text(state).font(.caption).foregroundStyle(Color.quietText)
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
                     }
+                    Text(barTitle).font(.subheadline.weight(.semibold))
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                        .minimumScaleFactor(0.8)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+                .accessibilityLabel(state.map { "\(barTitle), \($0)" } ?? barTitle)
                 // A bar does not grow with the text size (the system shows its items large
                 // on a long press instead); held to sizes that fit it.
                 .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
@@ -84,7 +96,8 @@ struct ThreadView: View {
         }
         #endif
         .toolbar {
-            ToolbarItem {
+            // Voice here talks in this thread; New Chat leaves it for a new one.
+            ToolbarItemGroup(placement: .primaryAction) {
                 Button("Voice", systemImage: "waveform") {
                     session.showVoice(in: model.threadID); voiceExpanded = true
                 }
@@ -92,6 +105,7 @@ struct ThreadView: View {
                 .accessibilityLabel("Voice")
                 .accessibilityIdentifier("voice.open")
                 .disabled(model.isUnavailable)
+                NewChatButton(session: session)
             }
         }
         .onAppear {
@@ -349,7 +363,7 @@ struct Composer<Accessory: View>: View {
     }
 }
 
-/// ⌘N: an empty composer. Sending creates the thread and opens it.
+/// ⌘N, or New Chat in any bar: an empty composer. Sending creates the thread and opens it.
 struct NewThreadView: View {
     let session: SessionModel
     @State private var text = ""
@@ -360,7 +374,7 @@ struct NewThreadView: View {
             GeometryReader { area in
                 ScrollView {
                     ContentUnavailableView {
-                        Label(session.newThreadUsesVoice ? "New voice conversation" : "New thread", systemImage: session.newThreadUsesVoice ? "waveform" : "square.and.pencil")
+                        Label(session.newThreadUsesVoice ? "New voice conversation" : "New chat", systemImage: session.newThreadUsesVoice ? "waveform" : "square.and.pencil")
                     } description: {
                         Text("Say what you want done. Omni works on it in its own thread and asks before anything goes out.")
                     }
@@ -394,7 +408,7 @@ struct NewThreadView: View {
             .fixedSize(horizontal: false, vertical: true)
             .layoutPriority(1)
         }
-        .navigationTitle("New Thread")
+        .navigationTitle("New Chat")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif

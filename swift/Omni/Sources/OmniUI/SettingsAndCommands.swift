@@ -97,7 +97,7 @@ public struct SettingsView: View {
                     }
                 }
                 .accessibilityIdentifier("settings.notification-preview")
-                Text("Titles and reply previews are sent through Apple notifications and may appear on this device’s lock screen. Choose Generic update to keep message content private.")
+                Text("Title and preview is the default. Titles and reply previews are sent through Apple notifications and may appear on this device’s lock screen. Choose Generic update to keep message content private.")
                     .font(.footnote)
                     .foregroundStyle(Color.quietText)
                     .fixedSize(horizontal: false, vertical: true)
@@ -239,7 +239,7 @@ struct DiagnosticsSection: View {
     }
 }
 
-/// The Mac menu commands: ⌘N new thread, ⌘F search, ⌘. stop, ⌘R refresh. (⌘, is the
+/// The Mac menu commands: ⌘N new chat, ⌘F search, ⌘. stop, ⌘R refresh. (⌘, is the
 /// Settings scene's own.)
 public struct OmniCommands: Commands {
     private let app: AppModel
@@ -250,7 +250,7 @@ public struct OmniCommands: Commands {
 
     public var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            Button("New Thread") { app.session?.requestNewThread() }
+            Button("New Chat") { app.session?.requestNewThread() }
                 .keyboardShortcut("n", modifiers: .command)
                 .disabled(app.session == nil || PrivacyLock.shared.locked)
         }
