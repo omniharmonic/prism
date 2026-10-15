@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 // MARK: - Item cards (`/api/omni/cards`, stream `item_card`; docs/omni-module.md § Item cards)
 
@@ -134,6 +135,24 @@ public struct OmniCard: Codable, Sendable, Equatable, Identifiable {
         nudgeId = try c.decodeIfPresent(String.self, forKey: .nudgeId)
     }
 
+    /// Decodes an array of cards, dropping elements that fail. Logs ONE line with the count dropped
+    /// (never the card content). A missing key is an empty list; a non-array value still throws.
+    private struct Slot: Decodable {
+        let card: OmniCard?
+        init(from decoder: any Decoder) throws { card = try? OmniCard(from: decoder) }
+    }
+
+    public static func decodeSkippingBad<K: CodingKey>(from container: KeyedDecodingContainer<K>, forKey key: K) throws -> [OmniCard] {
+        guard container.contains(key) else { return [] }
+        let slots = try container.decode([Slot].self, forKey: key)
+        let cards = slots.compactMap(\.card)
+        let dropped = slots.count - cards.count
+        if dropped > 0 {
+            Logger(subsystem: "PrismModels", category: "cards").error("skipped \(dropped, privacy: .public) undecodable card(s) of \(slots.count, privacy: .public)")
+        }
+        return cards
+    }
+
     public var recommendedOption: Option? { options.first { $0.id == recommended } }
     /// One line built from the context facts ("You're free Thu 2–4 · Grant due Fri 5pm").
     public var contextLine: String { context.map(\.text).joined(separator: " · ") }
@@ -160,6 +179,15 @@ public struct CardList: Decodable, Sendable, Equatable {
     public let cards: [OmniCard]
     public let counts: Counts
     public init(cards: [OmniCard], counts: Counts) { self.cards = cards; self.counts = counts }
+
+    enum CodingKeys: String, CodingKey { case cards, counts }
+
+    /// Element-wise: a card this build cannot decode is skipped, so one bad card never blanks Needs you.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        cards = try OmniCard.decodeSkippingBad(from: c, forKey: .cards)
+        counts = try c.decode(Counts.self, forKey: .counts)
+    }
 }
 
 /// The answer to choose / instruct: the card, the pending approval a draft became (or nil), and the turn.

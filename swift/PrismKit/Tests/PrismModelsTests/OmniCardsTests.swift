@@ -86,3 +86,17 @@ final class OmniCardsTests: XCTestCase {
         XCTAssertEqual(working.headline, c.headline)
     }
 }
+
+final class OmniCardsLossyTests: XCTestCase {
+    func testTheItemCardHelperSkipsAnUndecodableCard() throws {
+        // Through the shared helper ThreadDetail.itemCards uses, independent of the thread shape.
+        struct Holder: Decodable {
+            let itemCards: [OmniCard]
+            enum K: String, CodingKey { case itemCards }
+            init(from d: any Decoder) throws { itemCards = try OmniCard.decodeSkippingBad(from: try d.container(keyedBy: K.self), forKey: .itemCards) }
+        }
+        let json = #"{"itemCards":[{"id":"ok","state":"proposed","headline":"h"},{"id":"bad"},{"id":"ok2","state":"done","headline":"h2"}]}"#
+        let h = try PrismJSON.decoder().decode(Holder.self, from: Data(json.utf8))
+        XCTAssertEqual(h.itemCards.map(\.id), ["ok", "ok2"])
+    }
+}

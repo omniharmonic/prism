@@ -89,7 +89,7 @@ public enum NoticeStreamUpdate: Sendable, Equatable {
 /// `POST /tasks/:id/dispatch` (M2), voice (M4).
 public struct OmniClient: Sendable {
     public let transport: PrismClient
-    private static let base = "/api/omni"
+    static let base = "/api/omni"
 
     public init(transport: PrismClient) {
         self.transport = transport

@@ -152,7 +152,7 @@ public struct ThreadDetail: Decodable, Sendable, Equatable {
         cards = try c.decode([RecordCard].self, forKey: .cards)
         approvals = try c.decode([Approval].self, forKey: .approvals)
         activeTurnId = try c.decodeIfPresent(String.self, forKey: .activeTurnId)
-        itemCards = try c.decodeIfPresent([OmniCard].self, forKey: .itemCards) ?? []
+        itemCards = try OmniCard.decodeSkippingBad(from: c, forKey: .itemCards)
     }
 }
 
