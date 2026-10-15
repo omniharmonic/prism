@@ -65,6 +65,9 @@ public final class CardsModel {
     public func notice(for id: String) -> String? { notices[id] }
     public func focus(_ id: String?) { focusedCardID = id }
 
+    /// The states the server accepts a choice or an instruction from (a woken snoozed card is still `snoozed`).
+    static func isChoosable(_ card: OmniCard) -> Bool { card.state == .proposed || card.state == .snoozed }
+
     static func ordered(_ cards: [OmniCard]) -> [OmniCard] {
         cards.sorted { a, b in
             if a.urgency.rank != b.urgency.rank { return a.urgency.rank < b.urgency.rank }
@@ -149,8 +152,10 @@ public final class CardsModel {
         case "card_not_open":
             // Someone else (or the sweep) already moved it: show what it is now, not the stale snapshot.
             if let fresh = try? await service.card(cardID) { put(fresh) } else {
+                // A refresh already running will be re-run; its copy replaces the optimistic one.
+                let coalesced = phase == .loading
                 await refresh()
-                rollBack(original, optimistic: optimistic)
+                if !coalesced { rollBack(original, optimistic: optimistic) }
             }
             notices[cardID] = CardText.alreadyHandled
         case "idempotency_conflict":
@@ -168,7 +173,7 @@ public final class CardsModel {
     @discardableResult
     public func choose(_ cardID: String, optionID: String) async -> CardActionResult? {
         guard let card = known[cardID], !card.transitional, let option = card.options.first(where: { $0.id == optionID }), !busy.contains(cardID) else { return nil }
-        guard card.state == .proposed else { notices[cardID] = CardText.alreadyHandled; return nil }
+        guard Self.isChoosable(card) else { notices[cardID] = CardText.alreadyHandled; return nil }
         busy.insert(cardID)
         defer { busy.remove(cardID) }
         notices[cardID] = nil
@@ -194,7 +199,7 @@ public final class CardsModel {
     public func instruct(_ cardID: String, text: String) async -> CardActionResult? {
         let words = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let card = known[cardID], !card.transitional, !words.isEmpty, !busy.contains(cardID) else { return nil }
-        guard card.state == .proposed else { notices[cardID] = CardText.alreadyHandled; return nil }
+        guard Self.isChoosable(card) else { notices[cardID] = CardText.alreadyHandled; return nil }
         busy.insert(cardID)
         defer { busy.remove(cardID) }
         notices[cardID] = nil

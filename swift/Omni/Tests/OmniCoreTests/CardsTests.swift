@@ -179,6 +179,20 @@ private actor NudgeRecorder: NudgeService {
         XCTAssertEqual(cards.items.count, 2)
     }
 
+    func testAWokenSnoozedCardInDecideCanBeChosen() async {
+        let woken = sample("c1", created: 1).with(state: .snoozed, chosenOptionId: nil, section: .decide)
+        let (cards, fake) = model([woken])
+        await cards.refresh()
+        XCTAssertEqual(cards.decide.map(\.id), ["c1"])
+        let result = await cards.choose("c1", optionID: "a")
+        XCTAssertEqual(result?.card.state, .draftReady)
+        let keys = await fake.chooseKeys
+        XCTAssertEqual(keys.count, 1)
+        XCTAssertEqual(cards.approve.map(\.id), ["c1"])
+        let instructed = await model([woken]).0.instruct("c1", text: "x")
+        XCTAssertNil(instructed, "not loaded in that model: no card, no send")
+    }
+
     func testAPlanOptionMovesTheCardIntoMotionAndInstructDoesToo() async {
         let (cards, _) = model([sample("c1", created: 1), sample("c2", created: 2)])
         await cards.refresh()
