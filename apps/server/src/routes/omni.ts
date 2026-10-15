@@ -710,6 +710,15 @@ omniApi.put("/approvals/:id", async (c) => {
   return c.json({ approval: approvalView(next), replaced: a.id }, 201);
 });
 
+/** The card follows the decision; a failure here must never undo or hide a decision that already happened. */
+function cardBookkeeping(owner: string, approvalId: string, outcome: Parameters<typeof cardAfterDecision>[2]): void {
+  try {
+    cardAfterDecision(owner, approvalId, outcome);
+  } catch (e) {
+    console.error("omni: card bookkeeping failed", approvalId, e);
+  }
+}
+
 async function decide(c: Context): Promise<Response> {
   const owner = omniConfig.ownerEmail();
   const id = c.req.param("id") ?? "";
@@ -750,6 +759,7 @@ async function decide(c: Context): Promise<Response> {
     omniAudit({ actor: owner, via: o.via, action: `approval.${decision}`, approvalId: id, threadId: a.threadId, digest, status: "ok" });
     publishNotice({ type: "approval", id, op: decision === "cancel" ? "cancelled" : "revised", threadId: a.threadId ?? undefined });
     let turnId: string | null = null;
+    let revising = false;
     const feedback = typeof b.feedback === "string" ? b.feedback.trim().slice(0, 20_000) : "";
     // A denied tool call: the thread shows it (the turn that asked is still running).
     if (a.kind === "command" && a.threadId && getThread(a.threadId)) emit(a.threadId, null, { t: "approval", approval: approvalView(getApproval(owner, id)!) });
@@ -757,8 +767,10 @@ async function decide(c: Context): Promise<Response> {
       // The feedback goes back into the thread as a turn; Hermes proposes a new draft.
       const r = startTurn(a.threadId, `Revise the ${a.kind} draft (approval ${a.id}) as follows. Propose the new draft with omni_propose; do not send anything.\n\n${feedback}`, `revise-${key}`.slice(0, 200));
       turnId = "turn" in r ? r.turn.id : "active" in r ? r.active.id : r.replay.id;
+      // Only a turn that is running moves the card to working; a replayed (already ended) one would strand it there.
+      revising = "turn" in r || "active" in r;
     }
-    if (a.kind !== "command") cardAfterDecision(owner, id, decision === "revise" && turnId ? "revised" : "cancelled");
+    if (a.kind !== "command") cardBookkeeping(owner, id, revising ? "revised" : "cancelled");
     return c.json({ approval: approvalView(getApproval(owner, id)!), turnId });
   }
   // send: pre-check the executor so a disabled one costs nothing and keeps the approval pending.
@@ -790,13 +802,14 @@ async function decide(c: Context): Promise<Response> {
     return c.json({ error: out.detail.error ?? "executor_disabled", executor: exec.name }, 503);
   }
   finishApproval(id, out.status, out.detail);
-  cardAfterDecision(owner, id, out.status);
   omniAudit({ actor: owner, via: o.via, action: "approval.send", approvalId: id, threadId: a.threadId, digest, status: out.status, error: out.status === "sent" ? null : String(out.detail.error ?? "") || null });
   const done = getApproval(owner, id)!;
   publishNotice({ type: "approval", id, op: out.status, threadId: a.threadId ?? undefined });
   if (a.threadId && getThread(a.threadId)) {
     emit(a.threadId, null, { t: "approval", approval: approvalView(done) });
   }
+  // After the audit row and the notice: a real send always gets both, whatever the card does.
+  cardBookkeeping(owner, id, out.status);
   return c.json({ approval: approvalView(done) }, out.status === "sent" ? 200 : out.status === "failed" ? 422 : 502);
 }
 omniApi.post("/approvals/:id/decision", decide);

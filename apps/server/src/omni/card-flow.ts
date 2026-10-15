@@ -114,7 +114,7 @@ export async function publishCard(owner: string, p: CardPublish, now: number = D
   })();
   if (r.changed) {
     // A reopened card is a new question: a draft written against the old content must not stay sendable.
-    if (reopens) cancelPendingDrafts(owner, existing!.approvalIds, { via: "superseded", device: null }, `${p.sourceRevision}`, "superseded");
+    if (reopens) cancelPendingDrafts(owner, existing!.approvalIds, { via: "superseded", device: null }, `${p.sourceRevision}`, { prefix: "superseded", actor: "omni", detail: "superseded: the item changed" });
     announceCard(r.card, r.created ? "created" : reopens ? "reopened" : "updated", { push: r.created || reopens });
   }
   return { ...r, droppedFacts: dropped };
@@ -274,17 +274,17 @@ export function instructPrompt(card: Card, text: string): string {
  *  Cancelled as the owner (audited like his own cancel) through the same close the decision route uses.
  *  The closes are pure database writes and all run first; the audit/notice/event side effects follow
  *  per approval and can never undo or skip a close (a failure is logged and the loop goes on). */
-function cancelPendingDrafts(owner: string, ids: string[], origin: { via: string; device: string | null }, key: string, prefix = "instruct"): void {
+function cancelPendingDrafts(owner: string, ids: string[], origin: { via: string; device: string | null }, key: string, how: { prefix: string; actor: string; detail?: string } = { prefix: "instruct", actor: owner }): void {
   const closed: Array<NonNullable<ReturnType<typeof getApproval>>> = [];
   for (const id of ids) {
     const a = getApproval(owner, id);
     // Not pending any more (decided, expired or revised since the card was last read): nothing left to cancel.
     if (!a || a.status !== "pending") continue;
-    if (closeApproval(id, "cancelled", origin.via, origin.device, `${prefix}-${sha256(`${id}:${key}`).slice(0, 40)}`)) closed.push(a);
+    if (closeApproval(id, "cancelled", origin.via, origin.device, `${how.prefix}-${sha256(`${id}:${key}`).slice(0, 40)}`)) closed.push(a);
   }
   for (const a of closed) {
     try {
-      omniAudit({ actor: owner, via: origin.via, action: "approval.cancel", approvalId: a.id, threadId: a.threadId, digest: a.digest, status: "ok" });
+      omniAudit({ actor: how.actor, via: origin.via, action: "approval.cancel", approvalId: a.id, threadId: a.threadId, digest: a.digest, status: "ok", error: how.detail ?? null });
       publishNotice({ type: "approval", id: a.id, op: "cancelled", threadId: a.threadId ?? undefined });
       if (a.threadId && getThread(a.threadId)) emit(a.threadId, null, { t: "approval", approval: approvalView(getApproval(owner, a.id)!) });
     } catch (e) {
@@ -315,10 +315,14 @@ export function instructCard(owner: string, cardId: string, text: string, key: s
 /** A draft the card's own turn proposed (omni_propose in its thread): the card now waits for Send. */
 export function cardAfterProposal(owner: string, threadId: string | null, approvalId: string): Card | null {
   if (!threadId) return null;
-  const card = cardsByThread(owner, threadId).find((c) => c.state === "working" || c.state === "proposed");
+  const card = cardsByThread(owner, threadId).find((c) => c.state === "working" || c.state === "proposed" || c.state === "draft-ready");
   if (!card) return null;
-  const next = transitionCard(owner, card.id, ["working", "proposed"], "draft-ready", { action: "draft", approvalId }, { approvalId });
-  if (next) announceCard(next, "draft-ready", { push: true });
+  const earlier = card.approvalIds;
+  const next = transitionCard(owner, card.id, ["working", "proposed", "draft-ready"], "draft-ready", { action: "draft", approvalId }, { approvalId });
+  if (!next) return null;
+  // One card, one live draft: a newer proposal replaces the one still waiting.
+  if (card.state === "draft-ready") cancelPendingDrafts(owner, earlier, { via: "superseded", device: null }, approvalId, { prefix: "superseded", actor: "omni", detail: `superseded by ${approvalId}` });
+  announceCard(next, "draft-ready", { push: true });
   return next;
 }
 
@@ -353,7 +357,8 @@ export function cardAfterDecision(owner: string, approvalId: string, outcome: "s
 /** Edit made a new approval for the same draft: the card follows the new one. */
 export function relinkApproval(owner: string, oldApprovalId: string, newApprovalId: string): Card | null {
   const card = cardForApproval(owner, oldApprovalId);
-  if (!card) return null;
+  // Only the card's live (latest) draft is followed; editing an older one leaves the card as it is.
+  if (!card || card.approvalIds[card.approvalIds.length - 1] !== oldApprovalId) return null;
   const next = linkApproval(owner, card.id, newApprovalId);
   if (next) announceCard(next, "draft-edited", { push: false });
   return next;

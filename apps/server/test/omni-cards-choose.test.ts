@@ -145,15 +145,19 @@ test("something else on a ready draft cancels the pending draft: one card, one l
 });
 
 test("something else on a working card is refused and changes nothing", async () => {
+  // Hold the first turn open (a tool call the stub waits on) until the second instruct has been refused.
+  let release!: () => void;
+  const gate = new Promise<string | null>((r) => { release = () => r(null); });
+  setHermesFetchForTests(createHermesStub({ key: process.env.OMNI_HERMES_KEY!, script: (ctx) => { said.push(ctx.message); return { acts: [{ tool: "session_search", args: {}, result: "[]", gate: () => gate }, { say: "Working on it." }] }; } }).fetch);
   const card = await publish();
   const first = await (await instruct(card.id, "Do the first thing.", "instruct-first-01")).json() as Answer;
   const again = await instruct(card.id, "Do another thing.", "instruct-second-1");
   assert.equal(again.status, 409);
   assert.equal((await again.json() as { error: string }).error, "turn_running");
-  // The first turn may already have ended (the turn-ended hook returns the card to Decide); the refused one changed nothing.
   const after = getCard(config.ownerEmail, card.id)!;
-  assert.ok(after.state === "working" || (after.state === "proposed" && after.outcomes.at(-1)!.action === "turn-ended"));
+  assert.equal(after.state, "working");
   assert.equal(after.outcomes.filter((o) => o.action === "instruct").length, 1);
+  release();
   await turnSettled(first.turnId!);
   assert.equal(said.length, 1);
 });

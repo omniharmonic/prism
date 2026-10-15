@@ -236,6 +236,9 @@ async function run(threadId: string, turnId: string, message: string, entry: Liv
     clearTimeout(cap);
     clearTimeout(drain);
   }
+  // Whatever throws below, the thread's cards are told the turn is over.
+  let turnStatus: "cancelled" | "done" | "error" = "error";
+  try {
   // The run did not end with its transcript (cancelled, cut off, timed out): a write it had
   // already made is still a write — read its row once more before the turn is closed.
   if (!norm.ended && norm.needsVerification) {
@@ -252,7 +255,7 @@ async function run(threadId: string, turnId: string, message: string, entry: Liv
     publishNotice({ type: "approval", id: a.id, op: "cancelled", threadId });
   }
   const cancelled = errorCode === "cancelled";
-  const turnStatus = cancelled ? "cancelled" : errorCode ? "error" : "done";
+  turnStatus = cancelled ? "cancelled" : errorCode ? "error" : "done";
   endTurn(turnId, turnStatus, errorCode);
   const pendingHere = listApprovals(omniConfig.ownerEmail(), "pending").some((a) => a.threadId === threadId);
   const state: ThreadState = pendingHere ? "needs-you" : cancelled ? "waiting" : errorCode ? "needs-you" : "done";
@@ -261,8 +264,10 @@ async function run(threadId: string, turnId: string, message: string, entry: Liv
   if (!cancelled) bumpUnread(threadId);
   emit(threadId, turnId, { t: "status", state, ...(errorCode ? { reason: errorCode } : {}) });
   publishNotice({ type: "thread", id: threadId, op: state });
-  notifyTurnEnded(threadId, turnStatus);
   // A stream can survive backgrounding, and one device cannot speak for the others.
   // Send completion according to each device’s preview preference; the OS handles presentation.
   if (!cancelled && getThread(threadId)) pushOmni("OMNI_THREAD", threadId, !errorCode ? completedReply : undefined);
+  } finally {
+    notifyTurnEnded(threadId, turnStatus);
+  }
 }

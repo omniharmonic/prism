@@ -9,7 +9,8 @@ import { resetDb, makeSession, sessionCookie } from "./helpers";
 import { createHermesStub } from "../scripts/lib/hermes-stub";
 import { setHermesFetchForTests } from "../src/omni/hermes-client";
 import { setOmniRecordSourcesForTests } from "../src/omni/records";
-import { resetOmniStoreForTests } from "../src/omni/store";
+import { resetOmniStoreForTests, auditRows } from "../src/omni/store";
+import { subscribeNotices } from "../src/omni/bus";
 import { resetNudgesForTests } from "../src/omni/nudges";
 import { resetCardsForTests, getCard, transitionCard } from "../src/omni/cards";
 import { proposeApproval } from "../src/omni/propose";
@@ -152,4 +153,97 @@ test("turn-ended: a plan turn that proposes nothing puts the card back in Decide
   assert.equal(getCard(owner, other.id)!.state, "draft-ready");
   notifyTurnEnded(other.threadId, "error");
   assert.equal(getCard(owner, other.id)!.state, "draft-ready");
+});
+
+const draftBody = (body: string) => ({ noteId: "mail1", expectTo: ["sam@example.com"], body });
+
+test("end to end: the card's own turn proposes through the bridge and the card ends draft-ready with one card push", async () => {
+  const stub = createHermesStub({
+    key: process.env.OMNI_HERMES_KEY!,
+    bridge: {
+      propose: async (body) => { const r = await omniApi.request("/hooks/propose", { method: "POST", headers: hook, body: JSON.stringify(body) }); return { ok: r.ok, status: r.status, id: ((await r.json()) as { id?: string }).id }; },
+      turn: async () => ({ ok: true, status: 200 }),
+    },
+    script: (ctx) => ({ acts: [
+      { tool: "omni_propose", args: {}, result: async () => JSON.stringify(await ctx.stub.bridge!.propose({ kind: "email-reply", payload: draftBody("Hi Sam,\n\nMonday works better.\n\nBenjamin"), threadId: ctx.sessionId, summary: "Ask for Monday" })) },
+      { say: "Drafted." },
+    ] }),
+  });
+  setHermesFetchForTests(stub.fetch);
+  const card = await publish();
+  pushes = [];
+  const started = await choose(card.id, "b", "plan-key-0003");
+  await turnSettled(started.turnId!);
+  const done = getCard(owner, card.id)!;
+  assert.equal(done.state, "draft-ready");
+  assert.equal(done.approvalIds.length, 1);
+  assert.deepEqual(pushes, [`OMNI_CARD:${card.id}`].concat(pushes.filter((p) => p.startsWith("OMNI_THREAD"))));
+  assert.equal(pushes.filter((p) => p.startsWith("OMNI_CARD")).length, 1);
+  assert.equal(pushes.some((p) => p.startsWith("OMNI_APPROVAL")), false);
+});
+
+test("a new draft proposed on a draft-ready card supersedes the pending one", async () => {
+  const card = await publish();
+  const r = await choose(card.id, "a", "choose-key-0004");
+  pushes = [];
+  const p = await propose({ kind: "email-reply", payload: draftBody("Hi Sam,\n\nA better draft.\n\nBenjamin"), threadId: card.threadId });
+  assert.equal(getApproval(owner, r.approval!.id)!.status, "cancelled");
+  assert.equal(getApproval(owner, p.id)!.status, "pending");
+  const c = getCard(owner, card.id)!;
+  assert.equal(c.state, "draft-ready");
+  assert.deepEqual(c.approvalIds, [r.approval!.id, p.id]);
+  assert.deepEqual(pushes, [`OMNI_CARD:${card.id}`]);
+  const row = auditRows().find((a) => a.action === "approval.cancel" && a.approval_id === r.approval!.id)!;
+  assert.equal(row.actor, "omni");
+  assert.equal(row.error, `superseded by ${p.id}`);
+});
+
+test("reopen supersede is audited as the system, not the owner", async () => {
+  const card = await publish();
+  const old = sentPending(card.id);
+  transitionCard(owner, card.id, ["proposed"], "waiting", { action: "waiting" }, { approvalId: old.id });
+  setOmniRecordSourcesForTests({ resolver: async ({ id }) => ({ id: id!, path: `mail/${id}`, tags: ["email"], updatedAt: "2026-10-15T12:00:00Z" }) });
+  await omniApi.request("/hooks/cards", { method: "POST", headers: hook, body: JSON.stringify(cardPublish({ sourceRevision: "2026-10-15T12:00:00Z", evidence: [{ sourceId: "mail1", revision: "2026-10-15T12:00:00Z" }] })) });
+  const row = auditRows().find((a) => a.action === "approval.cancel" && a.approval_id === old.id)!;
+  assert.equal(row.actor, "omni");
+  assert.equal(row.via, "superseded");
+});
+
+test("a card bookkeeping failure never hides a real send", async () => {
+  const card = await publish();
+  const r = await choose(card.id, "a", "choose-key-0005");
+  const notices: string[] = [];
+  const off = subscribeNotices((n) => { notices.push(`${n.type}:${n.op}`); if (n.type === "item-card") throw new Error("card subscriber down"); });
+  try {
+    assert.equal((await decide(r.approval!.id, r.approval!.digest, "send", "send-key-00007")).status, 200);
+  } finally { off(); }
+  assert.equal(executed, 1);
+  assert.ok(auditRows().some((a) => a.action === "approval.send" && a.approval_id === r.approval!.id && a.status === "sent"));
+  assert.ok(notices.includes("approval:sent"));
+});
+
+test("revise whose turn was a replay of an ended turn leaves the card in Decide, not stuck working", async () => {
+  const card = await publish();
+  const first = sentPending(card.id);
+  transitionCard(owner, card.id, ["proposed"], "draft-ready", { action: "draft" }, { approvalId: first.id });
+  const a = await decide(first.id, first.digest, "revise", "revise-key-0001", { feedback: "Shorter please." });
+  const turn1 = ((await a.json()) as { turnId: string }).turnId;
+  await turnSettled(turn1);
+  assert.equal(getCard(owner, card.id)!.state, "proposed");
+  const second = await propose({ kind: "email-reply", payload: draftBody("Hi Sam,\n\nAgain.\n\nBenjamin"), threadId: card.threadId });
+  assert.equal(getCard(owner, card.id)!.state, "draft-ready");
+  const b = await decide(second.id, second.digest, "revise", "revise-key-0001", { feedback: "Shorter please." });
+  assert.equal(((await b.json()) as { turnId: string }).turnId, turn1, "the same key replays the ended turn");
+  assert.equal(getCard(owner, card.id)!.state, "proposed");
+});
+
+test("editing an older draft does not move the card's latest", async () => {
+  const card = await publish();
+  const old = sentPending(card.id);
+  transitionCard(owner, card.id, ["proposed"], "working", { action: "instruct" }, { approvalId: old.id });
+  const newer = sentPending(card.id, { body: "Hi Sam,\n\nNewer.\n\nBenjamin" });
+  transitionCard(owner, card.id, ["working"], "draft-ready", { action: "draft" }, { approvalId: newer.id });
+  const edit = await omniApi.request(`/approvals/${old.id}`, { method: "PUT", headers: ownerH(), body: JSON.stringify({ digest: old.digest, payload: draftBody("Hi Sam,\n\nEdited old.\n\nBenjamin") }) });
+  assert.equal(edit.status, 201);
+  assert.deepEqual(getCard(owner, card.id)!.approvalIds, [old.id, newer.id]);
 });
