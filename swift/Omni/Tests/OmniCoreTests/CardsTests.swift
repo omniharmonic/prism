@@ -265,3 +265,35 @@ private actor NudgeRecorder: NudgeService {
         XCTAssertEqual(session.needsYouCount, 3, "one decision, one draft ready, one draft that belongs to no card")
     }
 }
+
+@MainActor
+final class NeedsYouRulesTests: XCTestCase {
+    private func card(_ id: String, state: CardState, section: CardSection?, approvals: [String]) -> OmniCard {
+        OmniCard(id: id, sourceKey: "src-\(id)", kind: .email, state: state, headline: "Sam asks about \(id)",
+                 options: [.init(id: "a", label: "Yes", plan: "Yes", produces: [], draft: nil), .init(id: "b", label: "No", plan: "No", produces: [], draft: nil)],
+                 recommended: "a", itemRefs: ["src-\(id)"], threadId: "t-\(id)", approvalIds: approvals,
+                 createdAt: Date(timeIntervalSince1970: 1), updatedAt: Date(timeIntervalSince1970: 1), section: section)
+    }
+
+    func testAnEmptyListIsClearOnlyOnceBothHaveLoaded() {
+        XCTAssertEqual(NeedsYouState.of(cards: .idle, approvals: .loaded, isEmpty: true), .loading)
+        XCTAssertEqual(NeedsYouState.of(cards: .loaded, approvals: .loading, isEmpty: true), .loading)
+        XCTAssertEqual(NeedsYouState.of(cards: .loaded, approvals: .idle, isEmpty: true), .loading)
+        XCTAssertEqual(NeedsYouState.of(cards: .loaded, approvals: .loaded, isEmpty: true), .clear)
+        XCTAssertEqual(NeedsYouState.of(cards: .failed("x"), approvals: .loaded, isEmpty: true), .items, "a failure is shown, never the all-clear")
+        XCTAssertEqual(NeedsYouState.of(cards: .loading, approvals: .loading, isEmpty: false), .items)
+    }
+
+    func testOnlyTheLatestApprovalOfAShownCardIsLinked() {
+        let model = CardsModel(service: CardFake([]), nudges: nil, sink: ErrorSink(onSignedOut: {}))
+        model.ingest([
+            card("shown", state: .draftReady, section: .approve, approvals: ["old", "latest"]),
+            card("snoozed", state: .snoozed, section: .motion, approvals: ["on-snoozed"]),
+            card("working", state: .working, section: .motion, approvals: ["on-working"]),
+        ])
+        XCTAssertEqual(model.linkedApprovalIDs, ["latest"], "an older approval, and one on a snoozed or working card, stay lone drafts")
+        XCTAssertTrue(model.isShown("shown"))
+        XCTAssertTrue(model.isShown("working"))
+        XCTAssertFalse(model.isShown("not-loaded-yet"))
+    }
+}

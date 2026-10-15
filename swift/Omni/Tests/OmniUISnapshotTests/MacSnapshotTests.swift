@@ -268,7 +268,10 @@ struct Walk {
 
         // Approvals: the queue, and each kind in its thread.
         try await screen("needs-you-list", service: service, .needsYou)
-        try await screen("needs-you-sections", service: CardingSampleService.carding(), .needsYou, height: 2600)
+        try await screen("needs-you-sections", service: CardingSampleService.carding(), .needsYou)
+        let lower = CardingSampleService.carding()
+        lower.cardItems = lower.cardItems.filter { $0.section != .decide }
+        try await screen("needs-you-approve-motion", service: lower, .needsYou)
         let clear = CardingSampleService()
         clear.cardItems = [CardingSampleService.working(), CardingSampleService.waiting()]
         try await screen("needs-you-clear", service: clear, .needsYou)

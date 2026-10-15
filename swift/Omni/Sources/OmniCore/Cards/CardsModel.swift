@@ -58,8 +58,12 @@ public final class CardsModel {
     public var decide: [OmniCard] { Self.ordered(items.filter { $0.section == .decide }) }
     public var approve: [OmniCard] { Self.ordered(items.filter { $0.section == .approve }) }
     public var inMotion: [OmniCard] { Self.ordered(items.filter { $0.section == .motion }) }
-    /// Drafts that belong to a card are shown inside it, not again on their own.
-    public var linkedApprovalIDs: Set<String> { Set(known.values.flatMap(\.approvalIds)) }
+    /// Drafts a card shows inside itself, so they are not listed again on their own: ONLY the latest
+    /// approval of a card that is currently in Decide or Approve. Every other pending approval
+    /// (a snoozed or working card's, an older one of a card) stays a lone draft, so none is hidden.
+    public var linkedApprovalIDs: Set<String> { Set((decide + approve).compactMap(\.latestApprovalID)) }
+    /// True when the card is in a loaded section (Decide, Approve or In motion).
+    public func isShown(_ id: String) -> Bool { items.contains { $0.id == id && $0.section != nil } }
     public func card(for id: String) -> OmniCard? { known[id] }
     public func isBusy(_ id: String) -> Bool { busy.contains(id) }
     public func notice(for id: String) -> String? { notices[id] }
@@ -258,5 +262,18 @@ public final class CardsModel {
         guard let card = known[cardID], card.transitional, let nudgeID = card.nudgeId else { return nil }
         if let thread = card.threadId { return thread }
         return await nudges?.start(nudgeID, .startWorking)
+    }
+}
+
+
+/// What Needs you may say about an empty list. "You're clear" only after BOTH the cards and the
+/// approvals have really loaded; before that the answer is "loading", never the all-clear.
+public enum NeedsYouState: Equatable, Sendable {
+    case loading, clear, items
+
+    public static func of(cards: LoadPhase, approvals: LoadPhase, isEmpty: Bool) -> NeedsYouState {
+        guard isEmpty else { return .items }
+        if cards.failure != nil || approvals.failure != nil { return .items }
+        return cards == .loaded && approvals == .loaded ? .clear : .loading
     }
 }

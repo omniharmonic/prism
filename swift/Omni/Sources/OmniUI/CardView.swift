@@ -8,15 +8,20 @@ enum CardMetrics {
     static let spacing: CGFloat = 10
     static let optionSpacing: CGFloat = 8
     static let touch: CGFloat = 44
+    /// The minimum hit height where a finger taps (iOS); the Mac uses each control's natural size.
+    #if os(iOS)
+    static let minTouch: CGFloat = 44
+    #else
+    static let minTouch: CGFloat = 0
+    #endif
     static let corner: CGFloat = 14
     static let optionCorner: CGFloat = 10
 }
 
 extension View {
-    /// A 44 pt tap area that takes no layout room: the hit shape is grown past the view and the
-    /// layout size handed back, so the gaps between rows stay the card's own spacing.
+    /// iOS: a 44 pt hit area that is the visual frame (no overlap). Mac: the control's natural size.
     func touchTarget() -> some View {
-        padding(.vertical, 14).contentShape(Rectangle()).padding(.vertical, -14)
+        frame(minHeight: CardMetrics.minTouch).contentShape(Rectangle())
     }
 }
 
@@ -65,7 +70,8 @@ struct CardOptionStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .padding(.horizontal, CardMetrics.padding)
-            .frame(maxWidth: fullWidth ? .infinity : nil, minHeight: CardMetrics.touch, alignment: .leading)
+            .padding(.vertical, 6)
+            .frame(maxWidth: fullWidth ? .infinity : nil, minHeight: CardMetrics.minTouch, alignment: .leading)
             .foregroundStyle(recommended ? Color.omniAccent : Color.primary)
             .background(recommended ? AnyShapeStyle(Color.omniAccent.opacity(0.12)) : AnyShapeStyle(.quaternary.opacity(0.6)), in: RoundedRectangle(cornerRadius: CardMetrics.optionCorner))
             .overlay(RoundedRectangle(cornerRadius: CardMetrics.optionCorner).strokeBorder(recommended ? AnyShapeStyle(Color.omniAccent) : AnyShapeStyle(.separator)))
@@ -214,7 +220,7 @@ struct CardView: View {
             TextField("Something else…", text: $instruction, axis: .vertical)
                 .lineLimit(1...4)
                 .textFieldStyle(.roundedBorder)
-                .frame(minHeight: CardMetrics.touch)
+                .frame(minHeight: CardMetrics.minTouch)
                 .accessibilityLabel("Something else")
                 .accessibilityHint("Tell Omni how to handle this instead. Nothing is sent without your approval.")
                 .accessibilityIdentifier("card.\(card.id).somethingElse")
@@ -223,7 +229,7 @@ struct CardView: View {
                     let text = instruction
                     Task { if await cards.instruct(card.id, text: text) != nil { instruction = "" } }
                 } label: {
-                    Image(systemName: "arrow.up.circle.fill").font(.title2).frame(minWidth: CardMetrics.touch, minHeight: CardMetrics.touch)
+                    Image(systemName: "arrow.up.circle.fill").font(.title2).frame(minWidth: CardMetrics.minTouch, minHeight: CardMetrics.minTouch)
                 }
                 .buttonStyle(.borderless)
                 .foregroundStyle(Color.omniAccent)
@@ -277,8 +283,6 @@ struct CardView: View {
         .font(.callout)
         .foregroundStyle(Color.quietText)
         .buttonStyle(.borderless)
-        // The field above already has its own 44 pt; the quiet row sits close under it.
-        .padding(.top, -2)
     }
 
     @ViewBuilder private func footerButtons(_ card: OmniCard) -> some View {
@@ -344,7 +348,7 @@ struct CardMotionRow: View {
                 Text(CardText.motionLine(card)).lineLimit(typeSize.isAccessibilitySize ? nil : 2).frame(maxWidth: .infinity, alignment: .leading)
                 Image(systemName: "chevron.right").font(.caption).foregroundStyle(Color.quietText).accessibilityHidden(true)
             }
-            .frame(minHeight: CardMetrics.touch)
+            .frame(minHeight: CardMetrics.minTouch)
             .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)

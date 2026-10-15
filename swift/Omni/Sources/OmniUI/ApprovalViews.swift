@@ -372,7 +372,7 @@ struct NeedsYouSectionHeader: View {
             Text("\(count)").font(.callout).foregroundStyle(Color.quietText)
             Spacer()
         }
-        .frame(minHeight: CardMetrics.touch)
+        .frame(minHeight: CardMetrics.minTouch)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isHeader)
         .accessibilityIdentifier("needsYou.section.\(title.lowercased().replacingOccurrences(of: " ", with: "-"))")
@@ -387,6 +387,25 @@ struct NeedsYouView: View {
     @Environment(\.navigator) private var navigator
     @Environment(\.cardsNow) private var now
     @State private var showsMotion = true
+    @State private var focusTask: Task<Void, Never>?
+
+    private struct FocusProbe: Equatable { var id: String?; var shown: Bool }
+    private var focusProbe: FocusProbe {
+        let id = session.cards?.focusedCardID
+        return FocusProbe(id: id, shown: id.map { session.cards?.isShown($0) ?? false } ?? false)
+    }
+
+    /// Scroll to the focused card (opening In motion first when it is in there), keep its outline
+    /// for about two seconds, then let go so the same card can be focused again.
+    private func reveal(_ id: String, _ proxy: ScrollViewProxy) async {
+        if session.cards?.inMotion.contains(where: { $0.id == id }) == true { showsMotion = true }
+        try? await Task.sleep(for: .milliseconds(80))
+        guard !Task.isCancelled else { return }
+        withAnimation { proxy.scrollTo(id, anchor: .top) }
+        try? await Task.sleep(for: .seconds(2))
+        guard !Task.isCancelled else { return }
+        if session.cards?.focusedCardID == id { session.cards?.focus(nil) }
+    }
 
     private func refresh() async {
         await session.approvals.refresh()
@@ -400,7 +419,7 @@ struct NeedsYouView: View {
                 LazyVStack(alignment: .leading, spacing: 16) {
                     if let failure = session.cards?.phase.failure ?? session.approvals.phase.failure {
                         Label(failure, systemImage: "wifi.exclamationmark").foregroundStyle(Color.quietText)
-                        Button("Try again") { Task { await refresh() } }.frame(minHeight: 44)
+                        Button("Try again") { Task { await refresh() } }.frame(minHeight: CardMetrics.minTouch)
                     }
                     if let cards = session.cards { sections(cards) } else { draftsOnly }
                 }
@@ -408,11 +427,10 @@ struct NeedsYouView: View {
                 .frame(maxWidth: 820, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }
-            .onChange(of: session.cards?.focusedCardID, initial: true) { _, id in
-                guard let id else { return }
-                withAnimation { proxy.scrollTo(id, anchor: .top) }
-                // Scrolled: clear it so the same card can be focused again later.
-                session.cards?.focus(nil)
+            .onChange(of: focusProbe, initial: true) { _, probe in
+                guard let id = probe.id, probe.shown else { return }   // not loaded yet: wait for the next cards change
+                focusTask?.cancel()
+                focusTask = Task { await reveal(id, proxy) }
             }
         }
         .navigationTitle("Needs you")
@@ -428,7 +446,8 @@ struct NeedsYouView: View {
         let approve = cards.approve
         let motion = cards.inMotion
         let drafts = session.approvals.pending.filter { !cards.linkedApprovalIDs.contains($0.id) }
-        if decide.isEmpty, approve.isEmpty, drafts.isEmpty, cards.phase.failure == nil {
+        switch NeedsYouState.of(cards: cards.phase, approvals: session.approvals.phase, isEmpty: decide.isEmpty && approve.isEmpty && drafts.isEmpty) {
+        case .clear:
             ContentUnavailableView {
                 Label("You're clear", systemImage: "checkmark.circle")
             } description: {
@@ -437,6 +456,11 @@ struct NeedsYouView: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel(NeedsYouText.clear(inMotion: motion.count))
             .accessibilityIdentifier("needsYou.clear")
+        case .loading:
+            Label("Checking what needs you…", systemImage: "arrow.triangle.2.circlepath")
+                .font(.callout).foregroundStyle(Color.quietText)
+                .accessibilityIdentifier("needsYou.loading")
+        case .items: EmptyView()
         }
         if !decide.isEmpty {
             NeedsYouSectionHeader(title: "Decide", count: decide.count)
@@ -459,7 +483,9 @@ struct NeedsYouView: View {
     /// Without the card routes (an older server): the drafts, as before.
     @ViewBuilder private var draftsOnly: some View {
         let pending = session.approvals.pending
-        if pending.isEmpty, session.approvals.phase.failure == nil {
+        if pending.isEmpty, session.approvals.phase == .loading || session.approvals.phase == .idle {
+            Label("Checking what needs you…", systemImage: "arrow.triangle.2.circlepath").font(.callout).foregroundStyle(Color.quietText)
+        } else if pending.isEmpty, session.approvals.phase.failure == nil {
             ContentUnavailableView("Nothing needs you", systemImage: "checkmark.circle", description: Text("Drafts waiting for your decision appear here. Nothing goes out without your tap."))
         }
         ForEach(pending) { loneDraft($0) }
@@ -469,7 +495,7 @@ struct NeedsYouView: View {
         VStack(alignment: .leading, spacing: 6) {
             ApprovalCardView(center: session.approvals, id: draft.id)
             if let threadID = draft.approval.threadId {
-                Button { navigator.open(.thread(threadID)) } label: { Text("Open thread").frame(minHeight: 44).contentShape(Rectangle()) }
+                Button { navigator.open(.thread(threadID)) } label: { Text("Open thread").frame(minHeight: CardMetrics.minTouch).contentShape(Rectangle()) }
                     .buttonStyle(.borderless).font(.callout)
             }
         }
@@ -498,7 +524,7 @@ struct AttentionSettingsView: View {
             if let failure = center.phase.failure ?? center.failure {
                 Section {
                     Label(failure, systemImage: "wifi.exclamationmark").foregroundStyle(Color.quietText)
-                    Button("Try again") { Task { await center.refresh() } }.frame(minHeight: 44)
+                    Button("Try again") { Task { await center.refresh() } }.frame(minHeight: CardMetrics.minTouch)
                 }
             }
             if let audit = center.audit {
