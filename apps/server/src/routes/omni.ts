@@ -85,7 +85,8 @@ import { runTweetSend } from "../omni/tweet-send";
 import { DIALS, type InterruptContext } from "../omni/nudge-policy";
 import { priorNudgeSources, resolveNudgeSource, nudgeWeeklyAudit, latestNudgeAudit, FRESHNESS_SUBSYSTEMS, NUDGE_KINDS, upsertNudge, listNudges, getNudge, nudgeAction, nudgeSettings, setNudgeSettings, bindNudgeThread, type Candidate } from "../omni/nudges";
 import { startNudgeDelivery } from "../omni/nudge-delivery";
-import { resolveNote } from "../omni/records";
+import { resolveNote, readNoteContent } from "../omni/records";
+import { readableNudgeText } from "../omni/titles";
 import { proactiveSourceHealth } from "../omni/source-health";
 import { syncAttentionPreferences, AttentionPreferenceError } from "../omni/attention-preferences";
 import { parseProactiveDecision, publishProactive, proactiveMessages, proactiveContext, recordProactiveOwnerTurn, proactiveOwnerScope, resolveProactiveSources, proactiveNudgePresentation, suppressedProactiveSources, ProactiveError } from "../omni/proactive";
@@ -1121,7 +1122,9 @@ omniApi.post("/hooks/nudges",async c=>{
  if(b.senderId!==null&&(!text(b.senderId,128)||!NOTE_ID_RE.test(b.senderId)))return bad(c,"senderId: note id or null");
  const source=await resolveNote({id:b.sourceId,fresh:true});if(!source?.path||source.tags?.includes("prism-trashed")||source.trashed)return c.json({error:"source_unavailable"},422);
  const presentation=await proactiveNudgePresentation(omniConfig.ownerEmail(),b.sourceId,source.updatedAt);
- const n=upsertNudge(omniConfig.ownerEmail(),{...b,...presentation,sourcePath:source.path} as unknown as Candidate);
+ // A producer's slug / path title and raw markdown preview become a readable name and plain summary.
+ const readable=await readableNudgeText({title:b.title,summary:b.summary},{id:source.id,path:source.path,title:source.title},readNoteContent);
+ const n=upsertNudge(omniConfig.ownerEmail(),{...b,...readable,...presentation,sourcePath:source.path} as unknown as Candidate);
  publishNotice({type:"card",id:n.id,op:"nudge"});return c.json(n,201);
 });
 omniApi.post("/hooks/nudges/operational",async c=>{

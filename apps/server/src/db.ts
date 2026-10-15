@@ -794,13 +794,28 @@ db.exec(`
   }
 }
 
-// Notification content is a per-registration opt-in; old devices stay generic.
+// Notification content is a per-registration choice (generic | title | title_preview).
 {
   const cols = db.prepare("PRAGMA table_info(apns_tokens)").all() as Array<{ name: string }>;
   if (!cols.some(c => c.name === "preview")) {
     db.exec("ALTER TABLE apns_tokens ADD COLUMN preview TEXT NOT NULL DEFAULT 'generic' CHECK (preview IN ('generic', 'title', 'title_preview'))");
   }
 }
+
+// Omni Phase 1 (informative notifications): the owner chose a headline + short summary as
+// Omni's default. A stored `generic` cannot be told apart from "never chose" (the app sent
+// `generic` as its default on every registration), so every existing Omni registration moves
+// to `title_preview` ONCE. Generic stays selectable: a later registration that sends
+// `generic` is kept. Prism (non-Omni) registrations are untouched.
+export const migrateOmniPushPreviewDefault = db.transaction((): number => {
+  const flag = (db.prepare("SELECT value FROM settings WHERE key = ?").get("omni_push_preview_default_v1") as { value: string } | undefined)?.value;
+  if (flag === "done") return 0;
+  const moved = db.prepare("UPDATE apns_tokens SET preview = 'title_preview' WHERE application = 'omni' AND preview = 'generic'").run().changes;
+  if (moved) console.log(`[db] omni push: ${moved} registration(s) moved to title_preview (Phase 1 default)`);
+  db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run("omni_push_preview_default_v1", "done");
+  return moved;
+});
+migrateOmniPushPreviewDefault();
 
 // TTL / expiry on grants (Phase 4.3): a nullable epoch-ms deadline. NULL = never
 // expires (every existing grant → byte-identical behavior). Today only PEER

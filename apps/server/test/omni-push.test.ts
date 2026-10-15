@@ -84,16 +84,20 @@ test("preview opt-in is device-scoped, validated and retained on token refresh",
   const mac = issueDeviceToken(config.ownerEmail, "Mac", "omni-native");
   await register(omniApi, "/push", phone.token);
   await register(omniApi, "/push", mac.token, "b".repeat(64));
-  assert.equal(apnsTokenForDevice(phone.id)?.preview, "generic");
+  assert.equal(apnsTokenForDevice(phone.id)?.preview, "title_preview", "Omni's default (Phase 1): headline + summary");
   const set = (preview: unknown) => omniApi.request("/push", { method: "POST", headers: headers(phone.token), body: JSON.stringify({ token: "a".repeat(64), environment: "sandbox", preview, deviceId: mac.id }) });
-  assert.equal((await set("title_preview")).status, 200);
-  assert.equal(apnsTokenForDevice(phone.id)?.preview, "title_preview");
-  assert.equal(apnsTokenForDevice(mac.id)?.preview, "generic", "caller cannot select another device");
-  await register(omniApi, "/push", phone.token);
-  assert.equal(apnsTokenForDevice(phone.id)?.preview, "title_preview");
-  for (const bad of ["everything", null, {}, 1]) assert.equal((await set(bad)).status, 400);
   assert.equal((await set("generic")).status, 200);
-  assert.equal(apnsTokenForDevice(phone.id)?.preview, "generic");
+  assert.equal(apnsTokenForDevice(phone.id)?.preview, "generic", "generic stays selectable");
+  assert.equal(apnsTokenForDevice(mac.id)?.preview, "title_preview", "caller cannot select another device");
+  await register(omniApi, "/push", phone.token);
+  assert.equal(apnsTokenForDevice(phone.id)?.preview, "generic", "a refresh that names no preview keeps the device's choice");
+  for (const bad of ["everything", null, {}, 1]) assert.equal((await set(bad)).status, 400);
+  assert.equal((await set("title")).status, 200);
+  assert.equal(apnsTokenForDevice(phone.id)?.preview, "title");
+  // Prism registrations keep their generic default.
+  const prism = issueDeviceToken(config.ownerEmail, "Prism", "prism-native");
+  await register(pushApi, "/apns", prism.token, "c".repeat(64));
+  assert.equal(apnsTokenForDevice(prism.id)?.preview, "generic");
 });
 
 test("mixed device preferences produce distinct private alerts, owner/app scoped", async () => {
@@ -101,8 +105,7 @@ test("mixed device preferences produce distinct private alerts, owner/app scoped
   const generic = issueDeviceToken(config.ownerEmail, "Private", "omni-native");
   const rich = issueDeviceToken(config.ownerEmail, "Rich", "omni-native");
   const title = issueDeviceToken(config.ownerEmail, "Title", "omni-native");
-  await register(omniApi, "/push", generic.token);
-  for (const [device, preview, token] of [[rich, "title_preview", "b"], [title, "title", "c"]] as const) {
+  for (const [device, preview, token] of [[generic, "generic", "a"], [rich, "title_preview", "b"], [title, "title", "c"]] as const) {
     await omniApi.request("/push", { method: "POST", headers: headers(device.token), body: JSON.stringify({ token: token.repeat(64), environment: "sandbox", preview }) });
   }
   const stranger = issueDeviceToken("other@example.com", "Other", "omni-native");
@@ -129,7 +132,10 @@ test("bounded plain-text previews omit code, controls and paths with generic fal
   for (const reply of [undefined, "", "```swift\nlet secret = 1\n```", "`command`", "/tmp/reply.wav", "file:///private/reply.mp3", "[Audio](/tmp/reply.wav)", "![Audio](/tmp/reply.wav)"]) {
     assert.deepEqual(alert(reply), { title: "Omni", body: "Omni has an update" });
   }
-  assert.deepEqual(alert("Final answer", "OMNI_APPROVAL"), { title: "Omni", body: "A draft is waiting for your review" });
+  // An approval: the title is its headline, the body the plain preview (or the fixed sentence).
+  assert.deepEqual(alert("Final answer", "OMNI_APPROVAL"), { title: "Private title", body: "Final answer" });
+  assert.deepEqual(alert(undefined, "OMNI_APPROVAL"), { title: "Private title", body: "A draft is waiting for your review" });
+  assert.deepEqual((omniNotification("OMNI_APPROVAL", "a1", "generic", "Tweet ready to approve", "text").payload.aps as { alert: unknown }).alert, { title: "Omni", body: "A draft is waiting for your review" });
   assert.equal(notificationText("**Ready**\n[Details](https://example.com) /tmp/audio.wav `code`\u202E\u0000", 180), "Ready Details");
   const text = notificationText("😀".repeat(500), 180);
   assert.equal(Array.from(text).length, 180);
@@ -152,4 +158,43 @@ test("transport failures cannot log opted-in reply or title content", async () =
     assert.ok(!logs.join(" ").includes("PRIVATE_TITLE"));
     assert.ok(!logs.join(" ").includes("PRIVATE_REPLY"));
   } finally { console.error = original; }
+});
+
+test("approval pushes honor each device's preview: a headline per kind and the plain draft", async () => {
+  const { setOmniPusherForTests, pushOmni } = await import("../src/omni/bus");
+  const { createApproval } = await import("../src/omni/approvals");
+  const { approvalHeadline } = await import("../src/omni/push-text");
+  setOmniPusherForTests(null);
+  const generic = issueDeviceToken(config.ownerEmail, "Private", "omni-native");
+  const rich = issueDeviceToken(config.ownerEmail, "Rich", "omni-native");
+  for (const [device, preview, token] of [[generic, "generic", "a"], [rich, "title_preview", "b"]] as const) {
+    await omniApi.request("/push", { method: "POST", headers: headers(device.token), body: JSON.stringify({ token: token.repeat(64), environment: "sandbox", preview }) });
+  }
+  const a = createApproval({ owner: config.ownerEmail, threadId: null, kind: "tweet", payload: { text: "Shipping **Omni** today — https://x.example" }, ttlMs: 60_000 });
+  pushOmni("OMNI_APPROVAL", a.id);
+  for (let i = 0; i < 50 && requests.length < 2; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(requests.map((r) => JSON.parse(r.body).aps.alert), [
+    { title: "Omni", body: "A draft is waiting for your review" },
+    { title: "Tweet ready to approve", body: "Shipping Omni today —" },
+  ]);
+  assert.equal(approvalHeadline({ kind: "email-reply", payload: { expectTo: ["Alice Chen <alice@example.com>"] } }), "Draft reply to Alice Chen is ready");
+  assert.equal(approvalHeadline({ kind: "email", payload: { to: ["bob@example.com"] } }), "Email to bob is ready");
+  assert.equal(approvalHeadline({ kind: "command", payload: { tool: "terminal" } }), "Approve a terminal call");
+});
+
+test("one-time migration: existing Omni registrations move to title_preview once; Prism rows and later choices are kept", async () => {
+  const { migrateOmniPushPreviewDefault } = await import("../src/db");
+  const omni = issueDeviceToken(config.ownerEmail, "Omni", "omni-native");
+  const prism = issueDeviceToken(config.ownerEmail, "Prism", "prism-native");
+  const { saveApnsToken } = await import("../src/apns");
+  saveApnsToken({ deviceId: omni.id, token: "a".repeat(64), environment: "sandbox", application: "omni", email: config.ownerEmail, vaultId: "test", preview: "generic" });
+  saveApnsToken({ deviceId: prism.id, token: "b".repeat(64), environment: "sandbox", application: "prism", email: config.ownerEmail, vaultId: "test", preview: "generic" });
+  db.prepare("DELETE FROM settings WHERE key = 'omni_push_preview_default_v1'").run();
+  assert.equal(migrateOmniPushPreviewDefault(), 1);
+  assert.equal(apnsTokenForDevice(omni.id)?.preview, "title_preview");
+  assert.equal(apnsTokenForDevice(prism.id)?.preview, "generic");
+  // Generic chosen afterwards stays generic: the migration never runs again.
+  saveApnsToken({ deviceId: omni.id, token: "a".repeat(64), environment: "sandbox", application: "omni", email: config.ownerEmail, vaultId: "test", preview: "generic" });
+  assert.equal(migrateOmniPushPreviewDefault(), 0);
+  assert.equal(apnsTokenForDevice(omni.id)?.preview, "generic");
 });

@@ -345,6 +345,45 @@ test("H1: varying `fields` reuses ONE canonical listing per tag; projection happ
   assert.match(listings()[0]!.search, /order_by=updated_at/, "deterministic order from the vault");
 });
 
+test("query: a view gets the keys it asks for even when the tag's schema does not declare them", async () => {
+  // The vault's `meeting` schema names no start/end/location/meetLink (Today's agenda asks for them).
+  vaultTags.push({ name: "meeting", count: 3, description: null, fields: { date: { type: "string" }, event_status: { type: "string" } } });
+  fv.put({ id: "m1", path: "meetings/late", tags: ["meeting"], metadata: { title: "Late", date: "2026-10-09", start: "2026-10-09T18:00:00Z", end: "2026-10-09T19:00:00Z", location: "Room 2", meetLink: "https://meet.example/late", private_note: "x" } });
+  fv.put({ id: "m2", path: "meetings/early", tags: ["meeting"], metadata: { title: "Early", date: "2026-10-09", start: "2026-10-09T09:00:00Z", end: "2026-10-09T09:30:00Z" } });
+  fv.put({ id: "m3", path: "meetings/other-day", tags: ["meeting"], metadata: { title: "Other", date: "2026-10-10", start: "2026-10-10T08:00:00Z" } });
+  const cookie = login(OWNER);
+  const spec = { tags: ["meeting"], filter: { match: "all", conditions: [{ key: "date", op: "eq", value: "2026-10-09" }] }, sort: [{ key: "start", dir: "asc" }], fields: ["title", "start", "end", "location", "meetLink", "event_status", "date"], limit: 100 };
+  const body = (await (await query(spec, cookie)).json()) as any;
+  assert.deepEqual(body.rows.map((r: any) => [r.id, r.metadata.start]), [["m2", "2026-10-09T09:00:00Z"], ["m1", "2026-10-09T18:00:00Z"]], "sorted by start, which the schema does not declare");
+  assert.equal(body.rows[1].metadata.location, "Room 2");
+  assert.equal(body.rows[1].metadata.meetLink, "https://meet.example/late");
+  assert.equal(body.rows[1].metadata.private_note, undefined, "only the asked-for keys");
+  const listing = listings().at(-1)!;
+  assert.match(decodeURIComponent(listing.search), /include_metadata=[^&]*\bstart\b/);
+  // The same view again — and a narrower one — reuse that listing.
+  await query(spec, cookie);
+  await query({ tags: ["meeting"], fields: ["start"] }, cookie);
+  assert.equal(listings().length, 1);
+  // A key not yet held: one new listing carrying both sets of keys.
+  await query({ tags: ["meeting"], fields: ["private_note"] }, cookie);
+  assert.equal(listings().length, 2);
+  await query(spec, cookie);
+  assert.equal(listings().length, 2, "the union serves the first view too");
+  const keys = new URLSearchParams(listings().at(-1)!.search).get("include_metadata")!.split(",");
+  assert.ok(keys.includes("start") && keys.includes("private_note"), "both views' keys");
+});
+
+test("query: asked-for keys never widen which rows a non-owner sees", async () => {
+  vaultTags.push({ name: "meeting", count: 2, description: null, fields: { date: { type: "string" } } });
+  fv.put({ id: "m1", path: "meetings/a", tags: ["meeting"], metadata: { title: "Shared", date: "2026-10-09", start: "2026-10-09T10:00:00Z" } });
+  fv.put({ id: "m2", path: "meetings/b", tags: ["meeting"], metadata: { title: "Private", date: "2026-10-09", start: "2026-10-09T11:00:00Z", prism_creator: "x@test.local", prism_visibility: "private" } });
+  addGrant({ subject_type: "user", subject: "kai@test.local", resource_type: "note", resource: "m1", level: "view", created_by: "test" });
+  const body = (await (await query({ tags: ["meeting"], fields: ["start", "prism_creator"], sort: [{ key: "start", dir: "asc" }] }, login("kai@test.local"))).json()) as any;
+  assert.deepEqual(body.rows.map((r: any) => r.id), ["m1"]);
+  assert.equal(body.rows[0].metadata.start, "2026-10-09T10:00:00Z");
+  assert.equal(body.limited, true);
+});
+
 test("H1: the listing cache is LRU-bounded", async () => {
   seedTasks();
   fv.put({ id: "x1", tags: ["alpha"], metadata: {} });

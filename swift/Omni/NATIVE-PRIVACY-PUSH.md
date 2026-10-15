@@ -2,7 +2,25 @@
 
 Notifications stay off until Settings → Enable Notifications. Permission is requested
 only from that action. Reconnect uses existing permission and the current native session;
-it never prompts on launch. Payloads contain generic wording and ids, never thread text.
+it never prompts on launch. What an alert says follows Settings → Notifications → preview,
+stored per device on the server (`apns_tokens.preview`):
+
+- **Title and short preview** (`title_preview`, the default since Omni Phase 1): a concise
+  headline and a plain-text summary (markdown stripped, at most 180 characters). Nudges read
+  "Reply owed: Alice Chen", "Meeting in 15 min: Ops sync", "Task due soon: File taxes";
+  approvals "Tweet ready to approve", "Draft reply to Alice Chen is ready"; a completed thread
+  shows its title and the start of the answer; a digest "3 items need you" and its top item.
+- **Title only** (`title`): the headline with a fixed sentence.
+- **Generic** (`generic`): "Omni" and a fixed sentence, ids and the deep link only — no content.
+
+Generic stays selectable at any time. Because the app sent `generic` as its own default on
+every registration, the server could not tell "never chose" from an explicit choice, so every
+existing Omni registration was moved to `title_preview` once (server migration
+`omni_push_preview_default_v1`); a registration that names no preview gets `title_preview`.
+The app still sends its locally stored preview (default `generic`) on every reconnect, which
+reverts that migration for a device that never chose, until the app's own default becomes
+`title_preview` (or it omits `preview` when the person never chose). Code, links, local paths
+and control characters never reach an alert, and alert text is never logged.
 Turning notifications off removes the server registration before clearing local opt-in;
 sign-out revokes the device credential and its registration. Notification taps and
 `omni://thread/<id>` links navigate after sign-in and after an enabled lock is opened;

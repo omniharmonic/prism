@@ -75,13 +75,27 @@ const defaultResolver: NoteResolver = async (ref) => {
 };
 const defaultSubscriber: TreeSubscriber = (l) => subscribeTreeChanges(resolveVaultEntry(undefined), l);
 
+/** A note's body (for its first heading), or null when it cannot be read. Owner-side reads only. */
+export type ContentReader = (id: string) => Promise<string | null>;
+const defaultContentReader: ContentReader = async (id) => {
+  try {
+    const n = await vaultClient(resolveVaultEntry(undefined).id, { timeoutMs: 5_000 }).getNote(id, { includeContent: true, includeMetadata: ["title"] });
+    return typeof n.content === "string" ? n.content : null;
+  } catch {
+    return null;
+  }
+};
+
 let resolver: NoteResolver = defaultResolver;
 let subscriber: TreeSubscriber | null = defaultSubscriber;
-export function setOmniRecordSourcesForTests(o: { resolver?: NoteResolver | null; subscriber?: TreeSubscriber | null }): void {
+let contentReader: ContentReader = defaultContentReader;
+export function setOmniRecordSourcesForTests(o: { resolver?: NoteResolver | null; subscriber?: TreeSubscriber | null; content?: ContentReader | null }): void {
   if (o.resolver !== undefined) resolver = o.resolver ?? defaultResolver;
   if (o.subscriber !== undefined) subscriber = o.subscriber;
+  if (o.content !== undefined) contentReader = o.content ?? defaultContentReader;
 }
 export const resolveNote: NoteResolver = (ref) => resolver(ref);
+export const readNoteContent: ContentReader = (id) => contentReader(id);
 
 const str = (v: unknown): string | undefined => (typeof v === "string" && v ? v : undefined);
 const leaf = (p: string | null | undefined) => (p ? p.replace(/\.md$/i, "").split("/").pop() ?? p : null);

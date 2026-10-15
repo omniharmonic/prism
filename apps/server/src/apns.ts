@@ -24,8 +24,9 @@
  * re-mint once (above) · 429 / 5xx / network error / timeout → bounded retry
  * with exponential backoff · anything else → failed, logged.
  *
- * PRIVACY: Prism payloads contain ids and generic text. Omni may include a bounded
- * title/reply after per-device opt-in. Notification payloads are never logged. The device token
+ * PRIVACY: Prism payloads contain ids and generic text. Omni includes a bounded headline
+ * and plain summary per each device's preview setting (`title_preview` by default since
+ * Omni Phase 1; `generic` stays selectable). Notification payloads are never logged. The device token
  * value is never logged: logs carry `tokenRef()` (a sha256 prefix) only. The key
  * file's contents are never logged.
  */
@@ -274,6 +275,8 @@ function tokenAfterExpiry(used: string): string | null {
 // ── storage ──────────────────────────────────────────────────────────────────
 export type NotificationPreview = "generic" | "title" | "title_preview";
 export const isNotificationPreview = (v: unknown): v is NotificationPreview => v === "generic" || v === "title" || v === "title_preview";
+/** A registration that names no preview: Omni shows a headline and a short summary; Prism stays generic. */
+export const defaultNotificationPreview = (application: ApnsApplication): NotificationPreview => (application === "omni" ? "title_preview" : "generic");
 
 export interface ApnsTokenRow {
   preview: NotificationPreview;
@@ -331,7 +334,9 @@ export const saveApnsToken = db.transaction(
       owner_email: p.email.toLowerCase(),
       vault_id: p.vaultId,
       application: p.application ?? "prism",
-      preview: p.preview ?? apnsTokenForDevice(p.deviceId)?.preview ?? "generic",
+      // Unsaid → keep this device's earlier choice, else the application's default
+      // (Omni: headline + summary, the owner's Phase 1 choice; Prism: generic).
+      preview: p.preview ?? apnsTokenForDevice(p.deviceId)?.preview ?? defaultNotificationPreview(p.application ?? "prism"),
       t: Date.now(),
     });
   },

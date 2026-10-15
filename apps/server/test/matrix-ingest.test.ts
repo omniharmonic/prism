@@ -5,7 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { lastMessageEvidence,parseSync, detectPlatform, ingestMatrix, reconcileMatrix, formatLine, TRIAGE_TAGS, type IngestVault, type SyncResult } from "../src/worker/matrix";
+import { lastMessageEvidence,agentSenderIds,resetOwnerSenderIdsForTests,parseSync, detectPlatform, ingestMatrix, reconcileMatrix, formatLine, TRIAGE_TAGS, type IngestVault, type SyncResult } from "../src/worker/matrix";
 import type { Note } from "../src/parachute";
 
 test("parseSync extracts name + joined members + messages per room", () => {
@@ -377,4 +377,84 @@ test("trusted reply chronology rejects ambiguous same-time events",()=>{
  assert.equal(later.lastInboundMessageAt,3000);assert.equal(later.lastSelfReplyAt,undefined);
  const tie=lastMessageEvidence([inbound,reply,{...inbound,ts:2000}],undefined,"@self:hs");
  assert.equal(tie.lastSelfReplyAt,undefined);assert.equal(tie.lastMessageIsSelf,null);
+});
+
+// ── the agent's own messages are never owed (Omni Phase 1 self-reply hardening) ──
+
+test("agent ids: the default agent user is always included; listed ids are validated and lower-cased", () => {
+  assert.deepEqual(agentSenderIds(undefined), ["@omni-agent:localhost"]);
+  assert.deepEqual(agentSenderIds(" @Telegram_42:localhost, not-an-id ,@hermes:hs,@omni-agent:localhost"), ["@omni-agent:localhost", "@telegram_42:localhost", "@hermes:hs"]);
+});
+
+test("a message from the agent is never inbound and never the owner's reply; as the latest word it reads as owner-side", () => {
+  const agentIds = ["@omni-agent:localhost", "@telegram_42:hs"];
+  const inbound = { sender: "@dana:hs", ts: 1000, eventId: "$in", body: "Can you send the deck?" };
+  const agent = { sender: "@omni-agent:localhost", ts: 2000, eventId: "$agent", body: "Draft ready for review" };
+  const e = lastMessageEvidence([inbound, agent], undefined, ["@me:hs"], { agentIds });
+  assert.equal(e.lastInboundMessageAt, 1000, "the person's message is the inbound one");
+  assert.equal(e.lastSelfReplyAt, undefined, "the agent did not reply for the owner");
+  assert.equal(e.lastMessageIsSelf, true);
+  assert.equal(e.lastMessageIsAgent, true);
+  assert.equal(e.lastMessageSender, "@omni-agent:localhost");
+  // A relay of the agent's bot (a bridge ghost), with the case changed: still the agent.
+  const relay = lastMessageEvidence([{ sender: "@Telegram_42:hs", ts: 3000, eventId: "$relay", body: "Reminder" }], undefined, ["@me:hs"], { agentIds });
+  assert.equal(relay.lastMessageIsSelf, true);
+  assert.equal(relay.lastInboundMessageAt, undefined, "nothing inbound");
+  // Bridge management bots count as agents too.
+  assert.equal(lastMessageEvidence([{ sender: "@whatsappbot:hs", ts: 3000, eventId: "$b", body: "Bridge reconnected" }], undefined, [], { agentIds }).lastMessageIsSelf, true);
+  // Even with NO owner ids known, the agent's own message is never "not self".
+  assert.equal(lastMessageEvidence([agent], undefined, [], { agentIds }).lastMessageIsSelf, true);
+  // A person after the agent: inbound as before, and flagged as not the agent.
+  const later = lastMessageEvidence([agent, { ...inbound, ts: 4000, eventId: "$in2" }], undefined, ["@me:hs"], { agentIds });
+  assert.equal(later.lastMessageIsSelf, false);
+  assert.equal(later.lastMessageIsAgent, false);
+  assert.equal(later.lastInboundMessageAt, 4000);
+  // The owner's own reply still counts as the reply.
+  const replied = lastMessageEvidence([inbound, agent, { sender: "@me:hs", ts: 5000, eventId: "$me", body: "Sent" }], undefined, ["@me:hs"], { agentIds });
+  assert.equal(replied.lastSelfReplyAt, 5000);
+  assert.equal(replied.lastReplyInboundAt, 1000);
+});
+
+test("owner ids: a failed people read reuses the last verified ids, and with none the evidence is unknown (never 'not self') and logged", async () => {
+  resetOwnerSenderIdsForTests();
+  let failPeople = false;
+  const updates: Array<{ id: string; metadata?: Record<string, unknown> }> = [];
+  const thread: Note = { id: "th1", path: "vault/messages/matrix/Chat", content: "# Chat", tags: ["message-thread"], metadata: { type: "message-thread", matrixRoomId: "!r:hs", lastMessageAt: 1 }, createdAt: "", updatedAt: "u1" };
+  const vault: IngestVault = {
+    async listNotes(o?: { tags?: string[] }) {
+      if (o?.tags?.includes("person")) {
+        if (failPeople) throw new Error("vault 503");
+        return [];
+      }
+      return [thread];
+    },
+    async getNote() { return thread; },
+    async createNote(p) { return { id: "new", content: p.content, path: p.path ?? null, metadata: p.metadata ?? null, tags: p.tags ?? null, createdAt: "", updatedAt: "" }; },
+    async updateNote(id, p) { updates.push({ id, metadata: p.metadata }); return { ...thread, metadata: p.metadata ?? null }; },
+  } as IngestVault;
+  let ts = 10_000;
+  const ownerMessage = (): SyncResult => ({ nextBatch: "s", invites: [], rooms: [{ roomId: "!r:hs", name: null, memberIds: ["@me:hs"], displayNames: {}, messages: [{ sender: "@me:hs", body: "on it", ts: ts++, eventId: `$e${ts}` }] }] });
+  const warnings: string[] = [];
+  const warn = console.warn;
+  console.warn = (...a: unknown[]) => void warnings.push(a.join(" "));
+  try {
+    const opts = { ownerSenderIds: () => ["@me:hs"], agentSenderIds: ["@omni-agent:localhost"], identityKey: "v1" };
+    // No verified ids yet and the people read fails: unknown, not "not self".
+    failPeople = true;
+    await ingestMatrix({ sync: async () => ownerMessage() }, vault, opts);
+    assert.equal(updates.at(-1)!.metadata!.lastMessageIsSelf, null);
+    assert.ok(warnings.some((w) => /people index unavailable/.test(w) && /unknown/.test(w)), "the failure is logged");
+    // A good pass records the ids…
+    failPeople = false;
+    await ingestMatrix({ sync: async () => ownerMessage() }, vault, opts);
+    assert.equal(updates.at(-1)!.metadata!.lastMessageIsSelf, true);
+    // …and a later failed read falls back to them.
+    failPeople = true;
+    await ingestMatrix({ sync: async () => ownerMessage() }, vault, opts);
+    assert.equal(updates.at(-1)!.metadata!.lastMessageIsSelf, true, "the owner is not forgotten when the people read fails");
+    assert.ok(warnings.some((w) => /last verified owner ids/.test(w)));
+  } finally {
+    console.warn = warn;
+    resetOwnerSenderIdsForTests();
+  }
 });

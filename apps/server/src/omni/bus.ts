@@ -6,6 +6,8 @@
  */
 import { apnsEnabled, sendApnsToOwner, type NotificationPreview, type ApnsNotification } from "../apns";
 import { getThread } from "./store";
+import { getApproval } from "./approvals";
+import { approvalBody, approvalHeadline } from "./push-text";
 import { omniConfig } from "./config";
 import type { OmniEvent } from "./stream";
 
@@ -81,17 +83,25 @@ export function notificationText(value: string, max: number): string {
   return chars.length > max ? chars.slice(0, max - 1).join("") + "…" : plain;
 }
 
-/** Private payload construction: content never enters the owner-wide notice bus. */
+/**
+ * Private payload construction: content never enters the owner-wide notice bus.
+ * A thread: `title` = the thread's title, `completedReply` = its finished answer.
+ * An approval: `title` = its headline ("Tweet ready to approve"), `completedReply` = the plain
+ * preview of what would be sent. `generic` devices always get the fixed wording.
+ */
 export function omniNotification(kind: OmniPushKind, id: string, preference: NotificationPreview = "generic", title?: string, completedReply?: string): ApnsNotification {
   const approval = kind === "OMNI_APPROVAL";
   const path = approval ? `approval/${encodeURIComponent(id)}` : `thread/${encodeURIComponent(id)}`;
   let alertTitle = "Omni";
   let body = approval ? "A draft is waiting for your review" : "Omni has an update";
-  // Without a completed visible answer (errors, external hooks, code/audio-only), stay generic.
+  // Without a completed visible answer (errors, external hooks, code/audio-only), a thread stays generic.
   const preview = completedReply ? notificationText(completedReply, 180) : "";
-  const threadTitle = title ? notificationText(title, 80) : "";
-  if (!approval && preference !== "generic" && preview && threadTitle) {
-    alertTitle = threadTitle;
+  const headline = title ? notificationText(title, 80) : "";
+  if (approval && preference !== "generic" && headline) {
+    alertTitle = headline;
+    if (preference === "title_preview" && preview) body = preview;
+  } else if (!approval && preference !== "generic" && preview && headline) {
+    alertTitle = headline;
     if (preference === "title_preview") body = preview;
   }
   return {
@@ -104,7 +114,14 @@ export function omniNotification(kind: OmniPushKind, id: string, preference: Not
 }
 const defaultPusher: OmniPusher = async (owner, kind, id, completedReply) => {
   if (!apnsEnabled()) return;
-  const title = kind === "OMNI_THREAD" ? getThread(id)?.title ?? undefined : undefined;
+  if (kind === "OMNI_APPROVAL") {
+    const a = getApproval(owner, id);
+    const headline = a ? approvalHeadline(a) : undefined;
+    const body = a ? approvalBody(a) || undefined : undefined;
+    await sendApnsToOwner(owner, row => omniNotification(kind, id, row.preview, headline, body), "omni");
+    return;
+  }
+  const title = getThread(id)?.title ?? undefined;
   await sendApnsToOwner(owner, row => omniNotification(kind, id, row.preview, title, completedReply), "omni");
 };
 let pusher: OmniPusher = defaultPusher;

@@ -67,8 +67,12 @@ if (existsSync(dist)) {
 // 2. one request path
 const transport = readFileSync(join(webSrc, "transport.ts"), "utf8");
 const tCode = strip(transport);
-const includeCount = (tCode.match(/credentials:\s*init\.credentials\s*\?\?\s*"include"|credentials:\s*"include"/g) ?? []).length;
+// The PWA branch may send the ambient cookie only when the caller did not bring its own
+// capability credential (PR #161): `credentials: capability ? "omit" : init.credentials ?? "include"`.
+const includeCount = (tCode.match(/credentials:\s*(?:capability\s*\?\s*"omit"\s*:\s*)?init\.credentials\s*\?\?\s*"include"|credentials:\s*"include"/g) ?? []).length;
 check(includeCount === 1, 'transport.ts has exactly one credentials:"include" (the PWA branch)', `transport.ts has ${includeCount} credentials:"include" (expected 1, PWA branch only)`);
+check(!/credentials:\s*[^,}]*"include"/.test(tCode.replace(/credentials:\s*(?:capability\s*\?\s*"omit"\s*:\s*)?init\.credentials\s*\?\?\s*"include"/, "")), 'no other credentials expression can resolve to "include"', 'transport.ts has another credentials expression that can send "include"');
+check(/const capability = \/\^Capability\\s\/i\.test\(headers\.get\("Authorization"\) \?\? ""\)/.test(tCode), "a capability link never rides with the ambient cookie", "the PWA branch lost its capability-link guard");
 check(/credentials:\s*"omit"/.test(tCode) && /Bearer \$\{token\}/.test(tCode), "native branch = omit + Bearer token", "native branch must set credentials:omit and Authorization: Bearer");
 check(/isOurServer\(/.test(tCode), "bearer only attached to our own origin", "missing own-origin guard for the bearer token");
 // A 401 is CONFIRMED before the session ends (native/sessionGuard.ts states the rule;
