@@ -5,7 +5,7 @@ import { resolveNote } from "./records";
 import { NUDGE_KINDS, upsertNudge, getNudge, bindNudgeThread, resolveNudgeSource, type Candidate } from "./nudges";
 import { appendEvent, bumpUnread, ensureThread, getThread, sha256, activeTurn, updateThread } from "./store";
 import { publishThread, publishNotice } from "./bus";
-import { hermes, HermesError } from "./hermes-client";
+import { ensureSourceSession } from "./source-session";
 
 db.exec(`CREATE TABLE IF NOT EXISTS omni_proactive_owner_turns (turn_id TEXT PRIMARY KEY, owner_email TEXT NOT NULL, thread_id TEXT NOT NULL, created_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS omni_proactive_decisions (
@@ -75,8 +75,7 @@ export async function publishProactive(owner:string,d:ProactiveDecision,now=Date
  if(d.expiresAt<=now||d.expiresAt>now+7*86400000)throw new ProactiveError("decision_expired");
  await freshEvidence(d);
  const n=db.prepare("SELECT thread_id FROM omni_nudges WHERE owner_email=? AND source_id=?").get(owner,d.sourceId) as {thread_id:string|null}|undefined;
- const threadId=n?.thread_id??`omni-proactive-${sha256(`${owner}:${d.sourceId}`).slice(0,32)}`;
- try {await hermes.getSession(threadId);}catch(e){if(!(e instanceof HermesError&&e.code==="not_found"))throw e;try {await hermes.createSession({id:threadId,title:`${d.title.slice(0,80)} ${sha256(`${owner}:${d.sourceId}`).slice(0,8)}`});}catch(createError){if(!(createError instanceof HermesError&&createError.hermesCode==="session_exists"))throw createError;await hermes.getSession(threadId);}}
+ const threadId=await ensureSourceSession(owner,d.sourceId,d.title,n?.thread_id??null);
  // Check again after the asynchronous session operation: replies or cancellation during preparation invalidate it.
  const sourcePath=await freshEvidence(d);
  const committed=db.transaction(()=>{

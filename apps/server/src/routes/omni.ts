@@ -19,6 +19,7 @@
  *    an `Idempotency-Key`; execution goes only through Prism's live-action routes.
  */
 import { apnsApplicationForDevice, apnsEnabled, isApnsToken, isApnsEnvironment, isNotificationPreview, saveApnsToken, removeApnsTokenForDevice } from "../apns";
+import { proposeApproval } from "../omni/propose";
 import { proactiveIntake, acknowledgeProactiveIntake } from "../omni/proactive-intake";
 import { Hono, type Context } from "hono";
 import { omniVoiceApi } from "./omni-voice";
@@ -982,16 +983,7 @@ omniApi.post("/hooks/propose", async (c) => {
     throw e;
   }
   const ttl = typeof b.expiresInSec === "number" && b.expiresInSec >= 60 && b.expiresInSec <= 7 * 86_400 ? b.expiresInSec * 1000 : omniConfig.approvalTtlMs();
-  const a = createApproval({ owner, threadId, kind: v.kind, payload: v.payload, summary: typeof b.summary === "string" ? b.summary : null, ttlMs: ttl });
-  omniAudit({ actor: "hermes", via: "service-token", action: "approval.propose", approvalId: a.id, threadId, digest: a.digest, status: "ok" });
-  if (threadId) {
-    ensureThread({ id: threadId, source: "hermes" });
-    emit(threadId, null, { t: "approval", approval: approvalView(a) });
-    // A paused tool call: the turn is waiting for the person, and the thread says so.
-    if (a.kind === "command" && activeTurn(threadId)) emit(threadId, activeTurn(threadId)!.id, { t: "status", state: "needs-you", reason: "approval_requested" });
-  }
-  publishNotice({ type: "approval", id: a.id, op: "pending", threadId: threadId ?? undefined });
-  pushOmni("OMNI_APPROVAL", a.id);
+  const a = proposeApproval({ owner, threadId, kind: v.kind, payload: v.payload, summary: typeof b.summary === "string" ? b.summary : null, ttlMs: ttl, actor: "hermes", via: "service-token", push: true });
   return c.json({ id: a.id, digest: a.digest, status: a.status, expiresAt: new Date(a.expiresAt).toISOString() }, 201);
 });
 
