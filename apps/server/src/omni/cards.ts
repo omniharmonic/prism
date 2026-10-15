@@ -40,6 +40,8 @@ export type CardSection = "decide" | "approve" | "motion";
 export const SENDABLE_KINDS = new Set<string>(["email", "email-reply", "message", "calendar-rsvp", "calendar-invite"]);
 /** States the OWNER moved the card into: an agent re-publish never overwrites them. */
 export const ACTED_STATES = new Set<CardState>(["working", "draft-ready", "waiting", "sent", "done", "dismissed"]);
+/** Finished states a changed source item (new sourceRevision) reopens as `proposed`. */
+export const REOPENABLE_STATES = new Set<CardState>(["sent", "done", "dismissed"]);
 export const URGENCY_RANK: Record<CardUrgency, number> = { today: 0, "this-week": 1, whenever: 2 };
 
 export interface CardFact { text: string; source: string | null }
@@ -186,6 +188,13 @@ export const upsertCard = db.transaction((owner: string, input: CardInput, threa
       id, owner, input.sourceKey, input.sourceRevision, input.kind, input.headline, JSON.stringify(input.context), input.ask, input.urgency,
       JSON.stringify(input.options), input.recommended, JSON.stringify(input.itemRefs), threadId, JSON.stringify([{ at: now, action: "proposed" }]), digest, now, now);
     return { card: getCard(owner, id)!, created: true, changed: true };
+  }
+  if (REOPENABLE_STATES.has(old.state) && input.sourceRevision !== null && input.sourceRevision !== old.sourceRevision) {
+    const outcomes = [...old.outcomes, { at: now, action: "reopened", detail: `${old.sourceRevision ?? "none"} -> ${input.sourceRevision}` }].slice(-50);
+    db.prepare(`UPDATE omni_item_cards SET state='proposed', source_revision=?, kind=?, headline=?, context=?, ask=?, urgency=?, options=?, recommended=?, item_refs=?, digest=?, chosen_option_id=NULL, snoozed_until=NULL, outcomes=?, thread_id=COALESCE(thread_id, ?), updated_at=? WHERE id=?`).run(
+      input.sourceRevision, input.kind, input.headline, JSON.stringify(input.context), input.ask, input.urgency, JSON.stringify(input.options), input.recommended,
+      JSON.stringify(input.itemRefs), digest, JSON.stringify(outcomes), threadId, now, old.id);
+    return { card: getCard(owner, old.id)!, created: false, changed: true };
   }
   if (ACTED_STATES.has(old.state)) return { card: old, created: false, changed: false, ignored: "owner_acted" };
   if (old.digest === digest) return { card: old, created: false, changed: false };

@@ -6,7 +6,7 @@ import { cardInput } from "./omni-card-samples";
 import {
   parseCardInput, upsertCard, transitionCard, getCard, cardSection, listOpenCards, cardView, linkApproval,
   cardForApproval, replaceCardContent, CardError, resetCardsForTests, compareCardViews,
-  cardsByThread, cardBySource, cardSourceKeys, ACTED_STATES, priorCardAction, reserveCardAction, finishCardAction, releaseCardAction,
+  cardsByThread, cardBySource, cardSourceKeys, ACTED_STATES, REOPENABLE_STATES, priorCardAction, reserveCardAction, finishCardAction, releaseCardAction,
 } from "../src/omni/cards";
 
 const owner = config.ownerEmail;
@@ -191,4 +191,39 @@ test("an email-reply draft must reply to one of the card's itemRefs", () => {
   const r = reason(() => parseCardInput(bad));
   assert.equal(r.code, "invalid_options");
   assert.match(r.detail!, /^options\[0\]\.draft\.payload\.noteId/);
+});
+
+test("a finished card reopens when its item changes; otherwise a re-publish is ignored", () => {
+  const publish = (rev: string | null, headline = "Sam sent a revised budget") =>
+    upsertCard(owner, parseCardInput(cardInput({ sourceRevision: rev, headline })), "t1", 5_000);
+  for (const state of REOPENABLE_STATES) {
+    resetCardsForTests();
+    const { card } = upsertCard(owner, parseCardInput(cardInput()), "t1", 1_000);
+    transitionCard(owner, card.id, ["proposed"], "working", { action: "choose", optionId: "a" }, { chosenOptionId: "a", approvalId: "apr_1" }, 2_000);
+    transitionCard(owner, card.id, ["working"], state, { action: "x" }, {}, 3_000);
+    const same = publish("2026-10-15T10:00:00Z");
+    assert.equal(same.ignored, "owner_acted", `${state} same revision`);
+    assert.equal(publish(null).ignored, "owner_acted", `${state} null revision`);
+    const r = publish("2026-10-16T09:00:00Z");
+    assert.equal(r.changed, true, state);
+    assert.equal(r.created, false, state);
+    assert.equal(r.ignored, undefined, state);
+    assert.equal(r.card.state, "proposed", state);
+    assert.equal(r.card.headline, "Sam sent a revised budget", state);
+    assert.equal(r.card.sourceRevision, "2026-10-16T09:00:00Z", state);
+    assert.equal(r.card.chosenOptionId, null, state);
+    assert.equal(r.card.snoozedUntil, null, state);
+    assert.deepEqual(r.card.approvalIds, ["apr_1"], state);
+    const last = r.card.outcomes.at(-1)!;
+    assert.equal(last.action, "reopened");
+    assert.equal(last.detail, "2026-10-15T10:00:00Z -> 2026-10-16T09:00:00Z");
+    assert.equal(publish("2026-10-16T09:00:00Z").changed, false, "a replay of the new revision is a no-op");
+  }
+  for (const state of ["working", "draft-ready"] as const) {
+    resetCardsForTests();
+    const { card } = upsertCard(owner, parseCardInput(cardInput()), "t1", 1_000);
+    transitionCard(owner, card.id, ["proposed"], state, { action: "x" }, {}, 2_000);
+    assert.equal(publish("2026-10-16T09:00:00Z").ignored, "owner_acted", state);
+    assert.equal(getCard(owner, card.id)!.state, state);
+  }
 });
