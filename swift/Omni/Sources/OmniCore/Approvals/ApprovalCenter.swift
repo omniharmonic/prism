@@ -264,6 +264,16 @@ public final class ApprovalCenter {
         return ids.allSatisfy { cards[$0] != nil }
     }
 
+    public enum DraftLoad: Equatable, Sendable { case ready, failed, cancelled }
+
+    /// ``load(_:)`` for a view's task: a read that was cancelled (the view went away, the draft
+    /// changed) is `.cancelled`, never `.failed`, so it cannot show "Couldn't load the draft".
+    public func loadDraft(_ ids: [String]) async -> DraftLoad {
+        let all = await load(ids)
+        if Task.isCancelled { return .cancelled }
+        return all ? .ready : .failed
+    }
+
     /// Read one approval again (the Reload button on a mismatch or a conflict).
     public func reload(_ id: String) async {
         guard var card = cards[id], !card.isBusy else { return }

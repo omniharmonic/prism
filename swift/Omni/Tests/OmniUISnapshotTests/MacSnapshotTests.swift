@@ -84,7 +84,7 @@ struct CardHarness: View {
     var body: some View {
         // Not a ScrollView: the picture shows the card from its top, however tall it grows.
         GeometryReader { _ in
-            CardView(cards: cards, approvals: approvals, id: id).padding()
+            CardView(cards: cards, approvals: approvals, id: id, now: CardingSampleService.t0).padding()
                 .offset(y: -slice)
         }
             .task { await approvals.refresh() }
@@ -278,6 +278,12 @@ struct Walk {
             model.ingest([card])
             try await draw("card-\(name)", size: CGSize(width: 560, height: 700), CardHarness(cards: model, approvals: ApprovalCenter(service: service, sink: sink), id: card.id))
         }
+        // A draft-ready card whose draft cannot be read: the error and Try again, not an endless "Loading".
+        let failedService = CardingSampleService()
+        let failedSink = ErrorSink(onSignedOut: {})
+        let failedModel = CardsModel(service: failedService, nudges: nil, sink: failedSink)
+        failedModel.ingest([CardingSampleService.draftReady()])
+        try await draw("card-draft-failed", size: CGSize(width: 560, height: 700), CardHarness(cards: failedModel, approvals: ApprovalCenter(service: failedService, sink: failedSink), id: "card-ready"))
         let longService = CardingSampleService.carding()
         let longSink = ErrorSink(onSignedOut: {})
         let longModel = CardsModel(service: longService, nudges: nil, sink: longSink)

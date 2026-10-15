@@ -75,6 +75,8 @@ struct CardView: View {
     let id: String
     /// Inside its own thread "Open thread" is not offered.
     var inThread = false
+    /// Fixed clock for pictures; nil = the real time.
+    var now: Date?
     @Environment(\.navigator) private var navigator
     @Environment(\.dynamicTypeSize) private var typeSize
     #if os(iOS)
@@ -131,7 +133,7 @@ struct CardView: View {
 
     private func header(_ card: OmniCard) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Label([CardText.kindLabel(card.kind), CardText.age(card.createdAt)].compactMap { $0 }.joined(separator: " · "), systemImage: CardText.kindSymbol(card.kind))
+            Label([CardText.kindLabel(card.kind), CardText.age(card.createdAt, now: now ?? Date())].compactMap { $0 }.joined(separator: " · "), systemImage: CardText.kindSymbol(card.kind))
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(Color.quietText)
             Spacer(minLength: 8)
@@ -236,7 +238,10 @@ struct CardView: View {
                 }
             } else {
                 Label("Loading the draft…", systemImage: "doc.text").font(.callout).foregroundStyle(Color.quietText)
-                    .task(id: approvalID) { draftUnavailable = !(await approvals.load([approvalID])) }
+                    .task(id: approvalID) {
+                        let outcome = await approvals.loadDraft([approvalID])
+                        if outcome != .cancelled { draftUnavailable = outcome == .failed }
+                    }
             }
         }
     }
@@ -317,12 +322,13 @@ struct DraftPreview: View {
 struct CardMotionRow: View {
     let card: OmniCard
     @Environment(\.navigator) private var navigator
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         Button { if let thread = card.threadId { navigator.open(.thread(thread)) } } label: {
             HStack(spacing: 8) {
                 Image(systemName: card.state == .waiting ? "hourglass" : "gearshape.2").foregroundStyle(Color.quietText).accessibilityHidden(true)
-                Text(CardText.motionLine(card)).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
+                Text(CardText.motionLine(card)).lineLimit(typeSize.isAccessibilitySize ? nil : 2).frame(maxWidth: .infinity, alignment: .leading)
                 Image(systemName: "chevron.right").font(.caption).foregroundStyle(Color.quietText).accessibilityHidden(true)
             }
             .frame(minHeight: CardMetrics.touch)

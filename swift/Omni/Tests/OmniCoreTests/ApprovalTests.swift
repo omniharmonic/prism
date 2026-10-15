@@ -121,6 +121,20 @@ final class ApprovalCenterTests: XCTestCase {
         XCTAssertEqual(service.approvalReadIDs.count, 1)
     }
 
+    func testACancelledLoadIsNeverReportedAsAFailure() async {
+        let center = make()
+        service.approvalReads(.failure(PrismError.unreachable("down")))
+        let task = Task { await center.loadDraft(["x"]) }
+        task.cancel()
+        let cancelled = await task.value
+        XCTAssertEqual(cancelled, .cancelled)
+        let failed = await center.loadDraft(["x"])
+        XCTAssertEqual(failed, .failed)
+        service.approvalReads(.success(Fixture.approval("x")))
+        let ready = await center.loadDraft(["x"])
+        XCTAssertEqual(ready, .ready)
+    }
+
     func testLoadSaysSoWhenADraftCouldNotBeRead() async {
         let center = make()
         service.approvalReads(.failure(PrismError.unreachable("down")))
