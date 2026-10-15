@@ -20,6 +20,16 @@ public struct ApprovalContent: Equatable, Sendable {
     public let body: String?
     /// The payload key ``body`` came from.
     public let bodyKey: String?
+    /// A device sign-in's matching code (`matchCode`, e.g. "482 913"), shown on the sign-in
+    /// page the request came from. The owner compares the two before approving: a card
+    /// whose code differs from — or is missing on — his sign-in page is someone else's.
+    public let matchCode: String?
+    /// What to do with ``matchCode`` (device sign-ins only): the instruction when there is a
+    /// code, a warning when there is none.
+    public var matchCodeNotice: String? {
+        guard kindLabel == Self.deviceSignInLabel else { return nil }
+        return matchCode == nil ? Self.noMatchCodeWarning : Self.matchCodeInstruction
+    }
 
     /// One line for a list row: "Email to kevin@example.com".
     public var headline: String {
@@ -43,6 +53,13 @@ public struct ApprovalContent: Equatable, Sendable {
         let object = payload.objectValue ?? [:]
         var fields: [Field] = []
         var seen = Set<String>()
+        if kind == .deviceSignIn, let code = object["matchCode"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !code.isEmpty {
+            // Shown on its own, at the top (not as one more row), and not repeated below.
+            matchCode = code
+            seen.insert("matchCode")
+        } else {
+            matchCode = nil
+        }
         for (key, label) in spec.fields {
             seen.insert(key)
             guard let value = object[key], !value.isNull else { continue }
@@ -127,6 +144,10 @@ public struct ApprovalContent: Equatable, Sendable {
 
     /// The kind label of a device sign-in (also its card's header).
     public static let deviceSignInLabel = "Sign in a new device"
+    /// The caption above a device sign-in's matching code.
+    public static let matchCodeCaption = "Code on the sign-in page"
+    public static let matchCodeInstruction = "Approve only if this code matches the one on the sign-in page"
+    public static let noMatchCodeWarning = "No matching code — do not approve unless you are sure"
 
     /// "Wed, Oct 14, 2026 at 10:00 AM MDT" for a stored RFC 3339 moment: the same instant,
     /// in this device's zone, with the zone named. nil when the text is not a moment — it is

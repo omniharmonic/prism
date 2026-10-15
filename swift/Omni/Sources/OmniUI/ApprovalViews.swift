@@ -70,7 +70,34 @@ struct ApprovalCardView: View {
         }
     }
 
+    /// A device sign-in's matching code, large and first: the owner compares it with the code
+    /// on the sign-in page before he approves. Without a code, a warning instead.
+    @ViewBuilder private func matchCode(_ content: ApprovalContent) -> some View {
+        if let notice = content.matchCodeNotice {
+            VStack(alignment: .leading, spacing: 4) {
+                if let code = content.matchCode {
+                    Text(ApprovalContent.matchCodeCaption).font(.callout).foregroundStyle(Color.quietText)
+                    Text(code)
+                        .font(.system(.largeTitle, design: .monospaced).weight(.semibold))
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("approval.matchCode")
+                    Text(notice).font(.callout).fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Label(notice, systemImage: "exclamationmark.triangle")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(Color.warningText)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("approval.matchCodeMissing")
+                }
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(content.matchCode.map { "\(ApprovalContent.matchCodeCaption): \($0.map { String($0) }.joined(separator: " ")). \(notice)" } ?? notice)
+            Divider()
+        }
+    }
+
     @ViewBuilder private func draft(_ content: ApprovalContent) -> some View {
+        matchCode(content)
         if typeSize.isAccessibilitySize {
             // Each label above its value: beside it, a long address gets a column five characters wide.
             VStack(alignment: .leading, spacing: 8) {

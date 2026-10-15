@@ -15,8 +15,9 @@
  * Applies to the server owner's account while Omni is enabled (the approval queue is the
  * owner's; other accounts have no Omni device to confirm from).
  */
+import { createHmac } from "node:crypto";
 import { config } from "../config";
-import { listLiveDeviceTokens, type DeviceAuthRequestRow } from "../db";
+import { deviceBootstrapOpen, type DeviceAuthRequestRow } from "../db";
 import { createApproval, expireApprovals, getApproval } from "../omni/approvals";
 import { omniConfig } from "../omni/config";
 import { publishNotice, pushOmni } from "../omni/bus";
@@ -26,17 +27,60 @@ export const CONFIRM_TTL_MS = 10 * 60_000;
 /** parked request id → the approval that decides it (in memory: a restart = start again). */
 const pending = new Map<string, { approvalId: string; email: string }>();
 
+/**
+ * Does this sign-in need an existing device's approval? Yes for the owner while Omni is on,
+ * unless first-device bootstrap is open: the account never had a device, or its last device
+ * stopped being live 24 h ago and not through a session (db.deviceBootstrapOpen, review C1).
+ */
 export function needsDeviceConfirmation(email: string): boolean {
-  return omniConfig.enabled() && email.toLowerCase() === config.ownerEmail.toLowerCase() && listLiveDeviceTokens(email).length > 0;
+  return email.toLowerCase() === config.ownerEmail.toLowerCase() && !deviceBootstrapOpen(email);
+}
+/** Confirmation is only possible while Omni (the approval queue) is on. */
+export const confirmationAvailable = (): boolean => omniConfig.enabled();
+
+/**
+ * The short code shown on BOTH the waiting page and the Omni card (review I1): the owner
+ * approves only if they match, so a second, attacker-started request (same claimed label,
+ * same genuine redirect) is told apart. Derived from the parked request id with the server
+ * secret: not guessable, stable across page reloads.
+ */
+export function matchCodeFor(reqId: string): string {
+  const h = createHmac("sha256", config.sessionSecret || "unset").update(`device-match:${reqId}`).digest();
+  const n = h.readUInt32BE(0) % 1_000_000;
+  const d = String(n).padStart(6, "0");
+  return `${d.slice(0, 3)} ${d.slice(3)}`;
 }
 
-/** Coarse hints for the card (never the full address). */
+/** A sign-in already waiting for this account's approval (only one at a time). */
+export function otherPendingSignIn(reqId: string): boolean {
+  for (const [id, p] of pending) {
+    if (id === reqId) continue;
+    expireApprovals();
+    const a = getApproval(config.ownerEmail, p.approvalId);
+    if (a && (a.status === "pending" || a.status === "approved")) return true;
+  }
+  return false;
+}
+
+/**
+ * Coarse hints for the card (never the full address). The client IP header is set by the
+ * Cloudflare tunnel, but anything on this machine can send it too, so it is believed only
+ * when the request ALSO arrived for the public host (the tunnel's Host). Otherwise: local.
+ * Hints are claims either way; the matching code is the check.
+ */
 export function requestHints(get: (k: string) => string | undefined): { ipHint?: string; userAgentHint?: string } {
-  const ip = (get("cf-connecting-ip") ?? get("x-forwarded-for")?.split(",")[0] ?? "").trim();
-  let ipHint: string | undefined;
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(ip)) ipHint = ip.split(".").slice(0, 2).join(".") + ".x.x";
-  else if (ip.includes(":")) ipHint = ip.split(":").slice(0, 3).join(":") + ":…";
-  else ipHint = "this machine or the local network";
+  let publicHost = "";
+  try {
+    publicHost = new URL(config.appOrigin).host.toLowerCase();
+  } catch {
+    /* no public origin */
+  }
+  const viaTunnel = !!get("cf-connecting-ip") && !!publicHost && (get("host") ?? "").toLowerCase() === publicHost && !/^(localhost|127\.|\[::1\])/.test(publicHost);
+  const ip = viaTunnel ? (get("cf-connecting-ip") ?? "").trim() : "";
+  let ipHint: string;
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(ip)) ipHint = "internet, " + ip.split(".").slice(0, 2).join(".") + ".x.x";
+  else if (ip.includes(":")) ipHint = "internet, " + ip.split(":").slice(0, 3).join(":") + ":…";
+  else ipHint = "this Mac or the local network";
   const ua = (get("user-agent") ?? "").replace(/[\r\n\0]+/g, " ").trim().slice(0, 160);
   return { ipHint, ...(ua ? { userAgentHint: ua } : {}) };
 }
@@ -45,6 +89,8 @@ export function requestHints(get: (k: string) => string | undefined): { ipHint?:
 export function requestConfirmation(req: DeviceAuthRequestRow, email: string, label: string, hints: { ipHint?: string; userAgentHint?: string }): string {
   const known = pending.get(req.id);
   if (known) return known.approvalId;
+  // Never outlive the parked request (review M1).
+  const ttlMs = Math.max(60_000, Math.min(CONFIRM_TTL_MS, req.expires_at - Date.now()));
   const a = createApproval({
     owner: config.ownerEmail,
     threadId: null,
@@ -54,11 +100,12 @@ export function requestConfirmation(req: DeviceAuthRequestRow, email: string, la
       label,
       redirectUri: req.redirect_uri,
       requestedAt: new Date().toISOString(),
+      matchCode: matchCodeFor(req.id),
       ...(hints.ipHint ? { ipHint: hints.ipHint } : {}),
       ...(hints.userAgentHint ? { userAgentHint: hints.userAgentHint } : {}),
     },
     summary: `Sign in a new device: ${label}`,
-    ttlMs: CONFIRM_TTL_MS,
+    ttlMs,
   });
   pending.set(req.id, { approvalId: a.id, email });
   publishNotice({ type: "approval", id: a.id, op: "pending" });

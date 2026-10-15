@@ -417,6 +417,14 @@ db.exec(`
     revoked_at     INTEGER
   );
   CREATE INDEX IF NOT EXISTS device_tokens_email ON device_tokens(email);
+  -- One door (review C1): per account, whether it EVER had a device and until when one was
+  -- last live, so "no live device right now" cannot by itself reopen first-device sign-in.
+  CREATE TABLE IF NOT EXISTS device_account_history (
+    email            TEXT PRIMARY KEY,
+    first_device_at  INTEGER NOT NULL,
+    last_live_until  INTEGER NOT NULL,
+    last_end_via     TEXT
+  );
 
   -- Short-lived, single-use authorization codes (PKCE S256 only).
   CREATE TABLE IF NOT EXISTS device_auth_codes (
@@ -1469,6 +1477,10 @@ export function insertDeviceToken(r: Omit<DeviceTokenRow, "last_seen_at" | "revo
     `INSERT INTO device_tokens (id, token_hash, email, label, client_id, created_at, last_seen_at, expires_at, max_expires_at, revoked_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
   ).run(r.id, r.token_hash, r.email, r.label, r.client_id, r.created_at, r.created_at, r.expires_at, r.max_expires_at);
+  db.prepare(
+    `INSERT INTO device_account_history (email, first_device_at, last_live_until, last_end_via) VALUES (?, ?, ?, NULL)
+     ON CONFLICT(email) DO NOTHING`,
+  ).run(r.email, r.created_at, r.created_at);
 }
 export function getDeviceTokenByHash(hash: string): DeviceTokenRow | null {
   return (db.prepare("SELECT * FROM device_tokens WHERE token_hash = ?").get(hash) as DeviceTokenRow | undefined) ?? null;
@@ -1479,10 +1491,35 @@ export function getDeviceToken(id: string): DeviceTokenRow | null {
 export function touchDeviceToken(id: string, lastSeen: number, expiresAt: number): void {
   db.prepare("UPDATE device_tokens SET last_seen_at = ?, expires_at = ? WHERE id = ? AND revoked_at IS NULL").run(lastSeen, expiresAt, id);
 }
-export function revokeDeviceTokenRow(id: string): boolean {
-  const changed = db.prepare("UPDATE device_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL").run(now(), id).changes > 0;
-  if (changed) notifyAccessChanged();
+export function revokeDeviceTokenRow(id: string, via: string = "device"): boolean {
+  const t = now();
+  const changed = db.prepare("UPDATE device_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL").run(t, id).changes > 0;
+  if (changed) {
+    const row = getDeviceToken(id);
+    if (row) db.prepare("UPDATE device_account_history SET last_end_via = ?, last_live_until = MAX(last_live_until, ?) WHERE email = ?").run(via, t, row.email);
+    notifyAccessChanged();
+  }
   return changed;
+}
+
+/** 24 h after the last device stopped being live, first-device sign-in may reopen. */
+export const DEVICE_BOOTSTRAP_COOLDOWN_MS = 24 * 60 * 60_000;
+/**
+ * May this account sign a device in WITHOUT an existing device's approval (review C1)?
+ * Only if it has never had a device, or its last device stopped being live more than
+ * 24 h ago and that end was not session-triggered. (No session path can revoke devices
+ * today; `last_end_via = 'session'` keeps the door shut if one is ever added.)
+ */
+export function deviceBootstrapOpen(email: string): boolean {
+  const t = now();
+  if (listLiveDeviceTokens(email).length > 0) return false;
+  const h = db.prepare("SELECT last_live_until, last_end_via FROM device_account_history WHERE email = ?").get(email) as { last_live_until: number; last_end_via: string | null } | undefined;
+  // When each past device stopped being live: revoked, or its (idle/absolute) expiry.
+  const r = db.prepare("SELECT COUNT(*) AS n, MAX(COALESCE(revoked_at, MIN(expires_at, max_expires_at))) AS ended FROM device_tokens WHERE email = ?").get(email) as { n: number; ended: number | null };
+  if (!h && !r.n) return true; // this account never had a device: bootstrap
+  if (h?.last_end_via === "session") return false;
+  const ended = Math.max(r.ended ?? 0, h?.last_live_until ?? 0);
+  return t - ended >= DEVICE_BOOTSTRAP_COOLDOWN_MS;
 }
 /** Live (unrevoked, unexpired) devices — for one user, or every user when email is null. */
 export function listLiveDeviceTokens(email: string | null): DeviceTokenRow[] {

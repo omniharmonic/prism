@@ -68,7 +68,7 @@ import {
   setDeviceAuthCodeDevice,
   type DeviceAuthRequestRow,
 } from "../db";
-import { clearConfirmation, confirmationState, needsDeviceConfirmation, requestConfirmation, requestHints } from "../auth/device-confirm";
+import { clearConfirmation, confirmationAvailable, confirmationState, matchCodeFor, needsDeviceConfirmation, otherPendingSignIn, requestConfirmation, requestHints } from "../auth/device-confirm";
 
 export const deviceAuth = new Hono();
 
@@ -296,8 +296,25 @@ deviceAuth.post("/device/approve", async (c) => {
   // enough — an existing device must approve this exact sign-in in Omni. The request stays
   // parked; this browser waits on /auth/device/wait.
   if (needsDeviceConfirmation(s.email)) {
+    // With Omni off there is no device to approve from: refuse rather than fall back to a
+    // session's consent (review round 3, probe F). Bootstrap rules still apply.
+    if (!confirmationAvailable()) {
+      deleteDeviceAuthRequest(req.id);
+      clearReqCookie(c);
+      return page(c, 403, "Approve from a device",
+        `<h1>This sign-in needs approval from a device you already use</h1><p>New devices are approved in the Omni app, which is switched off on this server. ` +
+        `Sign in from a device you already use, or ask the server's operator.</p>`);
+    }
+    // One at a time (review I1): a second request would look just like the owner's own.
+    if (otherPendingSignIn(req.id)) {
+      c.header("Cache-Control", "no-store");
+      return page(c, 403, "Another sign-in is waiting",
+        `<h1>Another sign-in is already waiting for approval</h1><p>Only one new device can wait for approval at a time. ` +
+        `Open the Omni app on a device you already use and approve or deny the waiting request, then start again from this app.</p>` +
+        `<p class="muted">If you did not start the other sign-in yourself, deny it.</p>`);
+    }
     requestConfirmation(req, s.email, req.label ?? defaultLabelFor(req.client_id), requestHints((k) => c.req.header(k)));
-    return waitingPage(c);
+    return waitingPage(c, req.id);
   }
   deleteDeviceAuthRequest(req.id);
   clearReqCookie(c);
@@ -321,7 +338,7 @@ function mintCodeAndRedirect(c: Context, req: DeviceAuthRequestRow, email: strin
   return c.redirect(withParams(req.redirect_uri, { code, state: req.state }));
 }
 
-function waitingPage(c: Context) {
+function waitingPage(c: Context, reqId: string) {
   c.header("Refresh", "3; url=/auth/device/wait");
   return page(
     c,
@@ -329,7 +346,9 @@ function waitingPage(c: Context) {
     "Approve on your device",
     `<meta http-equiv="refresh" content="3; url=/auth/device/wait">` +
       `<h1>Approve this sign-in on a device you already use</h1>` +
+      `<p>Your code:</p><p style="font:600 32px ui-monospace,Menlo,monospace;letter-spacing:4px;margin:6px 0 14px">${esc(matchCodeFor(reqId))}</p>` +
       `<p>Open the Omni app on your phone, iPad or Mac: the request is waiting under <strong>Needs you</strong> as “Sign in a new device”. ` +
+      `Approve it only if it shows this same code. ` +
       `This page continues by itself once you approve.</p>` +
       `<p class="muted">Denying it there, or 10 minutes without an answer, cancels this sign-in.</p>`,
   );
@@ -346,7 +365,7 @@ deviceAuth.get("/device/wait", (c) => {
   const s = readSession(c);
   if (!s) return errorPage(c, 401, "You're not signed in.");
   const st = confirmationState(req.id);
-  if (st.state === "pending") return waitingPage(c);
+  if (st.state === "pending") return waitingPage(c, req.id);
   if (st.state === "none") return errorPage(c, 400, "This sign-in request was not approved here. Start again from the app.");
   deleteDeviceAuthRequest(req.id);
   clearConfirmation(req.id);

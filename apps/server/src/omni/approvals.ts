@@ -138,6 +138,7 @@ export function validatePayload(kind: unknown, raw: unknown): { kind: ApprovalKi
         label: str(b.label, "label", 200),
         redirectUri: str(b.redirectUri, "redirectUri", 2000),
         requestedAt: str(b.requestedAt, "requestedAt", 64),
+        matchCode: str(b.matchCode, "matchCode", 16),
         ipHint: str(b.ipHint, "ipHint", 64, false),
         userAgentHint: str(b.userAgentHint, "userAgentHint", 200, false),
       });

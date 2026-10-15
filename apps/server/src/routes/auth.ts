@@ -79,6 +79,9 @@ auth.post("/register", async (c) => {
 auth.post("/set-password", async (c) => {
   const s = readSession(c);
   if (!s) return c.json({ error: "unauthorized" }, 401);
+  // First password only (review C1): once one exists, only /change-password — which
+  // checks the current password — may replace it. A lifted session cannot take over.
+  if (getUser(s.email)?.password_hash) return c.json({ error: "password_exists", detail: "Change your password with your current one (Settings → Account)." }, 409);
   const { password, name } = await c.req.json<{ password?: string; name?: string }>();
   const pwErr = passwordProblem(password ?? "");
   if (pwErr) return c.json({ error: pwErr }, 400);
@@ -139,8 +142,11 @@ auth.post("/change-password", async (c) => {
     return c.json({ error: "wrong_password" }, 403);
   }
   setUserPassword(s.email, hashPassword(newPassword!));
-  const revokedDevices = await revokeOtherDevices(s.email, who.deviceId);
-  return c.json({ ok: true, revokedDevices });
+  // Devices are revoked only from a DEVICE credential (review C1): a password change made
+  // with a browser session must not be able to empty the account of devices, which would
+  // reopen first-device sign-in. Revoke devices from a signed-in device instead.
+  const revokedDevices = who.deviceId ? await revokeOtherDevices(s.email, who.deviceId) : 0;
+  return c.json({ ok: true, revokedDevices, ...(who.deviceId ? {} : { devicesKept: true }) });
 });
 
 // ---- owner issues an invite ----

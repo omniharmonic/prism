@@ -749,7 +749,9 @@ async function decide(c: Context): Promise<Response> {
   // One door (2026-10-15): approving a send needs the owner's DEVICE token (hashed at rest,
   // bound to the Omni app), not a browser session cookie an agent on the host could replay.
   // Cancelling or asking for a revision sends nothing and stays open to a session.
-  if (decision === "send" && o.via !== "device") {
+  // A sign-in request is decided only from a device either way (review M2): a session must
+  // not be able to deny the owner's real sign-in, or approve a fake one.
+  if ((decision === "send" || getApproval(owner, id)?.kind === "device-sign-in") && o.via !== "device") {
     omniAudit({ actor: owner, via: o.via, action: "approval.decide", approvalId: id, status: "refused", error: "device_required" });
     return c.json({ error: "device_required", detail: "approve sends in the Omni app on a signed-in device" }, 403);
   }

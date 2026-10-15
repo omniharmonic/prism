@@ -649,12 +649,14 @@ test("L2: a device token must supply the current password; success revokes the a
   assert.equal((await me(bearer(other.token))).status, 401, "other devices are evicted");
   assert.equal((await me(bearer(stranger.token))).status, 200, "another account's devices are untouched");
 
-  // A browser-session password change evicts every device of the account.
+  // One door (review C1): a browser-session password change revokes NO device — emptying the
+  // account would reopen first-device sign-in for whoever holds the session.
   const third = issueDeviceToken(MEMBER, "tablet", "prism-native");
   const viaSession = await changePw({ cookie: sessionCookie(makeSession(MEMBER)) }, { currentPassword: "new passphrase here", newPassword: "third passphrase here" });
   assert.equal(viaSession.status, 200);
-  assert.equal((await me(bearer(caller.token))).status, 401);
-  assert.equal((await me(bearer(third.token))).status, 401);
+  assert.equal(((await viaSession.json()) as { revokedDevices: number }).revokedDevices, 0);
+  assert.equal((await me(bearer(caller.token))).status, 200);
+  assert.equal((await me(bearer(third.token))).status, 200);
 });
 
 // ------------------------------------------------------------- L3: minted credentials die with the device

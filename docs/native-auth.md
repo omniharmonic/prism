@@ -316,3 +316,19 @@ alone no longer signs a NEW device in once the owner already has one:
 - Session ids are stored hashed; plaintext rows are rehashed at startup.
 - Prism sign-in mail (from `MAGIC_FROM` with a sign-in subject, or carrying an
   `/auth/callback|device …token|code=` link) is never ingested into the vault.
+
+### Round 3 (review C1, I1, M1, M2, M5)
+- **Bootstrap** (consent without an existing device's approval) is open only when the account
+  has NEVER had a device, or its last device stopped being live (revoked or expired) more than
+  **24 h** ago and not through a session-triggered action (`device_account_history`:
+  `first_device_at`, `last_live_until`, `last_end_via`; `db.deviceBootstrapOpen`). With Omni
+  off and bootstrap closed, a new sign-in is refused (there is no device to approve from).
+- **Sessions cannot empty the account:** `/auth/set-password` refuses once a password exists
+  (409 `password_exists`; change it with the current one), a password change made with a
+  session revokes no device (`revokedDevices: 0`), and per-device revocation is device-only.
+  The PWA hides Revoke for browser sessions and explains why.
+- **Matching code:** the waiting page and the Omni card show the same 6-digit code (HMAC of
+  the parked request id); approve only if they match. Only ONE device sign-in may wait at a
+  time (a second gets a 403 page). The client-IP hint is believed only when the request came
+  for the tunnel's public host; otherwise "this Mac or the local network". Hints are claims.
+- The approval never outlives the parked request; denying it also needs a device.

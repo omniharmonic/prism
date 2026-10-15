@@ -13,7 +13,9 @@ process.env.OMNI_SERVICE_TOKEN = "omni-service-token-0123456789";
 
 import { createApp } from "../src/app";
 import { config } from "../src/config";
-import { db, rehashLegacySessions, getSession } from "../src/db";
+import { db, rehashLegacySessions, getSession, setAccount, getUser, DEVICE_BOOTSTRAP_COOLDOWN_MS } from "../src/db";
+import { hashPassword } from "../src/auth/password";
+import { matchCodeFor, requestHints, CONFIRM_TTL_MS } from "../src/auth/device-confirm";
 import { issueDeviceToken } from "../src/auth/device";
 import { resetDeviceConfirmationsForTests } from "../src/auth/device-confirm";
 import { setOmniPusherForTests } from "../src/omni/bus";
@@ -91,10 +93,10 @@ test("with a live device: a session's consent only WAITS; an existing device app
 
   const [a] = await pendingSignIns(phone);
   assert.ok(a, "the request is in Needs you");
-  assert.deepEqual(Object.keys(a!.payload).sort(), ["clientId", "ipHint", "label", "redirectUri", "requestedAt", "userAgentHint"]);
+  assert.deepEqual(Object.keys(a!.payload).sort(), ["clientId", "ipHint", "label", "matchCode", "redirectUri", "requestedAt", "userAgentHint"]);
   assert.equal(a!.payload.label, "Evil Laptop");
   assert.equal(a!.payload.redirectUri, REDIRECT);
-  assert.equal(a!.payload.ipHint, ip.split(".").slice(0, 2).join(".") + ".x.x", "coarse, not the full address");
+  assert.equal(a!.payload.ipHint, "this Mac or the local network", "a forged client-IP header off the tunnel host is not believed");
 
   // The session that asked cannot approve its own request; nor can it be edited or proposed.
   const bySession = await decide(a!.id, a!.digest, "send", { cookie: cookie.split(";")[0]!, origin: config.appOrigin, "sec-fetch-site": "same-origin" });
@@ -157,4 +159,89 @@ test("Prism sign-in mail is recognised (never copied into the vault)", () => {
   assert.equal(isPrismSignInMail({ from: "x@y.z", subject: "fwd", body: `see ${config.appOrigin}/auth/callback?token=abc` }), true);
   assert.equal(isPrismSignInMail({ from: "x@y.z", subject: "fwd", body: "https://h/auth/device/approve?code=abc" }), true);
   assert.equal(isPrismSignInMail({ from: "dana@example.org", subject: "Sign in to the meetup?", body: "lunch?" }), false);
+});
+
+
+// ── review round 3 ───────────────────────────────────────────────────────────
+
+test("C1: a session alone cannot empty the account of devices (set-password / change-password / revoke) — no code is minted", async () => {
+  setAccount(OWNER, "Owner", hashPassword("the owners passphrase"));
+  const phone = issueDeviceToken(OWNER, "phone", "omni-native");
+  const s = { ...J, cookie: sessionCookie(makeSession(OWNER)), origin: config.appOrigin, ...tunnel() };
+  const set = await app.request("/auth/set-password", { method: "POST", headers: s, body: JSON.stringify({ password: "attacker passphrase 1" }) });
+  assert.equal(set.status, 409, "set-password refuses once a password exists");
+  assert.ok(getUser(OWNER)?.password_hash && !(await import("../src/auth/password")).verifyPassword("attacker passphrase 1", getUser(OWNER)!.password_hash!));
+  const chg = await app.request("/auth/change-password", { method: "POST", headers: s, body: JSON.stringify({ currentPassword: "the owners passphrase", newPassword: "another passphrase 2" }) });
+  assert.equal(chg.status, 200);
+  assert.equal(((await chg.json()) as { revokedDevices: number }).revokedDevices, 0, "a session's password change revokes no device");
+  assert.equal((await app.request("/auth/me", { headers: { ...bearer(phone.token), ...tunnel() } })).status, 200);
+  const { r } = await consent();
+  assert.equal(r.status, 200, "still waits for the existing device");
+  assert.equal((db.prepare("SELECT count(*) n FROM device_auth_codes").get() as { n: number }).n, 0);
+});
+
+test("C1: after the last device is gone, bootstrap reopens only after a 24 h cool-down", async () => {
+  const phone = issueDeviceToken(OWNER, "phone", "omni-native");
+  await app.request(`/auth/devices/${phone.id}`, { method: "DELETE", headers: { ...bearer(phone.token), ...tunnel() } });
+  const first = await consent();
+  assert.equal(first.r.status, 200, "revoked just now: still needs an approval (none possible) — no code");
+  assert.equal((db.prepare("SELECT count(*) n FROM device_auth_codes").get() as { n: number }).n, 0);
+  resetDeviceConfirmationsForTests();
+  db.prepare("UPDATE device_tokens SET revoked_at = ? WHERE id = ?").run(Date.now() - DEVICE_BOOTSTRAP_COOLDOWN_MS - 1000, phone.id);
+  db.prepare("UPDATE device_account_history SET last_live_until = ? WHERE email = ?").run(Date.now() - DEVICE_BOOTSTRAP_COOLDOWN_MS - 1000, OWNER);
+  const later = await consent();
+  assert.equal(later.r.status, 302, "after the cool-down the owner can sign a device in again");
+  // A session-ended history keeps the door shut for good.
+  db.prepare("UPDATE device_account_history SET last_end_via = 'session' WHERE email = ?").run(OWNER);
+  db.prepare("UPDATE device_tokens SET revoked_at = ? WHERE email = ?").run(Date.now() - 2 * DEVICE_BOOTSTRAP_COOLDOWN_MS, OWNER);
+  db.prepare("UPDATE device_tokens SET revoked_at = COALESCE(revoked_at, ?)").run(Date.now() - 2 * DEVICE_BOOTSTRAP_COOLDOWN_MS);
+  resetDeviceConfirmationsForTests();
+  assert.equal((await consent()).r.status, 200);
+});
+
+test("I1: the waiting page and the Omni card show the same matching code; one pending sign-in at a time", async () => {
+  const phone = issueDeviceToken(OWNER, "phone", "omni-native").token;
+  const { r } = await consent();
+  const html = await r.text();
+  const [a] = await pendingSignIns(phone);
+  const code = String(a!.payload.matchCode);
+  assert.match(code, /^\d{3} \d{3}$/);
+  assert.ok(html.includes(code), "the waiting page shows the card's code");
+  assert.match(html, /only if it shows this same code/);
+  const second = await consent();
+  assert.equal(second.r.status, 403, "a second concurrent sign-in is refused");
+  assert.match(await second.r.text(), /Another sign-in is already waiting/);
+  assert.equal((await pendingSignIns(phone)).length, 1);
+  assert.notEqual(matchCodeFor("req-a"), matchCodeFor("req-b"));
+  assert.equal(matchCodeFor("req-a"), matchCodeFor("req-a"));
+});
+
+test("I1: the client IP is believed only for the tunnel's public host", () => {
+  const host = new URL(config.appOrigin).host;
+  const h = (o: Record<string, string>) => (k: string) => o[k];
+  assert.equal(requestHints(h({ "cf-connecting-ip": "203.0.113.9", host: "127.0.0.1:8787" })).ipHint, "this Mac or the local network");
+  const viaPublic = requestHints(h({ "cf-connecting-ip": "203.0.113.9", host })).ipHint;
+  // In tests APP_ORIGIN is localhost, which is never treated as the tunnel.
+  assert.equal(viaPublic, /^(localhost|127\.)/.test(host) ? "this Mac or the local network" : "internet, 203.0.x.x");
+});
+
+test("M1 + M2: the approval never outlives the parked request; a session cannot deny the owner's sign-in", async () => {
+  const phone = issueDeviceToken(OWNER, "phone", "omni-native").token;
+  const { cookie } = await consent();
+  const [a] = await pendingSignIns(phone);
+  const row = db.prepare("SELECT expires_at, created_at FROM omni_approvals WHERE id = ?").get(a!.id) as { expires_at: number; created_at: number };
+  const req = db.prepare("SELECT expires_at FROM device_auth_requests").get() as { expires_at: number };
+  assert.ok(row.expires_at <= req.expires_at, "approval expiry ≤ request expiry");
+  assert.ok(row.expires_at - row.created_at <= CONFIRM_TTL_MS);
+  const deny = await decide(a!.id, a!.digest, "cancel", { cookie: cookie.split(";")[0]!, origin: config.appOrigin, "sec-fetch-site": "same-origin" });
+  assert.equal(deny.status, 403);
+  assert.equal((await pendingSignIns(phone)).length, 1, "still pending");
+});
+
+test("with Omni off and a live device, a session's consent is refused (no fallback to session consent)", async () => {
+  issueDeviceToken(OWNER, "phone", "omni-native");
+  delete process.env.OMNI_ENABLED;
+  const { r } = await consent();
+  assert.equal(r.status, 403);
+  assert.equal((db.prepare("SELECT count(*) n FROM device_auth_codes").get() as { n: number }).n, 0);
 });

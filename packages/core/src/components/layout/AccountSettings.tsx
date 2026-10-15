@@ -221,15 +221,19 @@ export function AccountSettings() {
                       Last seen {fmt(d.lastSeenAt)} · signed in {fmt(d.createdAt)}
                     </div>
                   </div>
-                  <Button variant="ghost" onClick={() => void revokeDevice(d)} title="Sign this device out">
-                    <X size={13} /> Revoke
-                  </Button>
+                  {/* One door: only a signed-in DEVICE may revoke devices (a browser session can't). */}
+                  {devices.some((x) => x.current) && (
+                    <Button variant="ghost" onClick={() => void revokeDevice(d)} title="Sign this device out">
+                      <X size={13} /> Revoke
+                    </Button>
+                  )}
                 </div>
               ))}
             </div>
           )}
           <p style={{ fontSize: 11.5, color: "var(--text-muted)", margin: "10px 0 0" }}>
             Each app signs in through your browser and gets its own key. Revoking signs that device out immediately.
+            {!devices.some((x) => x.current) && devices.length > 0 && " Devices can be revoked only from the Omni or Prism app on a signed-in device, not from a browser session — to sign this browser out, use Sign out."}
           </p>
         </div>
       )}

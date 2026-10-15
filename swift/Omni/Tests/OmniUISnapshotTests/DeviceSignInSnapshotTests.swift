@@ -13,7 +13,8 @@ import XCTest
 final class DeviceSignInSnapshotTests: XCTestCase {
     static let payload: [String: Any] = [
         "clientId": "omni-native", "label": "Omni on a new iPhone", "redirectUri": "http://127.0.0.1:53111/callback",
-        "requestedAt": "2026-10-15T09:00:00.000Z", "ipHint": "192.168.1.x", "userAgentHint": "Omni/1.0 iOS",
+        "requestedAt": "2026-10-15T09:00:00.000Z", "ipHint": "this Mac or the local network", "userAgentHint": "Omni/1.0 iOS",
+        "matchCode": "482 913",
     ]
 
     var root: URL {
@@ -23,9 +24,12 @@ final class DeviceSignInSnapshotTests: XCTestCase {
 
     func testTheSignInCardRendersWithApproveAndDenyInLightDarkAndLargeText() async throws {
         NSApplication.shared.setActivationPolicy(.prohibited)
-        for (name, dark, size) in [("device-sign-in/light", false, DynamicTypeSize.large), ("device-sign-in/dark", true, .large), ("device-sign-in/accessibility", false, .accessibility3)] {
+        var noCode = Self.payload
+        noCode.removeValue(forKey: "matchCode")
+        for (name, dark, size, payload) in [("device-sign-in/light", false, DynamicTypeSize.large, Self.payload), ("device-sign-in/dark", true, .large, Self.payload),
+                                            ("device-sign-in/accessibility", false, .accessibility3, Self.payload), ("device-sign-in/no-code", false, .large, noCode)] {
             let service = SampleService()
-            var row = SampleService.draft("dev1", thread: "", kind: "device-sign-in", payload: Self.payload, executor: ["name": "device-sign-in", "available": true, "enabled": true])
+            var row = SampleService.draft("dev1", thread: "", kind: "device-sign-in", payload: payload, executor: ["name": "device-sign-in", "available": true, "enabled": true])
             row["threadId"] = NSNull()
             row["summary"] = "Sign in a new device"
             service.addApproval(row)
@@ -33,7 +37,15 @@ final class DeviceSignInSnapshotTests: XCTestCase {
             await session.approvals.refresh()
             let card = try XCTUnwrap(session.approvals.card(for: "dev1"))
             XCTAssertTrue(card.isDeviceSignIn && card.canOfferSend() && card.canOfferCancel() && !card.canOfferEdit() && !card.canOfferRevise())
-            var walk = Walk(variant: .init(folder: name, size: CGSize(width: 420, height: 520), dark: dark), root: root)
+            // Round 3 (I1): the matching code is on the card (or, without one, the warning).
+            if payload["matchCode"] != nil {
+                XCTAssertEqual(card.content.matchCode, "482 913", name)
+                XCTAssertEqual(card.content.matchCodeNotice, ApprovalContent.matchCodeInstruction, name)
+            } else {
+                XCTAssertNil(card.content.matchCode, name)
+                XCTAssertEqual(card.content.matchCodeNotice, ApprovalContent.noMatchCodeWarning, name)
+            }
+            var walk = Walk(variant: .init(folder: name, size: CGSize(width: 420, height: 640), dark: dark), root: root)
             try await walk.draw("card", settle: .milliseconds(300), ApprovalCardView(center: session.approvals, id: "dev1").dynamicTypeSize(size).padding(16).frame(maxHeight: .infinity, alignment: .top))
             XCTAssertEqual(walk.count, 1)
             let image = try XCTUnwrap(NSBitmapImageRep(data: Data(contentsOf: root.appendingPathComponent("\(name)/01-card.png"))))

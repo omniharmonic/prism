@@ -197,6 +197,21 @@ final class DeviceSignInApprovalModelTests: XCTestCase {
         XCTAssertEqual(a.computedDigest, ApprovalDigest.digest(kind: "device-sign-in", payload: a.payload))
     }
 
+    /// Review round 3 (I1): the matching code rides in the payload, so the approval's digest
+    /// covers it — a card cannot show one code and be decided for another.
+    func testTheMatchingCodeDecodesAndIsCoveredByTheDigest() throws {
+        let a = try PrismJSON.decoder().decode(Approval.self, from: Data(#"""
+        {"id":"apr_dev2","threadId":null,"kind":"device-sign-in",
+         "payload":{"clientId":"omni-native","label":"x","redirectUri":"omni://auth/callback","requestedAt":"2026-10-15T09:00:00.000Z","matchCode":"482 913","ipHint":"this Mac or the local network"},
+         "digest":"d","status":"pending"}
+        """#.utf8))
+        XCTAssertEqual(a.payload["matchCode"]?.stringValue, "482 913")
+        XCTAssertEqual(a.payload["ipHint"]?.stringValue, "this Mac or the local network")
+        var other = a.payload.objectValue ?? [:]
+        other["matchCode"] = .string("000 000")
+        XCTAssertNotEqual(ApprovalDigest.digest(kind: "device-sign-in", payload: a.payload), ApprovalDigest.digest(kind: "device-sign-in", payload: .object(other)))
+    }
+
     func testAKindThisBuildDoesNotKnowStillDecodes() throws {
         let a = try PrismJSON.decoder().decode(Approval.self, from: Data(#"{"id":"x","kind":"carrier-pigeon","payload":{"wing":"left"},"digest":"d","status":"pending"}"#.utf8))
         XCTAssertEqual(a.kind.rawValue, "carrier-pigeon")

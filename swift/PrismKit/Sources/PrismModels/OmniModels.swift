@@ -254,9 +254,13 @@ public struct ApprovalKind: RawRepresentable, Codable, Hashable, Sendable {
     /// scheduled job…). "Send" on it means "Approve once"; the turn then runs exactly it.
     public static let command = ApprovalKind(rawValue: "command")
     /// Not a draft either: a NEW device asked to sign in as the owner while he already has a
-    /// signed-in device. Payload `{clientId, label, redirectUri, requestedAt, ipHint?,
-    /// userAgentHint?}` — `label` is the name the new device gave ITSELF (a claim, not a
-    /// fact). "Send" on it means "Approve this sign-in"; "cancel" denies it. Never editable.
+    /// signed-in device. Payload `{clientId, label, redirectUri, requestedAt, matchCode?,
+    /// ipHint?, userAgentHint?}` — `label` is the name the new device gave ITSELF (a claim, not
+    /// a fact); `matchCode` ("482 913") is also shown on the sign-in page, and the owner
+    /// approves only if the two match; `ipHint` is "this Mac or the local network" unless the
+    /// request came through the tunnel. "Send" on it means "Approve this sign-in"; "cancel"
+    /// denies it. Never editable. The payload stays generic JSON, so a missing or unknown key
+    /// never breaks decoding.
     public static let deviceSignIn = ApprovalKind(rawValue: "device-sign-in")
 }
 

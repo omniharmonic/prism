@@ -599,7 +599,6 @@ export interface ProtonPassResult {
 
 const isConflict = (e: unknown): boolean => /\b409\b|conflict/i.test(String((e as Error)?.message ?? e)) || (e as { status?: number })?.status === 409;
 
-/** UTC midnight of (now − days): the script's `strftime("%d-%b-%Y")` on a UTC datetime. */
 /** A Prism sign-in email: from MAGIC_FROM with a sign-in subject, or carrying a sign-in link. */
 export function isPrismSignInMail(m: { from: string; subject: string; body: string }): boolean {
   const ours = extractEmailAddress(config.magicFrom).toLowerCase();
@@ -608,6 +607,7 @@ export function isPrismSignInMail(m: { from: string; subject: string; body: stri
   return /\/auth\/(callback|device)[^\s"'<>]*[?&](token|code)=/i.test(m.body);
 }
 
+/** UTC midnight of (now − days): the script's `strftime("%d-%b-%Y")` on a UTC datetime. */
 export function sinceDate(now: number, days: number): Date {
   const d = new Date(now - days * 86_400_000);
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
