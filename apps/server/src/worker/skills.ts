@@ -1183,6 +1183,18 @@ type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 /** LM Studio (OpenAI-compatible `/v1`) client. `status` asks LM Studio's native
  *  `/api/v0/models` whether the model is resident; a server without that API is
  *  probed via `/v1/models` for reachability only (loaded = unknown). */
+/**
+ * How hard the local model thinks before labelling a note. Default "none": on the Mini a
+ * thinking Gemma spent ~1,200 tokens (90–105 s at 12 tok/s, against a 120 s timeout) on a
+ * label it gives in ~20 tokens (2 s) without thinking. SKILLS_LOCAL_REASONING_EFFORT
+ * overrides it ("low" | "medium" | "high"); "default" sends nothing and leaves it to the server.
+ */
+export function skillsReasoningEffort(env: string | undefined = process.env.SKILLS_LOCAL_REASONING_EFFORT): string | undefined {
+  const v = (env ?? "").trim();
+  if (v === "") return "none";
+  return v === "default" ? undefined : v;
+}
+
 export function lmStudioClient(baseUrl: string, fetchImpl: FetchLike = (u, i) => fetch(u, i), apiKeyEnv: string | null = null): LocalModel {
   const base = baseUrl.replace(/\/+$/, "");
   const root = base.replace(/\/v1$/, "");
@@ -1210,7 +1222,7 @@ export function lmStudioClient(baseUrl: string, fetchImpl: FetchLike = (u, i) =>
     async structured(system, user, schemaName, schema, model, timeoutMs, signal) {
       let text: string;
       try {
-        text = await backend.structuredText({ model, system, user, schemaName, schema, timeoutMs, signal });
+        text = await backend.structuredText({ model, system, user, schemaName, schema, timeoutMs, signal, reasoningEffort: skillsReasoningEffort() });
       } catch (e) {
         if (!(e instanceof ProviderCallError)) throw e;
         // The error classes and messages the scheduler has always acted on.

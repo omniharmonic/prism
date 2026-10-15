@@ -698,6 +698,30 @@ test("runSkillsPass: three passes in a row with the model load refused read `fai
   }
 });
 
+test("lmStudioClient.structured turns the model's thinking off unless told otherwise", async () => {
+  const bodies: Array<Record<string, unknown>> = [];
+  const f = async (_u: string, init?: RequestInit) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return json({ choices: [{ message: { content: "{\"label\":\"meeting\"}" } }] });
+  };
+  const c = lmStudioClient("http://lm.test/v1", f);
+  const prev = process.env.SKILLS_LOCAL_REASONING_EFFORT;
+  try {
+    delete process.env.SKILLS_LOCAL_REASONING_EFFORT;
+    assert.deepEqual(await c.structured("s", "u", "c", {}, "m", 1000), { label: "meeting" });
+    assert.equal(bodies[0]!.reasoning_effort, "none");
+    process.env.SKILLS_LOCAL_REASONING_EFFORT = "default";
+    await c.structured("s", "u", "c", {}, "m", 1000);
+    assert.ok(!("reasoning_effort" in bodies[1]!), "\"default\" leaves it to the server");
+    process.env.SKILLS_LOCAL_REASONING_EFFORT = "low";
+    await c.structured("s", "u", "c", {}, "m", 1000);
+    assert.equal(bodies[2]!.reasoning_effort, "low");
+  } finally {
+    if (prev === undefined) delete process.env.SKILLS_LOCAL_REASONING_EFFORT;
+    else process.env.SKILLS_LOCAL_REASONING_EFFORT = prev;
+  }
+});
+
 test("lmStudioClient.status reports a model size only when the server sends one", async () => {
   const a = fakeFetch({ "http://lm.test/api/v0/models": () => json({ data: [{ id: "m", state: "not-loaded", size_bytes: 7_000_000_000 }, { id: "n", state: "not-loaded", size_bytes: "big" }] }) });
   const c = lmStudioClient("http://lm.test/v1", a.f);
@@ -856,6 +880,7 @@ test("lmStudioClient.structured: strict json_schema request; content, reasoning_
     messages: [{ role: "system", content: "SYS" }, { role: "user", content: "USER" }],
     stream: false,
     response_format: { type: "json_schema", json_schema: { name: "classification", strict: true, schema: { type: "object" } } },
+    reasoning_effort: "none",
   });
   reply = { choices: [{ message: { content: "", reasoning_content: 'ok {"importance":"beta"}' } }] };
   assert.deepEqual(await c.structured("S", "U", "n", {}, "m", 1000), { importance: "beta" });
