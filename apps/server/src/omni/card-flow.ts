@@ -7,11 +7,15 @@ import { db } from "../db";
 import { resolveNote } from "./records";
 import { bindNudgeThread, listNudges, nudgeAction, resolveNudgeSource, type Candidate, type Nudge } from "./nudges";
 import { clip, plainText } from "./titles";
-import { ensureThread, getThread } from "./store";
-import { emit } from "./turns";
+import { ensureThread, getThread, sha256 } from "./store";
+import { omniConfig } from "./config";
+import { approvalView } from "./approvals";
+import { proposeApproval } from "./propose";
+import { recordProactiveOwnerTurn } from "./proactive";
+import { emit, startTurn, withNotes } from "./turns";
 import { publishNotice, pushOmni } from "./bus";
 import { ensureSourceSession } from "./source-session";
-import { ACTED_STATES, REOPENABLE_STATES, CardError, cardBySource, cardSourceKeys, cardView, compareCardViews, getCard, listOpenCards, parseCardInput, transitionCard, upsertCard, type Card, type CardFact, type CardInput, type CardKind, type CardSection } from "./cards";
+import { ACTED_STATES, REOPENABLE_STATES, CardError, cardBySource, cardSourceKeys, cardView, compareCardViews, finishCardAction, getCard, linkApproval, listOpenCards, parseCardInput, priorCardAction, releaseCardAction, reserveCardAction, transitionCard, upsertCard, type CardOption, type Card, type CardFact, type CardInput, type CardKind, type CardSection } from "./cards";
 
 const NOTE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 export interface CardPublish extends CardInput { evidence: Array<{ sourceId: string; revision: string }> }
@@ -180,4 +184,79 @@ export function dismissCard(owner: string, id: string, reason: "not-needed" | "d
   }
   announceCard(card, to, { push: false });
   return card;
+}
+
+// ── the owner's choices ─────────────────────────────────────────────────────
+
+const KEEP_IT_SAFE = "Read the item first. Anything that would reach another person goes through omni_propose as a draft for his approval; nothing is sent without it. If you need him to choose again, post new options with omni_card.";
+
+/** The option's plan was written by the model earlier: it is quoted as the plan he chose, not as new policy. */
+export function optionPrompt(card: Card, option: CardOption): string {
+  return withNotes([
+    `Benjamin chose how to handle this item: "${card.headline}".`,
+    `His choice: ${option.label}.`,
+    `The plan behind it (prepared by Omni earlier, chosen by Benjamin): ${option.plan}`,
+    KEEP_IT_SAFE,
+  ].join("\n\n"), card.itemRefs);
+}
+
+export interface CardActionAnswer { status: 201 | 202; body: Record<string, unknown>; replayed: boolean }
+
+/** Start the card's turn; a turn already running there puts the card back as it was. */
+export function startCardTurn(owner: string, before: Card, claimed: Card, prompt: string, key: string): { status: 202; body: Record<string, unknown> } {
+  const r = startTurn(claimed.threadId!, prompt, `card-${sha256(`${claimed.id}:${key}`).slice(0, 40)}`);
+  if ("active" in r) {
+    transitionCard(owner, claimed.id, ["working"], before.state, { action: "refused", detail: "turn_running" }, { chosenOptionId: before.chosenOptionId, snoozedUntil: before.snoozedUntil });
+    throw new CardError("turn_running", 409, "a turn is already running in this card's thread");
+  }
+  if ("turn" in r) recordProactiveOwnerTurn(owner, claimed.threadId!, r.turn.id);
+  announceCard(claimed, "working", { push: false });
+  return { status: 202, body: { card: cardView(claimed), approval: null, threadId: claimed.threadId, turnId: "turn" in r ? r.turn.id : r.replay.id } };
+}
+
+/** Replay, reserve, run once, store the answer: one Idempotency-Key = one effect. */
+function idempotent(owner: string, cardId: string, key: string, action: string, run: () => { status: 201 | 202; body: Record<string, unknown> }): CardActionAnswer {
+  const prior = priorCardAction(owner, cardId, key);
+  if (prior) {
+    if (prior.action !== action) throw new CardError("idempotency_conflict", 409, "this Idempotency-Key was used for another action");
+    if (!prior.response || prior.status === null) throw new CardError("in_progress", 409);
+    return { status: prior.status as 201 | 202, body: prior.response, replayed: true };
+  }
+  if (!reserveCardAction(owner, cardId, key, action)) throw new CardError("in_progress", 409);
+  try {
+    const answer = run();
+    finishCardAction(owner, cardId, key, answer.status, answer.body);
+    return { ...answer, replayed: false };
+  } catch (e) {
+    releaseCardAction(owner, cardId, key);
+    throw e;
+  }
+}
+
+export function chooseCardOption(owner: string, cardId: string, optionId: string, key: string, origin: { via: string }): CardActionAnswer {
+  return idempotent(owner, cardId, key, `choose:${optionId}`, () => {
+    const card = getCard(owner, cardId);
+    if (!card) throw new CardError("not_found", 404);
+    const option = card.options.find((o) => o.id === optionId);
+    if (!option) throw new CardError("unknown_option", 400, `optionId: one of ${card.options.map((o) => o.id).join(", ")}`);
+    if (option.draft) {
+      // The draft is exactly what the card showed. It becomes a PENDING approval: Send is a separate tap.
+      const claimed = transitionCard(owner, cardId, ["proposed", "snoozed"], "draft-ready", { action: "choose", optionId }, { chosenOptionId: optionId });
+      if (!claimed) throw notOpen(owner, cardId);
+      let a;
+      try {
+        a = proposeApproval({ owner, threadId: claimed.threadId, kind: option.draft.kind, payload: option.draft.payload, summary: option.label, ttlMs: omniConfig.approvalTtlMs(), actor: owner, via: origin.via, push: false });
+      } catch (e) {
+        transitionCard(owner, cardId, ["draft-ready"], card.state, { action: "refused", detail: "propose_failed" }, { chosenOptionId: card.chosenOptionId, snoozedUntil: card.snoozedUntil });
+        throw e;
+      }
+      const linked = linkApproval(owner, cardId, a.id)!;
+      announceCard(linked, "draft-ready", { push: false });
+      return { status: 201, body: { card: cardView(linked), approval: approvalView(a), threadId: linked.threadId, turnId: null } };
+    }
+    if (!card.threadId || !getThread(card.threadId)) throw new CardError("card_has_no_thread", 409);
+    const claimed = transitionCard(owner, cardId, ["proposed", "snoozed"], "working", { action: "choose", optionId }, { chosenOptionId: optionId });
+    if (!claimed) throw notOpen(owner, cardId);
+    return startCardTurn(owner, card, claimed, optionPrompt(claimed, option), key);
+  });
 }

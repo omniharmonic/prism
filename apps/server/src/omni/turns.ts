@@ -30,6 +30,8 @@ interface Live {
 const live = new Map<string, Live>();
 /** Stop requests still being retried, by turn (they outlive the turn's own entry). */
 const stopping = new Map<string, Promise<void>>();
+/** The message Hermes receives: the person's text, then referenced note ids as data. */
+export const withNotes = (text: string, ids: string[]): string => (ids.length ? `${text}\n\n[Prism notes referenced (read them with your Prism tools): ${ids.join(", ")}]` : text);
 export const liveTurnCount = (): number => live.size;
 
 /** Emit one event to the thread: persisted (with seq) unless it is a live-only delta. */

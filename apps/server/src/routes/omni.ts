@@ -54,7 +54,7 @@ import {
   type ThreadRow,
   type ThreadState,
 } from "../omni/store";
-import { cancelTurn, emit, liveTurnCount, startTurn, stopOrphanedRuns } from "../omni/turns";
+import { cancelTurn, emit, liveTurnCount, startTurn, stopOrphanedRuns, withNotes } from "../omni/turns";
 import { config } from "../config";
 import { bareToolName } from "../omni/stream";
 import { publishNotice, pushOmni, subscribeNotices, subscribeThread, type ThreadMessage } from "../omni/bus";
@@ -88,7 +88,7 @@ import { priorNudgeSources, resolveNudgeSource, nudgeWeeklyAudit, latestNudgeAud
 import { startNudgeDelivery } from "../omni/nudge-delivery";
 import { resolveNote, readNoteContent } from "../omni/records";
 import { CardError, cardView, cardsByThread, getCard } from "../omni/cards";
-import { parseCardPublish, publishCard, listCardViews, snoozeCard, dismissCard } from "../omni/card-flow";
+import { parseCardPublish, publishCard, listCardViews, snoozeCard, dismissCard, chooseCardOption } from "../omni/card-flow";
 import { readableNudgeText } from "../omni/titles";
 import { proactiveSourceHealth } from "../omni/source-health";
 import { syncAttentionPreferences, AttentionPreferenceError } from "../omni/attention-preferences";
@@ -391,8 +391,6 @@ function noteIdsOf(v: unknown): string[] | null {
   if (!Array.isArray(v) || v.length > 20 || v.some((x) => typeof x !== "string" || !NOTE_ID_RE.test(x))) return null;
   return v as string[];
 }
-/** The message Hermes receives: the person's text, then referenced note ids as data. */
-const withNotes = (text: string, ids: string[]) => (ids.length ? `${text}\n\n[Prism notes referenced (read them with your Prism tools): ${ids.join(", ")}]` : text);
 function idemKeyOf(c: Context): string | null | false {
   const k = c.req.header("idempotency-key");
   if (k === undefined) return null;
@@ -1149,6 +1147,24 @@ omniApi.post("/cards/:id/dismiss", async (c) => {
   if (!b || (b.reason !== "not-needed" && b.reason !== "done")) return bad(c, "reason: not-needed|done");
   try {
     return c.json({ card: cardView(dismissCard(omniConfig.ownerEmail(), c.req.param("id") ?? "", b.reason)) });
+  } catch (e) {
+    return cardFailure(c, e);
+  }
+});
+
+omniApi.post("/cards/:id/choose", async (c) => {
+  const o = humanOrigin(c);
+  if (!o.human) return c.json({ error: "human_origin_required" }, 403);
+  const key = idemKeyOf(c);
+  if (!key) return bad(c, "Idempotency-Key header: 8–200 characters of [A-Za-z0-9._:-] (required)");
+  const b = await jsonBody(c);
+  if (!b || typeof b.optionId !== "string" || !b.optionId) return bad(c, "optionId: required");
+  const owner = omniConfig.ownerEmail();
+  try {
+    const r = chooseCardOption(owner, c.req.param("id") ?? "", b.optionId, key, { via: o.via });
+    if (r.replayed) c.header("Idempotent-Replayed", "true");
+    else omniAudit({ actor: owner, via: o.via, action: "card.choose", approvalId: (r.body.approval as { id?: string } | null)?.id ?? null, threadId: (r.body.threadId as string | null) ?? null, status: "ok" });
+    return c.json(r.body, r.status);
   } catch (e) {
     return cardFailure(c, e);
   }
