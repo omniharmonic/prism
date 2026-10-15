@@ -96,3 +96,57 @@ test("same key after a lost answer replays: one approval, one turn", async () =>
   assert.match(said[0]!, /prepared by Omni earlier, chosen by Benjamin/);
   assert.match(said[0]!, /\[Prism notes referenced \(read them with your Prism tools\): mail2\]/);
 });
+
+const instruct = (id: string, text: string, key: string | null = "instruct-key-0001") =>
+  omniApi.request(`/cards/${id}/instruct`, { method: "POST", headers: { ...ownerH(), ...(key ? { "idempotency-key": key } : {}) }, body: JSON.stringify({ text }) });
+
+test("something else: his own words start a turn in the card's thread", async () => {
+  const card = await publish();
+  assert.equal((await instruct(card.id, "   ")).status, 400);
+  assert.equal((await instruct(card.id, "Tell her yes", null)).status, 400);
+  assert.equal((await omniApi.request(`/cards/${card.id}/instruct`, { method: "POST", headers: { ...ownerH(), "x-prism-action-origin": "agent", "idempotency-key": "instruct-key-0001" }, body: JSON.stringify({ text: "x" }) })).status, 403);
+  assert.equal(getCard(config.ownerEmail, card.id)!.state, "proposed");
+  const res = await instruct(card.id, "Say yes but ask for the sheet as a PDF first.");
+  assert.equal(res.status, 202);
+  const body = await res.json() as Answer;
+  assert.equal(body.card.state, "working");
+  assert.equal(body.approval, null);
+  await turnSettled(body.turnId!);
+  assert.match(said[0]!, /His own words:\nSay yes but ask for the sheet as a PDF first\./);
+  assert.match(said[0]!, /\[Prism notes referenced \(read them with your Prism tools\): mail1\]/);
+  const replay = await instruct(card.id, "Say yes but ask for the sheet as a PDF first.");
+  assert.equal(replay.headers.get("idempotent-replayed"), "true");
+  assert.equal((await replay.json() as Answer).turnId, body.turnId);
+  assert.equal(said.length, 1);
+  const conflict = await instruct(card.id, "Something different entirely.");
+  assert.equal(conflict.status, 409);
+});
+
+test("something else on a ready draft cancels the pending draft: one card, one live draft", async () => {
+  const card = await publish();
+  const ready = await (await choose(card.id, "a", "choose-then-instruct-1")).json() as Answer;
+  assert.equal(listApprovals(config.ownerEmail, "pending").length, 1);
+  const res = await instruct(card.id, "Actually ask for the PDF first.");
+  assert.equal(res.status, 202);
+  const body = await res.json() as Answer;
+  assert.equal(body.card.state, "working");
+  assert.equal(listApprovals(config.ownerEmail, "pending").length, 0);
+  const cancelled = listApprovals(config.ownerEmail, "cancelled");
+  assert.deepEqual(cancelled.map((a) => a.id), [ready.approval!.id]);
+  await turnSettled(body.turnId!);
+  assert.equal(said.length, 1);
+  const send = await omniApi.request(`/approvals/${ready.approval!.id}/decision`, { method: "POST", headers: { ...ownerH(), "idempotency-key": "send-cancelled-0001" }, body: JSON.stringify({ decision: "send", digest: ready.approval!.digest }) });
+  assert.equal(send.status, 409);
+  assert.equal(executed, 0);
+});
+
+test("something else on a working card is refused and changes nothing", async () => {
+  const card = await publish();
+  const first = await (await instruct(card.id, "Do the first thing.", "instruct-first-01")).json() as Answer;
+  const again = await instruct(card.id, "Do another thing.", "instruct-second-1");
+  assert.equal(again.status, 409);
+  assert.equal((await again.json() as { error: string }).error, "turn_running");
+  assert.equal(getCard(config.ownerEmail, card.id)!.state, "working");
+  await turnSettled(first.turnId!);
+  assert.equal(said.length, 1);
+});

@@ -7,9 +7,9 @@ import { db } from "../db";
 import { resolveNote } from "./records";
 import { bindNudgeThread, listNudges, nudgeAction, resolveNudgeSource, type Candidate, type Nudge } from "./nudges";
 import { clip, plainText } from "./titles";
-import { ensureThread, getThread, sha256 } from "./store";
+import { ensureThread, getThread, omniAudit, sha256 } from "./store";
 import { omniConfig } from "./config";
-import { approvalView } from "./approvals";
+import { approvalView, closeApproval, getApproval } from "./approvals";
 import { proposeApproval } from "./propose";
 import { recordProactiveOwnerTurn } from "./proactive";
 import { emit, startTurn, withNotes } from "./turns";
@@ -258,5 +258,40 @@ export function chooseCardOption(owner: string, cardId: string, optionId: string
     const claimed = transitionCard(owner, cardId, ["proposed", "snoozed"], "working", { action: "choose", optionId }, { chosenOptionId: optionId });
     if (!claimed) throw notOpen(owner, cardId);
     return startCardTurn(owner, card, claimed, optionPrompt(claimed, option), key);
+  });
+}
+
+/** His words are his: quoted as his instruction, the item is still read as data. */
+export function instructPrompt(card: Card, text: string): string {
+  return withNotes([`Benjamin's instruction for this item: "${card.headline}".`, `His own words:\n${text}`, KEEP_IT_SAFE].join("\n\n"), card.itemRefs);
+}
+
+/** One card, one live draft: his new instruction retires the drafts still waiting on this card.
+ *  Cancelled as the owner (audited like his own cancel) through the same close the decision route uses. */
+function cancelPendingDrafts(owner: string, ids: string[], origin: { via: string; device?: string | null }, key: string): void {
+  for (const id of ids) {
+    const a = getApproval(owner, id);
+    if (!a || a.status !== "pending") continue;
+    if (!closeApproval(id, "cancelled", origin.via, origin.device ?? null, `instruct-${sha256(`${id}:${key}`).slice(0, 40)}`)) continue;
+    omniAudit({ actor: owner, via: origin.via, action: "approval.cancel", approvalId: id, threadId: a.threadId, digest: a.digest, status: "ok" });
+    publishNotice({ type: "approval", id, op: "cancelled", threadId: a.threadId ?? undefined });
+    if (a.threadId && getThread(a.threadId)) emit(a.threadId, null, { t: "approval", approval: approvalView(getApproval(owner, id)!) });
+  }
+}
+
+export function instructCard(owner: string, cardId: string, text: string, key: string, origin: { via: string; device?: string | null } = { via: "session" }): CardActionAnswer {
+  const words = text.trim();
+  if (!words || words.length > 4000) throw new CardError("invalid_instruction", 400, "text: 1–4000 characters");
+  return idempotent(owner, cardId, key, `instruct:${sha256(words).slice(0, 16)}`, () => {
+    const card = getCard(owner, cardId);
+    if (!card) throw new CardError("not_found", 404);
+    if (card.state === "working") throw new CardError("turn_running", 409, "a turn is already running in this card's thread");
+    if (!card.threadId || !getThread(card.threadId)) throw new CardError("card_has_no_thread", 409);
+    const claimed = transitionCard(owner, cardId, ["proposed", "snoozed", "draft-ready"], "working", { action: "instruct", detail: clip(words, 2000) }, { chosenOptionId: null });
+    if (!claimed) throw notOpen(owner, cardId);
+    // A turn already running in the thread puts the card back (draft untouched); only a started turn retires the draft.
+    const answer = startCardTurn(owner, card, claimed, instructPrompt(claimed, words), key);
+    if (card.state === "draft-ready") cancelPendingDrafts(owner, card.approvalIds, origin, key);
+    return answer;
   });
 }

@@ -88,7 +88,7 @@ import { priorNudgeSources, resolveNudgeSource, nudgeWeeklyAudit, latestNudgeAud
 import { startNudgeDelivery } from "../omni/nudge-delivery";
 import { resolveNote, readNoteContent } from "../omni/records";
 import { CardError, cardView, cardsByThread, getCard } from "../omni/cards";
-import { parseCardPublish, publishCard, listCardViews, snoozeCard, dismissCard, chooseCardOption } from "../omni/card-flow";
+import { parseCardPublish, publishCard, listCardViews, snoozeCard, dismissCard, chooseCardOption, instructCard } from "../omni/card-flow";
 import { readableNudgeText } from "../omni/titles";
 import { proactiveSourceHealth } from "../omni/source-health";
 import { syncAttentionPreferences, AttentionPreferenceError } from "../omni/attention-preferences";
@@ -1147,6 +1147,24 @@ omniApi.post("/cards/:id/dismiss", async (c) => {
   if (!b || (b.reason !== "not-needed" && b.reason !== "done")) return bad(c, "reason: not-needed|done");
   try {
     return c.json({ card: cardView(dismissCard(omniConfig.ownerEmail(), c.req.param("id") ?? "", b.reason)) });
+  } catch (e) {
+    return cardFailure(c, e);
+  }
+});
+
+omniApi.post("/cards/:id/instruct", async (c) => {
+  const o = humanOrigin(c);
+  if (!o.human) return c.json({ error: "human_origin_required" }, 403);
+  const key = idemKeyOf(c);
+  if (!key) return bad(c, "Idempotency-Key header: 8–200 characters of [A-Za-z0-9._:-] (required)");
+  const b = await jsonBody(c);
+  if (!b || typeof b.text !== "string") return bad(c, "text: required");
+  const owner = omniConfig.ownerEmail();
+  try {
+    const r = instructCard(owner, c.req.param("id") ?? "", b.text, key, { via: o.via, device: o.device });
+    if (r.replayed) c.header("Idempotent-Replayed", "true");
+    else omniAudit({ actor: owner, via: o.via, action: "card.instruct", threadId: (r.body.threadId as string | null) ?? null, status: "ok" });
+    return c.json(r.body, r.status);
   } catch (e) {
     return cardFailure(c, e);
   }
