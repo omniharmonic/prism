@@ -36,7 +36,7 @@ grep -Fq 'ConversationVoiceControl(session: session, model: model, expanded: $vo
 echo "check-release: source — conversation voice is wired into the thread composer"
 [ "${1:-}" = "--source" ] && exit 0
 
-NAMES='OMNI_UITEST|UITestLaunch|FaultInjectingService|NeverReturningFlow'
+NAMES='OMNI_UITEST|UITestLaunch|FaultInjectingService|NeverReturningFlow|UITestSampleCards'
 xcodebuild build -project "$HERE/Omni.xcodeproj" -scheme Omni -configuration Release -destination 'platform=macOS' \
   -derivedDataPath "$DERIVED" CODE_SIGNING_ALLOWED=NO >"$DERIVED.log" 2>&1 || { tail -20 "$DERIVED.log" >&2; fail "the Release build failed (log: $DERIVED.log)"; }
 BIN="$DERIVED/Build/Products/Release/Omni.app/Contents/MacOS/Omni"
