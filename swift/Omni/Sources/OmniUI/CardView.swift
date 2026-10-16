@@ -339,13 +339,12 @@ struct DraftPreview: View {
 struct CardMotionRow: View {
     let card: OmniCard
     @Environment(\.navigator) private var navigator
-    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         Button { if let thread = card.threadId { navigator.open(.thread(thread)) } } label: {
             HStack(spacing: 8) {
                 Image(systemName: card.state == .waiting ? "hourglass" : "gearshape.2").foregroundStyle(Color.quietText).frame(width: 24).accessibilityHidden(true)
-                Text(CardText.motionLine(card)).lineLimit(typeSize.isAccessibilitySize ? nil : 2).frame(maxWidth: .infinity, alignment: .leading)
+                Text(CardText.motionLine(card)).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
                 Image(systemName: "chevron.right").font(.caption).foregroundStyle(Color.quietText).accessibilityHidden(true)
             }
             .frame(minHeight: CardMetrics.minTouch)

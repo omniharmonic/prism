@@ -246,7 +246,7 @@ final class OmniWalkTests: OmniUITestCase {
         see("Nothing needs a decision")
         shot("today-empty")
         go(.needsYou)
-        see("Nothing needs you")
+        see("You're clear")
         shot("needs-you-empty")
         go(.threads)
         see("No threads yet")
