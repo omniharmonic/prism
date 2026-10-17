@@ -13,6 +13,7 @@
 import { db, createSession, addGrant, type ResourceType } from "../src/db";
 import type { Level } from "../src/permissions";
 import { signCapability } from "../src/auth/capability";
+import { issueDeviceToken } from "../src/auth/device";
 import { randomBytes } from "node:crypto";
 import { config } from "../src/config";
 import { TRANSCRIPT_LINK_TABLES } from "../src/transcript-links-store";
@@ -490,7 +491,7 @@ export function resetDb(): void {
     "DELETE FROM canvas_relation_vaults; DELETE FROM canvas_assertions; DELETE FROM canvas_relations; DELETE FROM canvas_relation_sources; DELETE FROM canvas_relation_jobs; DELETE FROM canvas_relation_receipts; DELETE FROM grants; DELETE FROM sessions; DELETE FROM users; DELETE FROM magic_links; DELETE FROM capabilities; DELETE FROM collab_docs; DELETE FROM collab_unsaved; DELETE FROM collab_set_aside; DELETE FROM invites; DELETE FROM memberships; DELETE FROM tenant_secrets;" +
       // Horizon B/C tables — kept in sync so every test file starts from a clean db.
       "DELETE FROM publication_presentations; DELETE FROM publication_presentation_history; DELETE FROM publications; DELETE FROM peers; DELETE FROM peer_pairings; DELETE FROM spaces; DELETE FROM federated_notes; DELETE FROM federation_outbox; DELETE FROM pending_suggestions; DELETE FROM federation_mirror_requests; DELETE FROM settings; DELETE FROM prism_vaults; DELETE FROM workspaces; DELETE FROM vault_workspaces; DELETE FROM vault_mirrors; DELETE FROM mcp_tokens; DELETE FROM mcp_token_revocations; DELETE FROM governance_sig_ledger;" +
-      "DELETE FROM device_tokens; DELETE FROM device_auth_codes; DELETE FROM device_auth_requests;" +
+      "DELETE FROM device_tokens; DELETE FROM device_account_history; DELETE FROM device_auth_codes; DELETE FROM device_auth_requests;" +
       "DELETE FROM push_subscriptions; DELETE FROM apns_tokens; DELETE FROM agent_policy_audit; DELETE FROM agent_followups; DELETE FROM agent_events; DELETE FROM agent_turns; DELETE FROM agent_cost_log; DELETE FROM agent_sessions;" +
       "DELETE FROM mcp_pats; DELETE FROM action_audit; DELETE FROM action_idempotency; DELETE FROM collab_command_receipts;" +
       "DELETE FROM github_sync_configs; DELETE FROM notion_db_sync_configs; DELETE FROM sync_audit;" +
@@ -521,4 +522,10 @@ export function makeCapability(resourceType: ResourceType, resource: string, lev
   const id = `cap-${randomBytes(6).toString("hex")}`;
   addGrant({ subject_type: "link", subject: id, resource_type: resourceType, resource, level, created_by: "test" });
   return signCapability({ id, exp: expMs });
+}
+
+/** The owner's native-app credential (a `pd_…` device token). Sends to other people —
+ *  approval decisions and outward live actions — require it (one door, 2026-10-15). */
+export function deviceAuth(email: string = config.ownerEmail): Record<string, string> {
+  return { authorization: `Bearer ${issueDeviceToken(email, "Omni (test)", "omni-native").token}` };
 }

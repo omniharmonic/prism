@@ -229,7 +229,7 @@ Prism's existing guarded executors.
 | `kind` | `payload` | Executor |
 |---|---|---|
 | `email` | `{to:[≤20], cc?:[≤20], subject, body}` (plain text) | `proton_send.py send --approved` (default; see below) or `POST /api/actions/email/send` |
-| `email-reply` | `{noteId, expectTo:[…], cc?, body}` | `proton_send.py send --approved --reply-to-note <noteId> --to <each expectTo>` or `POST /api/actions/email/reply` |
+| `email-reply` | `{noteId, expectTo:[…], cc?, body}` + `subject`, `inReplyTo`, `references` filled by Prism from the note at propose time | `proton_send.py send --approved --reply-to-note <noteId> --subject … --in-reply-to … [--references …] --to <each expectTo>` or `POST /api/actions/email/reply` |
 | `message` | `{roomId, body}` | `POST /api/actions/matrix/send` (`ACTIONS_MATRIX_ENABLED`) |
 | `calendar-invite` | `{title, start, end, attendees?, location?, description?}` (RFC 3339) | `POST /api/actions/calendar/create` (`ACTIONS_CALENDAR_ENABLED`) |
 | `tweet` | `{text}` | none wired yet → `executor_unavailable` |
@@ -307,7 +307,55 @@ gateway stores what was proposed, and the app's decision must carry that digest.
 
 ### Email executor: `proton_send.py` (option B)
 
-`src/omni/proton-send.ts`. Fixed argv (`send --approved --json --body-file - --subject … --to … [--cc …] [--allow-external]`), each value one argv element, no shell; the body on stdin; cwd = the agent repo root; env = HOME/USER/LOGNAME/PATH/LANG/LC_*/TMPDIR/TZ only — never a Prism secret, never `PROTON_SEND_ALLOW_EXTERNAL`. `--allow-external` is passed when a recipient is not the owner, but third-party mail still needs `PROTON_SEND_ALLOW_EXTERNAL=1` in the AGENT repo's `.env` — the recipient policy stays in `proton_send.py`. A reply sends exactly the recipients shown on the card (`expectTo`); the note supplies the subject and threading headers. Outcome: exit 0 → `sent` (+ `messageId`); a refusal `proton_send.py` raises before it opens the SMTP socket (markdown, recipient guard, Bridge unreachable / pin / login) → `failed`; a refused SMTP exchange, a timeout or a signal → `unknown`. Tests: `test/omni-proton-send.test.ts` (fake spawner). Later: port the two guards into live actions and switch `OMNI_EMAIL_EXECUTOR`.
+`src/omni/proton-send.ts`. Fixed argv (`send --approved --json --body-file - --subject … --to … [--cc …] [--allow-external]`), each value one argv element, no shell; the body on stdin; cwd = the agent repo root; env = HOME/USER/LOGNAME/PATH/LANG/LC_*/TMPDIR/TZ only — never a Prism secret, never `PROTON_SEND_ALLOW_EXTERNAL`. `--allow-external` is passed when a recipient is not the owner, but third-party mail still needs `PROTON_SEND_ALLOW_EXTERNAL=1` in the AGENT repo's `.env` — the recipient policy stays in `proton_send.py`. A reply sends exactly the recipients shown on the card (`expectTo`); the note supplies the subject and threading headers. The child also gets a one-time send grant for this approval and these exact bytes (below); without it `proton_send.py` refuses. Outcome: exit 0 → `sent` (+ `messageId`); a refusal `proton_send.py` raises before it opens the SMTP socket (markdown, recipient guard, send grant, Bridge unreachable / pin / login) → `failed`; a refused SMTP exchange, a timeout or a signal → `unknown`. Tests: `test/omni-proton-send.test.ts` (fake spawner). Later: port the two guards into live actions and switch `OMNI_EMAIL_EXECUTOR`.
+
+### One-time send grants (the "one door", 2026-10-15)
+
+Owner requirement: nothing is sent to another person unless he approved that EXACT
+message from a signed-in device. Prism's in-process senders (`/api/actions/*`) already
+require a human-origin credential. The agent repo's send scripts (`proton_send.py`,
+`omni_tweet_send.py`, `twitter_post.py`, `matrix_reader.py send|send-to`) are separate
+processes anyone on the Mini could start, so they now refuse to send unless they hold a
+ONE-TIME SEND GRANT that this server minted (`src/omni/send-grant.ts`). Only the email
+and tweet executors mint grants. Approved chat `message`s are sent by Prism itself
+(`/api/actions/matrix/send`, in process), so `matrix_reader.py send|send-to` is never
+given a grant and always refuses:
+
+- Minted only by the email/tweet executors, only after `claimApproval` atomically claimed a
+  pending, unexpired, digest-matched approval on a human-origin decision.
+- Handed to the child on an inherited pipe (fd 3; the env carries only `PRISM_SEND_GRANT_FD=3`
+  and `PRISM_SEND_GRANT_APPROVAL`), never argv or the environment (`ps eww` shows those);
+  stored here only as a SHA-256 hash; in memory (a restart revokes all).
+- Lives ≤ 60 s; single use (consumed on first presentation, whatever the verdict); revoked
+  as soon as the child exits.
+- Bound to (approval id, send digest). The send digest is a length-prefixed SHA-256 over
+  exactly the fields the script will put on the wire (email: to, cc, subject,
+  reply_to_note, in_reply_to, references, body; tweet: text; message: room_id, body),
+  computed independently by the script from its own argv/stdin
+  (`scripts/send_grant.py`, golden vectors shared by both test suites).
+- Verified by `POST /api/omni/approvals/:id/send-grant/verify {token, digest}` — loopback
+  only (`isLocalRequest`), no session or service token (the grant is the credential); the
+  approval must still be `approved` (claimed, unfinished). 200 `{ok:true}` = send once;
+  anything else = 403 and the script exits with "Sends must be approved in Omni" (→ `failed`).
+  Every presentation of a real grant is in `omni_audit` (`approval.grant`); unknown tokens
+  are not audited, and the route is rate-limited (60/min) since it is unauthenticated.
+- A reply's subject and threading headers (`subject`, `inReplyTo`, `references`) are resolved
+  from the stored email note when the reply is PROPOSED (or edited), stored in the payload,
+  shown on the card, passed to `proton_send.py` explicitly and covered by the digest; a note
+  edited after approval changes nothing. A reply whose note cannot be threaded is refused
+  (400). Replies proposed before this change lack these fields and are refused at send
+  (`invalid_payload`): propose them again.
+- **Approving needs the device.** `decision: send` and edits (`PUT /approvals/:id`) require the
+  owner's DEVICE token (`via: device`, stored hashed) — a browser session gets
+  `403 device_required` — so a process that lifts a session cookie cannot approve its own
+  draft. Cancel/revise stay open to a session. The same rule applies to the live actions
+  that reach other people (`/api/actions/email/send|reply`, `calendar/rsvp|create|update|delete`,
+  human `matrix/send`): the browser PWA can no longer send on a session alone. Session ids are
+  stored as SHA-256 (`h:<hex>`); a legacy plaintext row is rewritten on its first use.
+
+Tests: `test/omni-send-grant.test.ts`, `test/omni-one-door-review.test.ts` (incl. the
+argv/digest vectors in `test/fixtures/send-grant-vectors.json`, replayed by the agent repo's
+Python tests against the real `proton_send.py` parser).
 
 ## Change channel and push
 
@@ -658,3 +706,60 @@ visibly. Configuration, limits and the trusted local-admin filesystem boundary a
 remain rollout checks; no installed skill was modified during implementation.
 
 Reviewed M3 schedules can expose Run, Resume and name/schedule editing when `OMNI_REVIEWED_JOB_SCRIPTS_DIR` points to the local Hermes scripts directory. The server rechecks the three known wrapper basenames and SHA-256 bytes at every operation; symlinks, changed wrappers, monitors and nonlocal delivery fail closed. Prompt, script and delivery remain immutable. The six unrelated legacy script jobs remain read-only apart from Pause/Delete. Capabilities returned by `/jobs` drive the native controls; a successful Run receipt indicates background dispatch, not successful completion. Local filesystem administrators are trusted; this pinning is not an OS sandbox against concurrent privileged filesystem replacement.
+
+## New devices need an existing device (one door, 2026-10-15 — review R2-1)
+
+A magic link can be read by anything that reads the owner's mailbox, so a browser session
+alone no longer signs a NEW device in once the owner already has one:
+
+- **Bootstrap** (the owner has zero live device tokens, or Omni is off): consent works as
+  before.
+- **Otherwise** pressing Approve on the consent page parks the request and shows "Approve this
+  sign-in on a device you already use" (the page polls `/auth/device/wait`). Prism creates a
+  `device-sign-in` approval (payload: `clientId`, the client's CLAIMED `label`, `redirectUri`,
+  `requestedAt`, coarse `ipHint` / `userAgentHint`) in the Omni app's Needs you. Approving it
+  needs a `pd_` device credential and the exact digest, like any approval; it cannot be edited
+  or proposed through the hook. Approve → the waiting browser gets its code; Deny or 10
+  minutes → `access_denied`. Code: `src/auth/device-confirm.ts`, `routes/device.ts`.
+- **Revocation by session is refused** (`DELETE /auth/devices/:id`, `POST /auth/device/revoke`
+  by id → 403 `device_required`), so a stolen session cannot empty the account to reopen
+  bootstrap. Revoke from a device; revoking with the token itself (RFC 7009) still works. If
+  every device is lost, wait for the idle expiry or revoke on the Mini directly.
+- Session ids are stored hashed; plaintext rows are rehashed at startup.
+- Prism sign-in mail (from `MAGIC_FROM` with a sign-in subject, or carrying an
+  `/auth/callback|device …token|code=` link) is never ingested into the vault.
+
+### Round 3 (review C1, I1, M1, M2, M5)
+- **Bootstrap** (consent without an existing device's approval) is open only when the account
+  has NEVER had a device, or its last device stopped being live (revoked or expired) more than
+  **24 h** ago and not through a session-triggered action (`device_account_history`:
+  `first_device_at`, `last_live_until`, `last_end_via`; `db.deviceBootstrapOpen`). With Omni
+  off and bootstrap closed, a new sign-in is refused (there is no device to approve from).
+- **Sessions cannot empty the account:** `/auth/set-password` refuses once a password exists
+  (409 `password_exists`; change it with the current one), a password change made with a
+  session revokes no device (`revokedDevices: 0`), and per-device revocation is device-only.
+  The PWA hides Revoke for browser sessions and explains why.
+- **Matching code:** the waiting page and the Omni card show the same 6-digit code (HMAC of
+  the parked request id); approve only if they match. Only ONE device sign-in may wait at a
+  time (a second gets a 403 page). The client-IP hint is believed only when the request came
+  for the tunnel's public host; otherwise "this Mac or the local network". Hints are claims.
+- The approval never outlives the parked request; denying it also needs a device.
+
+### Round 4 (review R4)
+- **Invites never replace a password (I-a):** `/auth/invite` refuses the owner's own address and
+  any account that already has a password (409 `account_exists`); `/auth/register` refuses (409,
+  before the invite is consumed — nothing changes) when the account already has a password.
+- **Approval lifetime (M-a):** the approval expires at min(10 min, the parked request's expiry);
+  a request with under a minute left is not parked (start again).
+- **Location hints are claims (M-b):** the card reads "reported from … (unverified)". Any local
+  process can forge both the client-IP header and Host, so the hint is never evidence; the
+  matching code and the one-at-a-time rule are the check.
+- **One at a time (M-c):** while a sign-in waits, a new one gets "Another sign-in is already
+  waiting for approval — the waiting request is NOT this one. Deny it in Omni, then try again."
+  No replacement (an attacker could displace the owner's own request). **Known limit:** whoever
+  can park requests (a lifted session) can keep re-parking after each denial — a repeatable
+  denial of new sign-ins, never a sign-in. Revoke the session (sign out everywhere) to end it.
+- **What starts the 24 h clock (M-d):** only a device-credential revocation or a natural expiry.
+  A used-code replay (`via: replay`) or a token-possession revoke (`via: token`) never does — the
+  account then stays closed to bootstrap until a device is signed in through approval (or the
+  operator intervenes on the Mini).

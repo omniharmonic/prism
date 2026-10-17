@@ -253,6 +253,15 @@ public struct ApprovalKind: RawRepresentable, Codable, Hashable, Sendable {
     /// (a shell command that would reach the network, a write outside the workspace, a
     /// scheduled job…). "Send" on it means "Approve once"; the turn then runs exactly it.
     public static let command = ApprovalKind(rawValue: "command")
+    /// Not a draft either: a NEW device asked to sign in as the owner while he already has a
+    /// signed-in device. Payload `{clientId, label, redirectUri, requestedAt, matchCode?,
+    /// ipHint?, userAgentHint?}` — `label` is the name the new device gave ITSELF (a claim, not
+    /// a fact); `matchCode` ("482 913") is also shown on the sign-in page, and the owner
+    /// approves only if the two match; `ipHint` is "this Mac or the local network" unless the
+    /// request came through the tunnel. "Send" on it means "Approve this sign-in"; "cancel"
+    /// denies it. Never editable. The payload stays generic JSON, so a missing or unknown key
+    /// never breaks decoding.
+    public static let deviceSignIn = ApprovalKind(rawValue: "device-sign-in")
 }
 
 /// `pending → approved (claimed) → sent | failed | unknown`, or `expired`, `cancelled`,
@@ -287,7 +296,8 @@ public struct Approval: Codable, Sendable, Equatable, Identifiable {
     /// Per kind — email `{to, cc?, subject, body}`; email-reply `{noteId, expectTo, cc?,
     /// body}`; message `{roomId, body}`; calendar-invite `{title, start, end, attendees?,
     /// location?, description?}`; tweet `{text}`; wallet-proposal `{to, amount, token?,
-    /// chain, purpose}`; command `{tool, command?, cwd?, input?, reason, rule, title?, origin?}`.
+    /// chain, purpose}`; command `{tool, command?, cwd?, input?, reason, rule, title?, origin?}`;
+    /// device-sign-in `{clientId, label, redirectUri, requestedAt, ipHint?, userAgentHint?}`.
     public let payload: JSONValue
     /// The server's digest of `{kind, payload}`; echoed back on a decision.
     public let digest: String

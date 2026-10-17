@@ -29,10 +29,13 @@ import { config } from "../config";
 import { newId } from "./store";
 import { omniConfig } from "./config";
 import { rsvpArgs } from "../actions/calendar";
+import { buildReply } from "../actions/email";
 import { protonSendConfigured } from "./proton-send";
 import { tweetSendConfigured } from "./tweet-send";
 
-export const APPROVAL_KINDS = ["email", "email-reply", "message", "calendar-rsvp", "calendar-invite", "tweet", "wallet-proposal", "command"] as const;
+export const APPROVAL_KINDS = ["email", "email-reply", "message", "calendar-rsvp", "calendar-invite", "tweet", "wallet-proposal", "command", "device-sign-in"] as const;
+/** Kinds only Prism itself creates (never proposable through the hook, never editable). */
+export const SERVER_ONLY_KINDS: readonly string[] = ["device-sign-in"];
 export type ApprovalKind = (typeof APPROVAL_KINDS)[number];
 export type ApprovalStatus = "pending" | "approved" | "sent" | "failed" | "unknown" | "expired" | "cancelled" | "revised";
 
@@ -91,6 +94,9 @@ export function validatePayload(kind: unknown, raw: unknown): { kind: ApprovalKi
       payload = pick({ to: strList(b.to, "to", 20, true), cc: strList(b.cc, "cc", 20), subject: str(b.subject, "subject", 998), body: str(b.body, "body", 200_000) });
       break;
     case "email-reply":
+      // subject / inReplyTo / references are NOT taken from the proposer: Prism resolves them
+      // from the note (applyReplyContext) before storing, so the card shows them and the
+      // send is bound to them.
       payload = pick({ noteId: str(b.noteId, "noteId", 200), expectTo: strList(b.expectTo, "expectTo", 20, true), cc: strList(b.cc, "cc", 20), body: str(b.body, "body", 200_000) });
       break;
     case "message":
@@ -123,6 +129,20 @@ export function validatePayload(kind: unknown, raw: unknown): { kind: ApprovalKi
         purpose: str(b.purpose, "purpose", 1000),
       });
       break;
+    case "device-sign-in":
+      // A new app asking to sign in as the owner while he already has a device (review
+      // R2-1). Created by Prism's device-authorization route, never by a proposer. The
+      // label is the CLIENT's claim; the redirect target is server-validated.
+      payload = pick({
+        clientId: str(b.clientId, "clientId", 100),
+        label: str(b.label, "label", 200),
+        redirectUri: str(b.redirectUri, "redirectUri", 2000),
+        requestedAt: str(b.requestedAt, "requestedAt", 64),
+        matchCode: str(b.matchCode, "matchCode", 16),
+        ipHint: str(b.ipHint, "ipHint", 64, false),
+        userAgentHint: str(b.userAgentHint, "userAgentHint", 200, false),
+      });
+      break;
     case "command": {
       // One paused tool call, exactly as it would run. A shell command carries `command`
       // (+ where); any other tool its whole `input`. Neither is ever shortened: what is
@@ -149,6 +169,23 @@ export function validatePayload(kind: unknown, raw: unknown): { kind: ApprovalKi
   }
   if (Buffer.byteLength(JSON.stringify(payload), "utf8") > MAX_PAYLOAD_BYTES) throw new ApprovalInputError("payload: too large");
   return { kind: kind as ApprovalKind, payload };
+}
+
+/**
+ * One door (review S6): a reply's subject and threading headers are fixed when it is
+ * PROPOSED, from the stored email note, and become part of the payload (shown on the card,
+ * covered by the digest, passed to the sender explicitly). Editing the note after approval
+ * cannot change what is sent. Throws ApprovalInputError when the note cannot be threaded.
+ */
+export function applyReplyContext(payload: Record<string, unknown>, note: { tags?: string[] | null; metadata?: Record<string, unknown> | null } | null, self: string): Record<string, unknown> {
+  if (!note || !(note.tags ?? []).includes("email") || typeof note.metadata?.messageId !== "string") throw new ApprovalInputError("noteId: not a stored email message this reply can thread to");
+  let r;
+  try {
+    r = buildReply(note.metadata as Parameters<typeof buildReply>[0], self);
+  } catch {
+    throw new ApprovalInputError("noteId: the stored message cannot be replied to (no usable Message-ID or address)");
+  }
+  return { ...payload, subject: r.subject, inReplyTo: r.inReplyTo, references: r.references.join(" ") };
 }
 
 export interface Approval {
@@ -266,7 +303,7 @@ export function executorFor(kind: ApprovalKind): { name: string; available: bool
   const e = executorOf(kind);
   // OMNI_EXECUTORS=off wins over every family flag: nothing Omni proposes can be sent. A
   // `command` is not a send (Hermes runs its own paused call); it has its own switch.
-  return kind !== "command" && (omniConfig.executorsOff() || !omniConfig.executorKindAllowed(kind)) ? { ...e, enabled: false } : e;
+  return kind !== "command" && kind !== "device-sign-in" && (omniConfig.executorsOff() || !omniConfig.executorKindAllowed(kind)) ? { ...e, enabled: false } : e;
 }
 function executorOf(kind: ApprovalKind): { name: string; available: boolean; enabled: boolean } {
   switch (kind) {
@@ -282,6 +319,9 @@ function executorOf(kind: ApprovalKind): { name: string; available: boolean; ena
     case "calendar-rsvp":
     case "calendar-invite":
       return { name: "prism-live-actions:calendar", available: true, enabled: config.actionsCalendarEnabled };
+    case "device-sign-in":
+      // Not a send: approving lets the parked sign-in request finish (routes/device.ts).
+      return { name: "device-sign-in", available: true, enabled: true };
     case "tweet":
       return { name: "approved-tweet", available: true, enabled: tweetSendConfigured() };
     case "message":

@@ -294,3 +294,60 @@ fetch `TypeError`): serve the last good response, else fail as before. The key i
 server + vault + workspace + capability-link + path. Bounded LRU: 300 entries / 64 MB,
 a body over 16 MB is not cached. Cleared on sign-out, when a native session ends, and when the signed-in
 email changes. The write outbox (`offline/outbox.ts`) is independent and works in both modes.
+
+## New devices need an existing device (one door, 2026-10-15 — review R2-1)
+
+A magic link can be read by anything that reads the owner's mailbox, so a browser session
+alone no longer signs a NEW device in once the owner already has one:
+
+- **Bootstrap** (the owner has zero live device tokens, or Omni is off): consent works as
+  before.
+- **Otherwise** pressing Approve on the consent page parks the request and shows "Approve this
+  sign-in on a device you already use" (the page polls `/auth/device/wait`). Prism creates a
+  `device-sign-in` approval (payload: `clientId`, the client's CLAIMED `label`, `redirectUri`,
+  `requestedAt`, coarse `ipHint` / `userAgentHint`) in the Omni app's Needs you. Approving it
+  needs a `pd_` device credential and the exact digest, like any approval; it cannot be edited
+  or proposed through the hook. Approve → the waiting browser gets its code; Deny or 10
+  minutes → `access_denied`. Code: `src/auth/device-confirm.ts`, `routes/device.ts`.
+- **Revocation by session is refused** (`DELETE /auth/devices/:id`, `POST /auth/device/revoke`
+  by id → 403 `device_required`), so a stolen session cannot empty the account to reopen
+  bootstrap. Revoke from a device; revoking with the token itself (RFC 7009) still works. If
+  every device is lost, wait for the idle expiry or revoke on the Mini directly.
+- Session ids are stored hashed; plaintext rows are rehashed at startup.
+- Prism sign-in mail (from `MAGIC_FROM` with a sign-in subject, or carrying an
+  `/auth/callback|device …token|code=` link) is never ingested into the vault.
+
+### Round 3 (review C1, I1, M1, M2, M5)
+- **Bootstrap** (consent without an existing device's approval) is open only when the account
+  has NEVER had a device, or its last device stopped being live (revoked or expired) more than
+  **24 h** ago and not through a session-triggered action (`device_account_history`:
+  `first_device_at`, `last_live_until`, `last_end_via`; `db.deviceBootstrapOpen`). With Omni
+  off and bootstrap closed, a new sign-in is refused (there is no device to approve from).
+- **Sessions cannot empty the account:** `/auth/set-password` refuses once a password exists
+  (409 `password_exists`; change it with the current one), a password change made with a
+  session revokes no device (`revokedDevices: 0`), and per-device revocation is device-only.
+  The PWA hides Revoke for browser sessions and explains why.
+- **Matching code:** the waiting page and the Omni card show the same 6-digit code (HMAC of
+  the parked request id); approve only if they match. Only ONE device sign-in may wait at a
+  time (a second gets a 403 page). The client-IP hint is believed only when the request came
+  for the tunnel's public host; otherwise "this Mac or the local network". Hints are claims.
+- The approval never outlives the parked request; denying it also needs a device.
+
+### Round 4 (review R4)
+- **Invites never replace a password (I-a):** `/auth/invite` refuses the owner's own address and
+  any account that already has a password (409 `account_exists`); `/auth/register` refuses (409,
+  before the invite is consumed — nothing changes) when the account already has a password.
+- **Approval lifetime (M-a):** the approval expires at min(10 min, the parked request's expiry);
+  a request with under a minute left is not parked (start again).
+- **Location hints are claims (M-b):** the card reads "reported from … (unverified)". Any local
+  process can forge both the client-IP header and Host, so the hint is never evidence; the
+  matching code and the one-at-a-time rule are the check.
+- **One at a time (M-c):** while a sign-in waits, a new one gets "Another sign-in is already
+  waiting for approval — the waiting request is NOT this one. Deny it in Omni, then try again."
+  No replacement (an attacker could displace the owner's own request). **Known limit:** whoever
+  can park requests (a lifted session) can keep re-parking after each denial — a repeatable
+  denial of new sign-ins, never a sign-in. Revoke the session (sign out everywhere) to end it.
+- **What starts the 24 h clock (M-d):** only a device-credential revocation or a natural expiry.
+  A used-code replay (`via: replay`) or a token-possession revoke (`via: token`) never does — the
+  account then stays closed to bootstrap until a device is signed in through approval (or the
+  operator intervenes on the Mini).

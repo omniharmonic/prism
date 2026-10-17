@@ -16,7 +16,10 @@
  *    They can PROPOSE and announce; they can never decide or execute anything.
  *  - Approval decisions additionally need a HUMAN origin (session/device; a client's
  *    `X-Prism-Action-Origin: agent` downgrade is honoured), the digest the person saw and
- *    an `Idempotency-Key`; execution goes only through Prism's live-action routes.
+ *    an `Idempotency-Key`; execution goes only through Prism's live-action routes or the
+ *    agent repo's send scripts, which can send only with a one-time grant (send-grant.ts).
+ *  - `POST /approvals/:id/send-grant/verify` (a send script proving it was launched by an
+ *    executor): loopback only; the grant in the body is the whole credential.
  */
 import { apnsApplicationForDevice, apnsEnabled, isApnsToken, isApnsEnvironment, isNotificationPreview, saveApnsToken, removeApnsTokenForDevice } from "../apns";
 import { proactiveIntake, acknowledgeProactiveIntake } from "../omni/proactive-intake";
@@ -59,7 +62,9 @@ import { bareToolName } from "../omni/stream";
 import { publishNotice, pushOmni, subscribeNotices, subscribeThread, type ThreadMessage } from "../omni/bus";
 import {
   APPROVAL_KINDS,
+  SERVER_ONLY_KINDS,
   ApprovalInputError,
+  applyReplyContext,
   approvalView,
   claimApproval,
   closeApproval,
@@ -81,6 +86,9 @@ import {
 import { buildToday, buildTasksPage, localDate, validDate, type Dispatch } from "../omni/today";
 import { runProtonSend } from "../omni/proton-send";
 import { runTweetSend } from "../omni/tweet-send";
+import { consumeSendGrant } from "../omni/send-grant";
+import { vaultClient, VaultError } from "../parachute";
+import { resolveVaultEntry } from "../db";
 
 import { DIALS, type InterruptContext } from "../omni/nudge-policy";
 import { priorNudgeSources, resolveNudgeSource, nudgeWeeklyAudit, latestNudgeAudit, FRESHNESS_SUBSYSTEMS, NUDGE_KINDS, upsertNudge, listNudges, getNudge, nudgeAction, nudgeSettings, setNudgeSettings, bindNudgeThread, type Candidate } from "../omni/nudges";
@@ -154,8 +162,8 @@ const liveActionExecutor: Executor = async ({ kind, payload, approvalId, headers
 /** Approved emails go to proton_send.py unless OMNI_EMAIL_EXECUTOR=live-actions (option B). */
 const defaultExecutor: Executor = (o) =>
   (o.kind === "email" || o.kind === "email-reply") && omniConfig.emailExecutor() === "proton-send"
-    ? runProtonSend(o.kind, o.payload)
-    : o.kind === "tweet" ? runTweetSend(o.payload) : liveActionExecutor(o);
+    ? runProtonSend(o.kind, o.payload, o.approvalId)
+    : o.kind === "tweet" ? runTweetSend(o.payload, o.approvalId) : liveActionExecutor(o);
 let executor: Executor = defaultExecutor;
 export function setOmniExecutorForTests(e: Executor | null): void {
   executor = e ?? defaultExecutor;
@@ -179,9 +187,17 @@ const hookAuthorized = (c: Context): boolean => {
   return a.length === b.length && timingSafeEqual(a, b);
 };
 
+/** The one route a SEND SCRIPT calls (send-grant.ts): loopback only; the one-time grant
+ *  in the body is its whole credential. It can only consume a grant an executor minted. */
+const GRANT_VERIFY_PATH = /^(\/api\/omni)?\/approvals\/[^/]+\/send-grant\/verify$/;
+
 omniApi.use("*", async (c, next) => {
   if (c.req.path.startsWith("/api/omni/hooks/") || c.req.path.startsWith("/hooks/")) {
     if (!hookAuthorized(c)) return c.json({ error: "forbidden" }, 403);
+    return next();
+  }
+  if (GRANT_VERIFY_PATH.test(c.req.path)) {
+    if (c.req.method !== "POST" || !isLocalRequest((k) => c.req.header(k))) return c.json({ error: "forbidden" }, 403);
     return next();
   }
   const via = requestVia(c);
@@ -230,6 +246,18 @@ async function jsonBody(c: Context): Promise<Record<string, unknown> | null> {
   }
 }
 const bad = (c: Context, detail: string) => c.json({ error: "bad_request", detail }, 400);
+
+/** An email-reply draft gets its subject + threading from the PRIMARY vault's note now. */
+async function withReplyContext(kind: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (kind !== "email-reply") return payload;
+  let note: { tags?: string[] | null; metadata?: Record<string, unknown> | null } | null = null;
+  try {
+    note = (await vaultClient(resolveVaultEntry(undefined).id).getNote(String(payload.noteId))) as unknown as typeof note;
+  } catch (e) {
+    if (!(e instanceof VaultError && e.status === 404)) throw new ApprovalInputError("noteId: the email note could not be read right now; try again");
+  }
+  return applyReplyContext(payload, note, omniConfig.ownerEmail());
+}
 function hermesFailure(c: Context, e: unknown): Response {
   if (e instanceof HermesError) return c.json({ error: e.code }, e.status as 400);
   console.error(`[omni] ${(e as Error)?.message}`);
@@ -675,6 +703,8 @@ omniApi.put("/approvals/:id", async (c) => {
   const owner = omniConfig.ownerEmail();
   const o = humanOrigin(c);
   if (!o.human) return c.json({ error: "human_origin_required" }, 403);
+  // An edit becomes the draft that is sent: the same device rule as a send.
+  if (o.via !== "device") return c.json({ error: "device_required", detail: "edit and approve sends in the Omni app on a signed-in device" }, 403);
   const b = await jsonBody(c);
   if (!b) return bad(c, "a JSON object body is required");
   expireApprovals();
@@ -686,9 +716,11 @@ omniApi.put("/approvals/:id", async (c) => {
   if (seen !== a.digest) return c.json({ error: "digest_mismatch", detail: "the draft changed since it was shown" }, 409);
   // A paused tool call is approved as written or not at all: Hermes is holding that exact call.
   if (a.kind === "command") return bad(c, "a command cannot be edited: deny it and ask for another");
+  if (SERVER_ONLY_KINDS.includes(a.kind)) return bad(c, "a sign-in request cannot be edited: approve or deny it");
   let v;
   try {
     v = validatePayload(a.kind, b.payload);
+    v = { kind: v.kind, payload: await withReplyContext(v.kind, v.payload) };
   } catch (e) {
     if (e instanceof ApprovalInputError) return bad(c, e.message);
     throw e;
@@ -714,6 +746,15 @@ async function decide(c: Context): Promise<Response> {
   if (!b) return bad(c, "a JSON object body is required");
   const decision = b.decision === "approve" ? "send" : b.decision === "reject" ? "cancel" : b.decision;
   if (decision !== "send" && decision !== "cancel" && decision !== "revise") return bad(c, "decision: send|cancel|revise");
+  // One door (2026-10-15): approving a send needs the owner's DEVICE token (hashed at rest,
+  // bound to the Omni app), not a browser session cookie an agent on the host could replay.
+  // Cancelling or asking for a revision sends nothing and stays open to a session.
+  // A sign-in request is decided only from a device either way (review M2): a session must
+  // not be able to deny the owner's real sign-in, or approve a fake one.
+  if ((decision === "send" || getApproval(owner, id)?.kind === "device-sign-in") && o.via !== "device") {
+    omniAudit({ actor: owner, via: o.via, action: "approval.decide", approvalId: id, status: "refused", error: "device_required" });
+    return c.json({ error: "device_required", detail: "approve sends in the Omni app on a signed-in device" }, 403);
+  }
   const digest = typeof b.digest === "string" ? b.digest : b.payloadHash;
   if (typeof digest !== "string" || !DIGEST_RE.test(digest)) return bad(c, "digest: the 64-hex digest of the draft shown");
   expireApprovals();
@@ -759,6 +800,14 @@ async function decide(c: Context): Promise<Response> {
   }
   if (!claimApproval(id, digest, o.via, o.device, key)) return c.json({ error: "already_decided" }, 409);
   omniAudit({ actor: owner, via: o.via, action: "approval.approve", approvalId: id, threadId: a.threadId, digest, status: "ok" });
+  if (a.kind === "device-sign-in") {
+    // Nothing is sent: the parked sign-in request (routes/device.ts) sees `sent` on its next
+    // poll and finishes the code exchange for exactly the client and redirect shown.
+    finishApproval(id, "sent", { executor: "device-sign-in" });
+    const doneA = getApproval(owner, id)!;
+    publishNotice({ type: "approval", id, op: "sent" });
+    return c.json({ approval: approvalView(doneA) });
+  }
   if (a.kind === "command") {
     // Nothing is executed here. The approval is now `approved`; the plugin that paused the
     // call sees it on its next poll, lets that exact call run, and reports how it ended.
@@ -789,6 +838,32 @@ async function decide(c: Context): Promise<Response> {
 }
 omniApi.post("/approvals/:id/decision", decide);
 omniApi.post("/approvals/:id/decide", decide);
+
+/**
+ * A send script, launched by an executor above, proves it was: it presents the one-time
+ * grant it was handed and the digest of exactly what it is about to send. The grant is
+ * consumed whatever the verdict. 200 = go ahead (once); anything else = do not send.
+ */
+omniApi.post("/approvals/:id/send-grant/verify", async (c) => {
+  // Unauthenticated (the grant is the credential), so bounded: a flood is refused, and
+  // only presentations of a REAL grant are audited (an unknown token proves nothing and
+  // must not be able to fill the audit table).
+  const id = c.req.param("id") ?? "";
+  // Per approval (a flood against one id cannot starve another approval's real send),
+  // plus a generous global ceiling.
+  const retry = consumeRateLimit(`omni-send-grant-verify:${id.slice(0, 100)}`, 20, 60_000) ?? consumeRateLimit("omni-send-grant-verify", 600, 60_000);
+  if (retry !== null) {
+    c.header("Retry-After", String(retry));
+    return c.json({ ok: false, error: "rate_limited" }, 429);
+  }
+  const b = await jsonBody(c);
+  if (!b) return bad(c, "a JSON object body is required");
+  const owner = omniConfig.ownerEmail();
+  const v = consumeSendGrant(id, b.token, b.digest, (aid) => getApproval(owner, aid)?.status ?? null);
+  if (v.ok || v.error !== "invalid_grant")
+    omniAudit({ actor: "send-script", via: "send-grant", action: "approval.grant", approvalId: id, digest: typeof b.digest === "string" ? b.digest : null, status: v.ok ? "ok" : "refused", error: v.ok ? null : v.error });
+  return v.ok ? c.json({ ok: true, approvalId: id }) : c.json({ ok: false, error: v.error }, 403);
+});
 
 // ── jobs (Hermes cron) ──────────────────────────────────────────────────────
 
@@ -974,9 +1049,11 @@ omniApi.post("/hooks/propose", async (c) => {
     if (typeof b.threadId !== "string" || !SESSION_ID_RE.test(b.threadId)) return bad(c, "threadId: a thread (Hermes session) id");
     threadId = b.threadId;
   }
+  if (typeof b.kind === "string" && SERVER_ONLY_KINDS.includes(b.kind)) return bad(c, `kind: ${b.kind} is created by Prism itself`);
   let v;
   try {
     v = validatePayload(b.kind, b.payload);
+    v = { kind: v.kind, payload: await withReplyContext(v.kind, v.payload) };
   } catch (e) {
     if (e instanceof ApprovalInputError) return bad(c, e.message);
     throw e;

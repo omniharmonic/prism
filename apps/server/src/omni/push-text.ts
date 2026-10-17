@@ -108,6 +108,8 @@ export function approvalHeadline(a: Pick<Approval, "kind" | "payload">): string 
     }
     case "message":
       return h("Message draft is ready");
+    case "device-sign-in":
+      return h("A new device wants to sign in");
     case "calendar-rsvp":
       return h(s(p.response) ? `RSVP (${s(p.response)}) ready to send` : "RSVP ready to send");
     case "calendar-invite":

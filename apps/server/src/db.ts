@@ -5,7 +5,7 @@
  */
 import Database from "better-sqlite3";
 import { notifyAccessChanged } from "./access-events";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync } from "node:fs";
 import { config, vaultRegistry, type VaultEntry } from "./config";
 import { isCap, levelForCaps, type Cap, type Level } from "./permissions";
@@ -417,6 +417,14 @@ db.exec(`
     revoked_at     INTEGER
   );
   CREATE INDEX IF NOT EXISTS device_tokens_email ON device_tokens(email);
+  -- One door (review C1): per account, whether it EVER had a device and until when one was
+  -- last live, so "no live device right now" cannot by itself reopen first-device sign-in.
+  CREATE TABLE IF NOT EXISTS device_account_history (
+    email            TEXT PRIMARY KEY,
+    first_device_at  INTEGER NOT NULL,
+    last_live_until  INTEGER NOT NULL,
+    last_end_via     TEXT
+  );
 
   -- Short-lived, single-use authorization codes (PKCE S256 only).
   CREATE TABLE IF NOT EXISTS device_auth_codes (
@@ -1368,26 +1376,64 @@ export interface Session {
 const now = () => Date.now();
 
 // ---- sessions ----
+// The cookie value is a bearer secret, so the table stores only its SHA-256
+// (`h:<hex>`): a process that can read this database file cannot replay a
+// signed-in session (one door, 2026-10-15 — an agent reading prism-server.db
+// must not be able to decide approvals). Rows written before this change hold the
+// raw id; the first read of such a session rewrites it to the hashed form, so
+// existing sign-ins keep working and the plaintext disappears as they are used.
+const sessionKey = (id: string): string => "h:" + createHash("sha256").update(id, "utf8").digest("hex");
 const insertSession = db.prepare(
   "INSERT INTO sessions (id, email, created_at, expires_at) VALUES (?, ?, ?, ?)",
 );
 const selectSession = db.prepare("SELECT * FROM sessions WHERE id = ?");
 const deleteSession = db.prepare("DELETE FROM sessions WHERE id = ?");
+const rehashSession = db.prepare("UPDATE OR IGNORE sessions SET id = ? WHERE id = ?");
+
+/**
+ * Rewrite every legacy plaintext session row to its hashed key (review R2-1: not only on
+ * next use — a dormant row is still a replayable cookie for whoever reads this file).
+ * Idempotent; runs once when this module loads.
+ */
+export function rehashLegacySessions(): number {
+  const rows = db.prepare("SELECT id FROM sessions WHERE id NOT LIKE 'h:%'").all() as Array<{ id: string }>;
+  const tx = db.transaction(() => {
+    for (const r of rows) {
+      rehashSession.run(sessionKey(r.id), r.id);
+      deleteSession.run(r.id); // a duplicate the UPDATE OR IGNORE skipped
+    }
+  });
+  tx();
+  return rows.length;
+}
+rehashLegacySessions();
 
 export function createSession(id: string, email: string, ttlMs: number): void {
-  insertSession.run(id, email, now(), now() + ttlMs);
+  insertSession.run(sessionKey(id), email, now(), now() + ttlMs);
 }
 export function getSession(id: string): Session | null {
-  const s = selectSession.get(id) as Session | undefined;
+  const key = sessionKey(id);
+  let s = selectSession.get(key) as Session | undefined;
+  if (!s && !id.startsWith("h:")) {
+    // Legacy plaintext row: migrate it on first use.
+    const legacy = selectSession.get(id) as Session | undefined;
+    if (legacy) {
+      rehashSession.run(key, id);
+      deleteSession.run(id);
+      s = { ...legacy, id: key };
+    }
+  }
   if (!s) return null;
   if (s.expires_at < now()) {
-    deleteSession.run(id);
+    deleteSession.run(key);
     return null;
   }
   return s;
 }
 export function destroySession(id: string): void {
-  if (deleteSession.run(id).changes) notifyAccessChanged();
+  const a = deleteSession.run(sessionKey(id)).changes;
+  const b = id.startsWith("h:") ? 0 : deleteSession.run(id).changes;
+  if (a || b) notifyAccessChanged();
 }
 
 // ---- device tokens (WP2.1 native sign-in; see auth/device.ts) ----
@@ -1431,6 +1477,10 @@ export function insertDeviceToken(r: Omit<DeviceTokenRow, "last_seen_at" | "revo
     `INSERT INTO device_tokens (id, token_hash, email, label, client_id, created_at, last_seen_at, expires_at, max_expires_at, revoked_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
   ).run(r.id, r.token_hash, r.email, r.label, r.client_id, r.created_at, r.created_at, r.expires_at, r.max_expires_at);
+  db.prepare(
+    `INSERT INTO device_account_history (email, first_device_at, last_live_until, last_end_via) VALUES (?, ?, ?, NULL)
+     ON CONFLICT(email) DO UPDATE SET last_end_via = NULL`,
+  ).run(r.email, r.created_at, r.created_at);
 }
 export function getDeviceTokenByHash(hash: string): DeviceTokenRow | null {
   return (db.prepare("SELECT * FROM device_tokens WHERE token_hash = ?").get(hash) as DeviceTokenRow | undefined) ?? null;
@@ -1441,10 +1491,38 @@ export function getDeviceToken(id: string): DeviceTokenRow | null {
 export function touchDeviceToken(id: string, lastSeen: number, expiresAt: number): void {
   db.prepare("UPDATE device_tokens SET last_seen_at = ?, expires_at = ? WHERE id = ? AND revoked_at IS NULL").run(lastSeen, expiresAt, id);
 }
-export function revokeDeviceTokenRow(id: string): boolean {
-  const changed = db.prepare("UPDATE device_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL").run(now(), id).changes > 0;
-  if (changed) notifyAccessChanged();
+export function revokeDeviceTokenRow(id: string, via: string = "device"): boolean {
+  const t = now();
+  const changed = db.prepare("UPDATE device_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL").run(t, id).changes > 0;
+  if (changed) {
+    const row = getDeviceToken(id);
+    if (row) db.prepare("UPDATE device_account_history SET last_end_via = ?, last_live_until = MAX(last_live_until, ?) WHERE email = ?").run(via, t, row.email);
+    notifyAccessChanged();
+  }
   return changed;
+}
+
+/** 24 h after the last device stopped being live, first-device sign-in may reopen. */
+export const DEVICE_BOOTSTRAP_COOLDOWN_MS = 24 * 60 * 60_000;
+/**
+ * May this account sign a device in WITHOUT an existing device's approval (review C1)?
+ * Only if it has never had a device, or its last device stopped being live more than
+ * 24 h ago and that end was a device self-revoke or a natural expiry. Any other recorded
+ * end (`last_end_via` of 'session', 'token' or 'replay') keeps the door shut (R4 M-d);
+ * `insertDeviceToken` clears the latch, since a new device needs approval or open bootstrap.
+ */
+export function deviceBootstrapOpen(email: string): boolean {
+  const t = now();
+  if (listLiveDeviceTokens(email).length > 0) return false;
+  const h = db.prepare("SELECT last_live_until, last_end_via FROM device_account_history WHERE email = ?").get(email) as { last_live_until: number; last_end_via: string | null } | undefined;
+  // When each past device stopped being live: revoked, or its (idle/absolute) expiry.
+  const r = db.prepare("SELECT COUNT(*) AS n, MAX(COALESCE(revoked_at, MIN(expires_at, max_expires_at))) AS ended FROM device_tokens WHERE email = ?").get(email) as { n: number; ended: number | null };
+  if (!h && !r.n) return true; // this account never had a device: bootstrap
+  // Only an end triggered by a DEVICE credential (or a natural expiry) starts the 24 h clock;
+  // a session, a bare token presentation or a used-code replay never does (R4 M-d).
+  if (h?.last_end_via && h.last_end_via !== "device") return false;
+  const ended = Math.max(r.ended ?? 0, h?.last_live_until ?? 0);
+  return t - ended >= DEVICE_BOOTSTRAP_COOLDOWN_MS;
 }
 /** Live (unrevoked, unexpired) devices — for one user, or every user when email is null. */
 export function listLiveDeviceTokens(email: string | null): DeviceTokenRow[] {

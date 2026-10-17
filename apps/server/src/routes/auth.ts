@@ -68,8 +68,13 @@ auth.post("/register", async (c) => {
   if (!token || !name?.trim()) return c.json({ error: "bad_request" }, 400);
   const pwErr = passwordProblem(password ?? "");
   if (pwErr) return c.json({ error: pwErr }, 400);
+  // One door (review R4 I-a): an invite never REPLACES an existing password. Checked before
+  // the invite is consumed, so a refused attempt changes nothing.
+  const peek = inviteForToken(token);
+  if (peek && getUser(peek.email)?.password_hash) return c.json({ error: "account_exists", detail: "This account already has a password. Sign in, or change it with the current one." }, 409);
   const inv = consumeInvite(token);
   if (!inv) return c.json({ error: "invalid_or_expired_invite" }, 400);
+  if (getUser(inv.email)?.password_hash) return c.json({ error: "account_exists" }, 409);
   setAccount(inv.email, name.trim(), hashPassword(password!));
   startSession(c, inv.email);
   return c.json({ ok: true, email: inv.email });
@@ -79,6 +84,9 @@ auth.post("/register", async (c) => {
 auth.post("/set-password", async (c) => {
   const s = readSession(c);
   if (!s) return c.json({ error: "unauthorized" }, 401);
+  // First password only (review C1): once one exists, only /change-password — which
+  // checks the current password — may replace it. A lifted session cannot take over.
+  if (getUser(s.email)?.password_hash) return c.json({ error: "password_exists", detail: "Change your password with your current one (Settings → Account)." }, 409);
   const { password, name } = await c.req.json<{ password?: string; name?: string }>();
   const pwErr = passwordProblem(password ?? "");
   if (pwErr) return c.json({ error: pwErr }, 400);
@@ -122,8 +130,9 @@ auth.put("/profile", async (c) => {
 // change it. If the account has no password yet, a browser SESSION may set the
 // first one; a native device token may NOT (WP2.1 L2 — a stolen device token must
 // never be able to mint a password, i.e. a new login method). On success every
-// OTHER device token of the account is revoked (the calling device, if any, is
-// kept), so a password change also evicts devices a thief may hold.
+// OTHER device token of the account is revoked ONLY when the change is made from a
+// device (the calling device is kept); a change made with a browser session revokes no
+// device (one door, review C1 — it must not be able to reopen first-device sign-in).
 auth.post("/change-password", async (c) => {
   const who = accountIdentity(c);
   if (!who) return c.json({ error: "unauthorized" }, 401);
@@ -139,8 +148,11 @@ auth.post("/change-password", async (c) => {
     return c.json({ error: "wrong_password" }, 403);
   }
   setUserPassword(s.email, hashPassword(newPassword!));
-  const revokedDevices = await revokeOtherDevices(s.email, who.deviceId);
-  return c.json({ ok: true, revokedDevices });
+  // Devices are revoked only from a DEVICE credential (review C1): a password change made
+  // with a browser session must not be able to empty the account of devices, which would
+  // reopen first-device sign-in. Revoke devices from a signed-in device instead.
+  const revokedDevices = who.deviceId ? await revokeOtherDevices(s.email, who.deviceId) : 0;
+  return c.json({ ok: true, revokedDevices, ...(who.deviceId ? {} : { devicesKept: true }) });
 });
 
 // ---- owner issues an invite ----
@@ -149,6 +161,9 @@ auth.post("/invite", async (c) => {
   if (!s || s.email !== config.ownerEmail) return c.json({ error: "forbidden" }, 403);
   const { email, name } = await c.req.json<{ email?: string; name?: string }>();
   if (!validEmail(email)) return c.json({ error: "invalid_email" }, 400);
+  // An invite is for a NEW account: never the owner's own address, never an account that
+  // already has a password (R4 I-a — register would otherwise overwrite it).
+  if (norm(email) === config.ownerEmail || getUser(norm(email))?.password_hash) return c.json({ error: "account_exists", detail: "That address already has an account." }, 409);
   const url = await createInvite(norm(email), name?.trim() ?? null, s.email);
   return c.json({ ok: true, url });
 });
