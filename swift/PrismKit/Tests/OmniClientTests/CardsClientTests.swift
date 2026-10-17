@@ -38,17 +38,32 @@ final class CardsClientTests: XCTestCase {
     func testChooseAndInstructSendTheKeyAndBody() async throws {
         let (omni, server) = try make { _ in .json(202, #"{"card":\#(Self.card),"approval":null,"threadId":"omni-proactive-1","turnId":"turn_1"}"#) }
         let key = IdempotencyKey("choose-press-0001")!
-        let chosen = try await omni.chooseCardOption("card_1", optionID: "b", idempotencyKey: key)
+        let chosen = try await omni.chooseCardOption("card_1", optionID: "b", cardVersion: "3fd35d7265d5bd63", idempotencyKey: key)
         XCTAssertEqual(chosen.turnId, "turn_1")
         XCTAssertNil(chosen.approval)
         XCTAssertEqual(server.requests[0].method, "POST")
         XCTAssertEqual(server.requests[0].path, "/api/omni/cards/card_1/choose")
         XCTAssertEqual(server.requests[0].header("Idempotency-Key"), "choose-press-0001")
-        XCTAssertEqual(server.requests[0].bodyString, #"{"optionId":"b"}"#)
-        _ = try await omni.instructCard("card_1", text: "Ask for the PDF first", idempotencyKey: IdempotencyKey("instruct-press-01")!)
+        XCTAssertEqual(try Self.body(server.requests[0].bodyString), ["optionId": "b", "cardVersion": "3fd35d7265d5bd63"])
+        _ = try await omni.instructCard("card_1", text: "Ask for the PDF first", cardVersion: "3fd35d7265d5bd63", idempotencyKey: IdempotencyKey("instruct-press-01")!)
         XCTAssertEqual(server.requests[1].path, "/api/omni/cards/card_1/instruct")
         XCTAssertEqual(server.requests[1].header("Idempotency-Key"), "instruct-press-01")
-        XCTAssertEqual(server.requests[1].bodyString, #"{"text":"Ask for the PDF first"}"#)
+        XCTAssertEqual(try Self.body(server.requests[1].bodyString), ["text": "Ask for the PDF first", "cardVersion": "3fd35d7265d5bd63"])
+    }
+
+    /// A JSON object body as string pairs (key order is not part of the contract).
+    private static func body(_ text: String?) throws -> [String: String] {
+        try XCTUnwrap(JSONSerialization.jsonObject(with: Data((text ?? "").utf8)) as? [String: String])
+    }
+
+    func testAChangedCardIsAConflictTheAppCanName() async throws {
+        let (omni, _) = try make { _ in .json(409, #"{"error":"card_changed","detail":"the card was updated since it was shown"}"#) }
+        do {
+            _ = try await omni.chooseCardOption("card_1", optionID: "a", cardVersion: "0000000000000000", idempotencyKey: .random())
+            XCTFail("expected an error")
+        } catch let e as PrismError {
+            XCTAssertEqual(e.serverCode, "card_changed")
+        }
     }
 
     func testGetOneCardUnwrapsTheAnswer() async throws {
@@ -71,7 +86,7 @@ final class CardsClientTests: XCTestCase {
     func testAnUnclearChooseIsOutcomeUnknownAndAnIdThatReshapesThePathIsRefused() async throws {
         let (omni, server) = try make { _ in .json(502, #"{"error":"internal_error"}"#) }
         do {
-            _ = try await omni.chooseCardOption("card_1", optionID: "a", idempotencyKey: .random())
+            _ = try await omni.chooseCardOption("card_1", optionID: "a", cardVersion: "3fd35d7265d5bd63", idempotencyKey: .random())
             XCTFail("expected an error")
         } catch let e as PrismError {
             guard case .outcomeUnknown = e else { return XCTFail("expected outcomeUnknown, got \(e)") }

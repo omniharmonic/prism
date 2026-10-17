@@ -95,20 +95,26 @@ public struct OmniCard: Codable, Sendable, Equatable, Identifiable {
     public let section: CardSection?
     public let transitional: Bool
     public let nudgeId: String?
+    /// The card's content version: choose and instruct send it back, and the server answers
+    /// `card_changed` when the card changed since this copy was loaded. Nil for a transitional card.
+    public let version: String?
+    /// A new message arrived on the item after he chose (draft-ready or working): review before sending.
+    public let sourceChanged: Bool
 
     public init(id: String, sourceKey: String, kind: CardKind, state: CardState, headline: String, context: [Fact] = [], ask: String? = nil,
                 urgency: CardUrgency = .whenever, options: [Option] = [], recommended: String? = nil, itemRefs: [String] = [], threadId: String? = nil,
                 approvalIds: [String] = [], chosenOptionId: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil, snoozedUntil: Date? = nil,
-                section: CardSection? = nil, transitional: Bool = false, nudgeId: String? = nil) {
+                section: CardSection? = nil, transitional: Bool = false, nudgeId: String? = nil, version: String? = nil, sourceChanged: Bool = false) {
         self.id = id; self.sourceKey = sourceKey; self.kind = kind; self.state = state; self.headline = headline; self.context = context
         self.ask = ask; self.urgency = urgency; self.options = options; self.recommended = recommended; self.itemRefs = itemRefs
         self.threadId = threadId; self.approvalIds = approvalIds; self.chosenOptionId = chosenOptionId; self.createdAt = createdAt
         self.updatedAt = updatedAt; self.snoozedUntil = snoozedUntil; self.section = section; self.transitional = transitional; self.nudgeId = nudgeId
+        self.version = version; self.sourceChanged = sourceChanged
     }
 
     enum CodingKeys: String, CodingKey {
         case id, sourceKey, kind, state, headline, context, ask, urgency, options, recommended, itemRefs, threadId, approvalIds
-        case chosenOptionId, createdAt, updatedAt, snoozedUntil, section, transitional, nudgeId
+        case chosenOptionId, createdAt, updatedAt, snoozedUntil, section, transitional, nudgeId, version, sourceChanged
     }
 
     public init(from decoder: any Decoder) throws {
@@ -133,6 +139,8 @@ public struct OmniCard: Codable, Sendable, Equatable, Identifiable {
         section = try c.decodeIfPresent(CardSection.self, forKey: .section)
         transitional = try c.decodeIfPresent(Bool.self, forKey: .transitional) ?? false
         nudgeId = try c.decodeIfPresent(String.self, forKey: .nudgeId)
+        version = try c.decodeIfPresent(String.self, forKey: .version)
+        sourceChanged = try c.decodeIfPresent(Bool.self, forKey: .sourceChanged) ?? false
     }
 
     /// Decodes an array of cards, dropping elements that fail. Logs ONE line with the count dropped
@@ -164,7 +172,7 @@ public struct OmniCard: Codable, Sendable, Equatable, Identifiable {
         OmniCard(id: id, sourceKey: sourceKey, kind: kind, state: state, headline: headline, context: context, ask: ask, urgency: urgency,
                  options: options, recommended: recommended, itemRefs: itemRefs, threadId: threadId, approvalIds: approvalIds,
                  chosenOptionId: chosenOptionId, createdAt: createdAt, updatedAt: updatedAt, snoozedUntil: snoozedUntil,
-                 section: section, transitional: transitional, nudgeId: nudgeId)
+                 section: section, transitional: transitional, nudgeId: nudgeId, version: version, sourceChanged: sourceChanged)
     }
 }
 

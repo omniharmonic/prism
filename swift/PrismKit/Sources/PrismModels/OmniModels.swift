@@ -319,6 +319,10 @@ public struct Approval: Codable, Sendable, Equatable, Identifiable {
     public let supersededBy: String?
     public let revises: String?
     public let executor: Executor?
+    /// Lowercased addresses on the item this draft answers (the email a reply answers, or the
+    /// source item of the card it came from). Nil when the server does not know. The app marks
+    /// any draft recipient not in this list "New recipient".
+    public let originalRecipients: [String]?
 
     /// The digest of what this object actually holds, computed locally.
     public var computedDigest: String { ApprovalDigest.digest(kind: kind.rawValue, payload: payload) }
@@ -328,6 +332,44 @@ public struct Approval: Codable, Sendable, Equatable, Identifiable {
     public var digestMatchesPayload: Bool { computedDigest == digest }
 
     public var isPending: Bool { status == .pending }
+}
+
+/// Which recipients of a draft were not on the item it answers ("New recipient"). Pure: the app's
+/// approval view labels exactly these. Compares addresses case-insensitively, ignoring surrounding
+/// blanks and a `Name <addr>` wrapper. Returns nothing when the original list is unknown (nil) or the
+/// kind has no person recipients.
+public enum NewRecipients {
+    /// The draft's own recipients, in order: To + Cc (email, email-reply), attendees (calendar-invite).
+    public static func recipients(kind: ApprovalKind, payload: JSONValue) -> [String] {
+        let list: (String) -> [String] = { key in payload[key]?.arrayValue?.compactMap(\.stringValue) ?? [] }
+        switch kind {
+        case .emailReply: return list("expectTo") + list("cc")
+        case .email: return list("to") + list("cc")
+        case .calendarInvite: return list("attendees")
+        default: return []
+        }
+    }
+
+    /// The canonical form an address is compared in.
+    public static func key(_ address: String) -> String {
+        var a = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let open = a.lastIndex(of: "<"), let close = a.lastIndex(of: ">"), open < close {
+            a = String(a[a.index(after: open)..<close]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return a.lowercased()
+    }
+
+    /// The draft recipients (as written) that are not on the original item.
+    public static func newRecipients(kind: ApprovalKind, payload: JSONValue, original: [String]?) -> Set<String> {
+        guard let original else { return [] }
+        let known = Set(original.map(key))
+        return Set(recipients(kind: kind, payload: payload).filter { !known.contains(key($0)) })
+    }
+}
+
+public extension Approval {
+    /// The recipients of this draft that were not on the item it answers. Empty when unknown.
+    var newRecipients: Set<String> { NewRecipients.newRecipients(kind: kind, payload: payload, original: originalRecipients) }
 }
 
 public struct ApprovalList: Decodable, Sendable, Equatable {

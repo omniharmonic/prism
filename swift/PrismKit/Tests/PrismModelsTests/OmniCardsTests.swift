@@ -28,6 +28,29 @@ final class OmniCardsTests: XCTestCase {
         XCTAssertEqual(c.createdAt, PrismJSON.parseDate("2026-10-15T16:00:00Z"))
         XCTAssertFalse(c.transitional)
         XCTAssertNil(c.latestApprovalID)
+        XCTAssertEqual(c.version, "3fd35d7265d5bd63")
+        XCTAssertFalse(c.sourceChanged)
+    }
+
+    func testAFlaggedCardSaysSoAndTheOptimisticCopyKeepsTheVersion() throws {
+        let c = try PrismJSON.decoder().decode(OmniCard.self, from: Data(#"{"id":"card_x","state":"draft-ready","headline":"Sam","version":"0123456789abcdef","sourceChanged":true}"#.utf8))
+        XCTAssertTrue(c.sourceChanged)
+        let copy = c.with(state: .working, chosenOptionId: nil, section: .motion)
+        XCTAssertEqual(copy.version, "0123456789abcdef")
+        XCTAssertTrue(copy.sourceChanged)
+    }
+
+    func testNewRecipientsAreThoseNotOnTheOriginalItem() throws {
+        let reply = JSONValue.object(["noteId": "n1", "expectTo": ["Sam <SAM@example.com>"], "cc": ["x@evil.test", " kevin@example.com "], "body": "Hi"])
+        XCTAssertEqual(NewRecipients.newRecipients(kind: .emailReply, payload: reply, original: ["sam@example.com", "kevin@example.com"]), ["x@evil.test"])
+        XCTAssertEqual(NewRecipients.newRecipients(kind: .emailReply, payload: reply, original: nil), [], "unknown original: no label")
+        let email = JSONValue.object(["to": ["ana@example.org"], "subject": "s", "body": "b"])
+        XCTAssertEqual(NewRecipients.newRecipients(kind: .email, payload: email, original: ["sam@example.com"]), ["ana@example.org"])
+        let invite = JSONValue.object(["title": "t", "start": "s", "end": "e", "attendees": ["sam@example.com", "dana@example.net"]])
+        XCTAssertEqual(NewRecipients.newRecipients(kind: .calendarInvite, payload: invite, original: ["sam@example.com"]), ["dana@example.net"])
+        XCTAssertEqual(NewRecipients.newRecipients(kind: .message, payload: .object(["roomId": "!r:x", "body": "b"]), original: []), [])
+        let approval = try PrismJSON.decoder().decode(Approval.self, from: Data(#"{"id":"apr_1","kind":"email-reply","payload":{"noteId":"n","expectTo":["sam@example.com"],"cc":["x@evil.test"],"body":"Hi"},"digest":"d","status":"pending","originalRecipients":["sam@example.com"]}"#.utf8))
+        XCTAssertEqual(approval.newRecipients, ["x@evil.test"])
     }
 
     func testADraftReadyCardNamesItsApproval() throws {

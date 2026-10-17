@@ -13,13 +13,15 @@ public extension OmniClient {
         let answer: CardAnswer = try await transport.send(.get(try Self.cardPath(id)))
         return answer.card
     }
-    func chooseCardOption(_ id: String, optionID: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult {
-        struct Body: Encodable { let optionId: String }
-        return try await transport.send(.json("POST", "\(try Self.cardPath(id))/choose", body: Body(optionId: optionID), idempotencyKey: idempotencyKey))
+    /// `cardVersion` = the `version` of the card as it was shown: the server answers `409 card_changed`
+    /// when the card changed since (new options, a new message on the item) and runs nothing.
+    func chooseCardOption(_ id: String, optionID: String, cardVersion: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult {
+        struct Body: Encodable { let optionId: String; let cardVersion: String }
+        return try await transport.send(.json("POST", "\(try Self.cardPath(id))/choose", body: Body(optionId: optionID, cardVersion: cardVersion), idempotencyKey: idempotencyKey))
     }
-    func instructCard(_ id: String, text: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult {
-        struct Body: Encodable { let text: String }
-        return try await transport.send(.json("POST", "\(try Self.cardPath(id))/instruct", body: Body(text: text), idempotencyKey: idempotencyKey))
+    func instructCard(_ id: String, text: String, cardVersion: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult {
+        struct Body: Encodable { let text: String; let cardVersion: String }
+        return try await transport.send(.json("POST", "\(try Self.cardPath(id))/instruct", body: Body(text: text, cardVersion: cardVersion), idempotencyKey: idempotencyKey))
     }
     func snoozeCard(_ id: String, until: Date) async throws -> OmniCard {
         struct Body: Encodable { let until: Int64 }
