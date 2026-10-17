@@ -8,6 +8,9 @@ import { apnsEnabled, sendApnsToOwner, type NotificationPreview, type ApnsNotifi
 import { getThread } from "./store";
 import { getApproval } from "./approvals";
 import { approvalBody, approvalHeadline } from "./push-text";
+import { getCard } from "./cards";
+import { cardNotification, cardPushAllowed } from "./card-push";
+import { attentionNotificationBody } from "./attention-preferences";
 import { omniConfig } from "./config";
 import type { OmniEvent } from "./stream";
 
@@ -18,7 +21,7 @@ export interface ThreadMessage {
   event: OmniEvent;
 }
 export interface OmniNotice {
-  type: "thread" | "approval" | "card";
+  type: "thread" | "approval" | "card" | "item-card";
   id: string;
   op: string;
   threadId?: string;
@@ -63,7 +66,7 @@ export function publishNotice(n: OmniNotice): void {
 // ── push ────────────────────────────────────────────────────────────────────
 
 /** Push categories (integration-contract.md § 4 Push). */
-export type OmniPushKind = "OMNI_THREAD" | "OMNI_APPROVAL";
+export type OmniPushKind = "OMNI_THREAD" | "OMNI_APPROVAL" | "OMNI_CARD";
 export type OmniPusher = (owner: string, kind: OmniPushKind, id: string, completedReply?: string) => Promise<void>;
 
 /** Plain, bounded Unicode text. Code, links and local/media paths are not previews. */
@@ -114,6 +117,13 @@ export function omniNotification(kind: OmniPushKind, id: string, preference: Not
 }
 const defaultPusher: OmniPusher = async (owner, kind, id, completedReply) => {
   if (!apnsEnabled()) return;
+  if (kind === "OMNI_CARD") {
+    const card = getCard(owner, id);
+    if (!card || !cardPushAllowed(owner)) return;
+    const generic = attentionNotificationBody(owner);
+    await sendApnsToOwner(owner, (row) => cardNotification(card, row.preview, generic), "omni");
+    return;
+  }
   if (kind === "OMNI_APPROVAL") {
     const a = getApproval(owner, id);
     const headline = a ? approvalHeadline(a) : undefined;

@@ -17,6 +17,7 @@
      "subject": "Quarterly check-in: notes & next steps",
      "from": "Ada Example <ada@example.org>",
      "to": "inbox@example.test",
+     "cc": "",
      "date": "2026-09-29 09:15",
      "isUnread": true,
      "labels": [
@@ -57,6 +58,7 @@
      "subject": "Re: Quarterly check-in: notes & next steps",
      "from": "\"Grace Q. Sample\" <grace@example.net>",
      "to": "inbox@example.test, jordan@example.com",
+     "cc": "team-lead@example.com, pat@example.org",
      "date": "2026-09-30 11:05",
      "isUnread": false,
      "labels": [
@@ -93,6 +95,7 @@
      "subject": "Someone liked your post",
      "from": "Example Writer <writer@news-example.substack.com>",
      "to": "inbox@example.test",
+     "cc": "",
      "date": "2026-09-28 07:00",
      "isUnread": true,
      "labels": [
@@ -132,6 +135,7 @@
      "subject": "Café menu — déjà vu",
      "from": "Zoë Tester <zoe@example.com>",
      "to": "inbox@example.test",
+     "cc": "",
      "date": "2026-09-27 12:30",
      "isUnread": false,
      "labels": [
@@ -167,6 +171,7 @@
      "subject": "New messages in #general from Casey",
      "from": "Example Chat <notification@example.slack.com>",
      "to": "inbox@example.test",
+     "cc": "",
      "date": "2026-09-29 23:59",
      "isUnread": true,
      "labels": [
@@ -203,6 +208,7 @@
      "subject": "48-hour sale on everything",
      "from": "Shop Example Deals <deals@mkt.shop-example.test>",
      "to": "inbox@example.test",
+     "cc": "",
      "date": "2026-09-24 08:00",
      "isUnread": true,
      "labels": [
@@ -242,6 +248,7 @@
      "subject": "Your receipt for order #1234",
      "from": "Example Billing <billing@example.com>",
      "to": "inbox@example.test",
+     "cc": "",
      "date": "2026-09-25 08:22",
      "isUnread": false,
      "labels": [
@@ -278,6 +285,7 @@
      "subject": "Old-school note",
      "from": "legacy@example.org",
      "to": "inbox@example.test",
+     "cc": "",
      "date": "2026-09-26 02:00",
      "isUnread": true,
      "labels": [
@@ -316,6 +324,7 @@
      "subject": "Daily report (very long)",
      "from": "Robo Report <reports@example.org>",
      "to": "inbox@example.test",
+     "cc": "",
      "date": "2026-09-29 06:00",
      "isUnread": false,
      "labels": [
@@ -351,6 +360,7 @@
      "subject": "Sam Doe shared a document with you",
      "from": "\"Sam Doe (via Example Docs)\" <drive-shares-dm-noreply@example.com>",
      "to": "inbox@example.test",
+     "cc": "",
      "date": "2026-09-29 07:07",
      "isUnread": true,
      "labels": [
@@ -388,6 +398,7 @@
      "subject": "(no subject)",
      "from": "Ada Example <ada@example.org>",
      "to": "inbox@example.test",
+     "cc": "",
      "date": "2026-09-29 10:11",
      "isUnread": false,
      "labels": [

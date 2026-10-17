@@ -12,6 +12,7 @@
  */
 import type { NotificationPreview } from "../apns";
 import type { Approval } from "./approvals";
+import type { Card } from "./cards";
 import { notificationText } from "./bus";
 import type { Nudge } from "./nudges";
 
@@ -135,4 +136,15 @@ export function approvalBody(a: Pick<Approval, "kind" | "payload" | "summary">):
     : a.kind === "command" ? pick(a.summary, p.reason)
     : pick(a.summary, p.purpose);
   return raw ? notificationText(raw, BODY_MAX) : "";
+}
+
+/** A card: the headline; then its context line and what is ready ("3 options ready" / "Draft ready to send"). */
+export function cardAlert(c: Pick<Card, "headline" | "context" | "options" | "state">, preference: NotificationPreview, genericBody: string): { title: string; body: string } {
+  if (preference === "generic") return { title: "Omni", body: genericBody };
+  const title = notificationText(c.headline, HEADLINE_MAX);
+  if (!title) return { title: "Omni", body: genericBody };
+  const ready = c.state === "draft-ready" ? "Draft ready to send" : `${c.options.length} options ready`;
+  if (preference === "title") return { title, body: ready };
+  const facts = c.context.map((f) => f.text).filter(Boolean);
+  return { title, body: notificationText([...facts, ready].join(" · "), BODY_MAX) };
 }

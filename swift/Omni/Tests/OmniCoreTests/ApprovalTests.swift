@@ -107,6 +107,45 @@ final class ApprovalCenterTests: XCTestCase {
         XCTAssertNil(center.card(for: "new")!.statusLine())
     }
 
+    func testLoadFetchesOnlyTheDraftsTheCenterHasNotSeen() async {
+        let center = make()
+        center.ingest([Fixture.approval("known")])
+        service.approvalReads(.success(Fixture.approval("elsewhere")))
+        let all = await center.load(["known", "elsewhere", "elsewhere"])
+        XCTAssertTrue(all)
+        XCTAssertEqual(service.approvalReadIDs, ["elsewhere"], "a draft already held is not read again, and none is read twice")
+        XCTAssertNotNil(center.card(for: "elsewhere"))
+        XCTAssertTrue(center.card(for: "elsewhere")!.canOfferSend(), "a draft made elsewhere is a normal pending draft here")
+        let none = await center.load(["known", "elsewhere"])
+        XCTAssertTrue(none)
+        XCTAssertEqual(service.approvalReadIDs.count, 1)
+    }
+
+    func testACancelledLoadIsNeverReportedAsAFailure() async {
+        let center = make()
+        service.approvalReads(.failure(PrismError.unreachable("down")))
+        let task = Task { await center.loadDraft(["x"]) }
+        task.cancel()
+        let cancelled = await task.value
+        XCTAssertEqual(cancelled, .cancelled)
+        let failed = await center.loadDraft(["x"])
+        XCTAssertEqual(failed, .failed)
+        service.approvalReads(.success(Fixture.approval("x")))
+        let ready = await center.loadDraft(["x"])
+        XCTAssertEqual(ready, .ready)
+    }
+
+    func testLoadSaysSoWhenADraftCouldNotBeRead() async {
+        let center = make()
+        service.approvalReads(.failure(PrismError.unreachable("down")))
+        let loaded = await center.load(["gone"])
+        XCTAssertFalse(loaded)
+        XCTAssertNil(center.card(for: "gone"))
+        service.approvalReads(.success(Fixture.approval("gone")))
+        let again = await center.load(["gone"])
+        XCTAssertTrue(again, "asking again reads it again")
+    }
+
     func testADigestMismatchIsNeverOfferedForSendAndNothingIsSent() async {
         let tampered = Fixture.approval("apr1", digest: String(repeating: "0", count: 64))
         XCTAssertFalse(tampered.digestMatchesPayload)
@@ -241,6 +280,19 @@ final class ApprovalCenterTests: XCTestCase {
         await center.cancel("apr1")
         XCTAssertEqual(service.decides.map(\.decision), [.send, .cancel])
         XCTAssertNotEqual(service.decides[0].key, service.decides[1].key)
+    }
+
+    func testARecipientRefusalSaysWhyNotAGenericError() async {
+        let why = "This older email has no Cc on record; remove the Cc or reply from your mail app."
+        service.decisions(.failure(PrismError.conflict(ServerFailure(status: 409, code: "target_changed", detail: why, body: Data()))))
+        service.approvalReads(.success(Fixture.approval("apr1")))
+        let center = make()
+        center.ingest([Fixture.approval("apr1")])
+        await center.send("apr1")
+        XCTAssertEqual(center.card(for: "apr1")?.notice?.text, why)
+        XCTAssertEqual(PlainLanguage.message(for: .conflict(Fixture.failure(409, "target_changed"))),
+                       "This reply would go to someone who isn’t on the original email. Edit the draft or cancel it.")
+        XCTAssertEqual(PlainLanguage.message(for: .conflict(Fixture.failure(409, "send_in_flight"))), "This draft is being sent, so it can’t be set aside now.")
     }
 
     func testAChangedDraftOnTheServerIsShownAgainInsteadOfSent() async {

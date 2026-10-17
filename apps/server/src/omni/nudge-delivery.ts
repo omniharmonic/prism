@@ -1,4 +1,5 @@
 import { apnsEnabled,countLiveApnsTokens,sendApnsToOwner } from "../apns";
+import { cardSourceKeys } from "./cards";
 import { omniConfig } from "./config";
 import { attentionNotificationBody } from "./attention-preferences";
 import { claimNudgePush,claimNudgeDigest,nudgeDeliveryDecision,finishNudgePush,listNudges,getNudge,type Nudge } from "./nudges";
@@ -10,6 +11,11 @@ import { resolveNote } from "./records";
  * and a short plain summary. Policy — quiet hours, the digest slots and the 2-surface cap —
  * is decided before any wording (nudges.ts / nudge-policy.ts) and is unchanged by it.
  */
+/** An item that already has a card is announced by the card, never twice. */
+export function nudgesWithoutCards(owner:string,nudges:Nudge[]):Nudge[] {
+ const carded=cardSourceKeys(owner);
+ return nudges.filter(n=>!carded.has(n.candidate.sourceId));
+}
 async function senderName(n:Nudge|null):Promise<string|null>{
  const id=n?.candidate.senderId;if(!id)return null;
  try{const p=await resolveNote({id});return p&&!p.trashed?p.title??null:null;}catch{return null;}
@@ -17,7 +23,7 @@ async function senderName(n:Nudge|null):Promise<string|null>{
 export async function deliverNudges(now=Date.now()):Promise<void> {
  const owner=omniConfig.ownerEmail();
  if(!omniConfig.enabled()||!apnsEnabled()||!countLiveApnsTokens(owner,"omni"))return;
- for(const n of listNudges(owner,false,now)) {
+ for(const n of nudgesWithoutCards(owner,listNudges(owner,false,now))) {
   if(nudgeDeliveryDecision(owner,n.id,now)!=="now")continue;
   const claim=claimNudgePush(owner,n.id,now);if(claim===null)continue;
   try {

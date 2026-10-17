@@ -59,6 +59,7 @@ public final class SessionModel {
     public let threads: ThreadListModel
     public let approvals: ApprovalCenter
     public let nudges: NudgeCenter?
+    public let cards: CardsModel?
     public let today: TodayModel
     public let jobs: JobsModel
     public let skills: SkillsModel?
@@ -183,7 +184,9 @@ public final class SessionModel {
         self.sink = sink
         self.threads = ThreadListModel(service: service, sink: sink)
         self.approvals = ApprovalCenter(service: service, sink: sink, confirmation: confirmation)
-        self.nudges = (service as? any NudgeService).map { NudgeCenter(service: $0, sink: sink) }
+        let nudges = (service as? any NudgeService).map { NudgeCenter(service: $0, sink: sink) }
+        self.nudges = nudges
+        self.cards = (service as? any CardService).map { CardsModel(service: $0, nudges: nudges, sink: sink) }
         self.today = TodayModel(service: service, sink: sink, approvals: approvals)
         self.jobs = JobsModel(service: service, sink: sink)
         self.skills = (service as? any SkillService).map { SkillsModel(service: $0, sink: sink) }
@@ -192,6 +195,14 @@ public final class SessionModel {
             await self.threads.refresh()
             if let model = self.threadModels[threadID], model.isOpen { await model.changedOnServer() }
         }
+        cards?.approvalDidArrive = { [approvals] approval in approvals.ingest([approval]) }
+    }
+
+    /// The Needs you badge: decisions, drafts ready to send, and drafts that belong to no card.
+    public var needsYouCount: Int {
+        guard let cards else { return approvals.pendingCount }
+        let unlinked = approvals.pending.filter { !cards.linkedApprovalIDs.contains($0.id) }.count
+        return cards.decide.count + cards.approve.count + unlinked
     }
 
     /// Start following the owner-wide change channel.
@@ -219,7 +230,7 @@ public final class SessionModel {
         if threadModels.count >= 12 {
             for (key, model) in threadModels where !model.isOpen && model.draft.isEmpty { threadModels[key] = nil }
         }
-        let model = ThreadModel(threadID: id, service: service, approvals: approvals, sink: sink, sleep: sleep, onRead: { [weak self] id, sequence in
+        let model = ThreadModel(threadID: id, service: service, approvals: approvals, cards: cards, sink: sink, sleep: sleep, onRead: { [weak self] id, sequence in
             self?.threads.markRead(id, through: sequence)
         }, onUnavailable: { [weak self] id in
             self?.threads.markGone(id)
@@ -252,7 +263,8 @@ public final class SessionModel {
         case .today, nil: await today.refresh()
         case .recurring: await jobs.refresh()
         case .thread(let id): await threadModels[id]?.reload()
-        case .needsYou, .newThread: break
+        case .needsYou: await cards?.refresh(); await nudges?.refresh()
+        case .newThread: break
         }
     }
 
@@ -369,6 +381,7 @@ public final class SessionModel {
         await threads.refresh()
         await approvals.refresh()
         await nudges?.refresh()
+        await cards?.refresh()
         for model in threadModels.values where model.isOpen { await model.changedOnServer() }
         // Today lists approvals and what is in flight: keep it honest once it has been shown.
         if today.hasContent, destination == .today || destination == nil { await today.refresh() }
@@ -385,6 +398,9 @@ public final class SessionModel {
             if let threadID = notice.threadId, let model = threadModels[threadID], model.isOpen { await model.changedOnServer() }
         case "card":
             if notice.op == "nudge" { await nudges?.refresh() }
+            if let threadID = notice.threadId, let model = threadModels[threadID], model.isOpen { await model.changedOnServer() }
+        case "item-card":
+            await cards?.refresh()
             if let threadID = notice.threadId, let model = threadModels[threadID], model.isOpen { await model.changedOnServer() }
         default:
             break

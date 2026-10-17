@@ -201,6 +201,7 @@ private struct NeverReturningFlow: RedirectFlow {
 ///  - `sample-data`: Today's agenda and tasks, and the titles on record cards, are replaced
 ///    with made-up ones — the laptop's dev vault holds real notes, and the screenshots are
 ///    committed to a public repository;
+///  - `card-sample`: Needs you's cards are made-up ones that change state when tapped (no backend);
 ///  - `markdown-sample`: a thread titled "Markdown sample" answers with block markdown;
 ///  - `today-fail`, `threads-fail`, `jobs-fail`: the read does not get through.
 private struct FaultInjectingService: OmniService {
@@ -307,6 +308,89 @@ private struct FaultInjectingService: OmniService {
             object["errors"] = ["agenda": "vault_error"]
         }
         return try PrismJSON.decoder().decode(OmniToday.self, from: JSONSerialization.data(withJSONObject: object))
+    }
+}
+
+/// Made-up item cards for UI tests. A tap changes their state the way the server would; nothing
+/// is sent anywhere and no approval is created.
+actor UITestSampleCards {
+    static let shared = UITestSampleCards()
+    private var cards: [OmniCard] = UITestSampleCards.initial()
+
+    static func initial() -> [OmniCard] {
+        let now = Date()
+        return [
+            OmniCard(id: "ui-budget", sourceKey: "ui-mail-1", kind: .email, state: .proposed, headline: "Sam asks whether you can review the grant budget before Friday",
+                     context: [.init(text: "You're free Thu 2–4", source: "calendar"), .init(text: "Grant due Fri 5pm", source: "ui-project")], urgency: .today,
+                     options: [
+                        .init(id: "yes-thu", label: "Say yes, Thursday afternoon", plan: "Reply confirming Thursday", produces: ["email-reply"],
+                              draft: .init(kind: .emailReply, payload: ["noteId": "ui-mail-1", "expectTo": ["sam@example.com"], "body": "Hi Sam,\n\nThursday afternoon works.\n\nBenjamin"])),
+                        .init(id: "monday", label: "Ask to push to Monday", plan: "Reply proposing Monday", produces: ["email-reply"], draft: nil),
+                     ],
+                     recommended: "yes-thu", itemRefs: ["ui-mail-1"], createdAt: now.addingTimeInterval(-7_200), updatedAt: now, section: .decide),
+            OmniCard(id: "ui-invite", sourceKey: "ui-invite-1", kind: .invite, state: .proposed, headline: "Ana invited you to the retreat planning call on Tuesday at 3",
+                     context: [.init(text: "Tuesday 3–4 clashes with the hardware sync", source: "calendar")], urgency: .thisWeek,
+                     options: [
+                        .init(id: "accept", label: "Accept", plan: "RSVP yes", produces: ["calendar-rsvp"], draft: .init(kind: .calendarRSVP, payload: ["eventId": "evt_ui_1", "response": "accepted"])),
+                        .init(id: "later-week", label: "Ask Ana for Thursday", plan: "Message Ana proposing Thursday", produces: ["message"], draft: nil),
+                     ],
+                     recommended: "accept", itemRefs: ["ui-invite-1"], createdAt: now.addingTimeInterval(-86_400), updatedAt: now, section: .decide),
+            OmniCard(id: "ui-task", sourceKey: "ui-task-1", kind: .task, state: .proposed, headline: "Renewing the domain is due tomorrow",
+                     context: [.init(text: "The card on file expires this month", source: "ui-task-1")], urgency: .whenever,
+                     options: [
+                        .init(id: "friday", label: "Do it Friday morning", plan: "Add a task for Friday 9am", produces: ["task"], draft: nil),
+                        .init(id: "kevin", label: "Ask Kevin to renew it", plan: "Message Kevin", produces: ["message"], draft: nil),
+                     ],
+                     itemRefs: ["ui-task-1"], createdAt: now.addingTimeInterval(-172_800), updatedAt: now, section: .decide),
+        ]
+    }
+
+    func list() -> CardList {
+        let open = cards.filter { $0.section != nil }
+        return CardList(cards: open, counts: .init(decide: open.filter { $0.section == .decide }.count, approve: open.filter { $0.section == .approve }.count, motion: open.filter { $0.section == .motion }.count))
+    }
+    private func change(_ id: String, _ make: (OmniCard) -> OmniCard) throws -> OmniCard {
+        guard let i = cards.firstIndex(where: { $0.id == id }) else { throw PrismError.invalidRequest("sample") }
+        cards[i] = make(cards[i])
+        return cards[i]
+    }
+    /// The sample has no backend approval: every choice puts the card In motion.
+    func choose(_ id: String, _ optionID: String) throws -> CardActionResult {
+        let card = try change(id) { $0.with(state: .working, chosenOptionId: optionID, section: .motion) }
+        return CardActionResult(card: card, approval: nil, threadId: nil, turnId: "turn-sample")
+    }
+    func instruct(_ id: String) throws -> CardActionResult {
+        let card = try change(id) { $0.with(state: .working, chosenOptionId: nil, section: .motion) }
+        return CardActionResult(card: card, approval: nil, threadId: nil, turnId: "turn-sample")
+    }
+    func snooze(_ id: String) throws -> OmniCard { try change(id) { $0.with(state: .snoozed, chosenOptionId: nil, section: nil) } }
+    func dismiss(_ id: String) throws -> OmniCard { try change(id) { $0.with(state: .dismissed, chosenOptionId: nil, section: nil) } }
+}
+
+extension FaultInjectingService: CardService {
+    private var cardBase: any CardService {
+        get throws {
+            guard let base = base as? any CardService else { throw PrismError.invalidRequest("cards unavailable") }
+            return base
+        }
+    }
+    func cards(section: CardSection?) async throws -> CardList {
+        faults.contains("card-sample") ? await UITestSampleCards.shared.list() : try await cardBase.cards(section: section)
+    }
+    func card(_ id: String) async throws -> OmniCard {
+        try await cardBase.card(id)
+    }
+    func chooseCardOption(_ id: String, optionID: String, cardVersion: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult {
+        faults.contains("card-sample") ? try await UITestSampleCards.shared.choose(id, optionID) : try await cardBase.chooseCardOption(id, optionID: optionID, cardVersion: cardVersion, idempotencyKey: idempotencyKey)
+    }
+    func instructCard(_ id: String, text: String, cardVersion: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult {
+        faults.contains("card-sample") ? try await UITestSampleCards.shared.instruct(id) : try await cardBase.instructCard(id, text: text, cardVersion: cardVersion, idempotencyKey: idempotencyKey)
+    }
+    func snoozeCard(_ id: String, until: Date) async throws -> OmniCard {
+        faults.contains("card-sample") ? try await UITestSampleCards.shared.snooze(id) : try await cardBase.snoozeCard(id, until: until)
+    }
+    func dismissCard(_ id: String, reason: CardDismissReason) async throws -> OmniCard {
+        faults.contains("card-sample") ? try await UITestSampleCards.shared.dismiss(id) : try await cardBase.dismissCard(id, reason: reason)
     }
 }
 

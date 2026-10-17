@@ -1115,6 +1115,9 @@ export function noteMetadata(m: ParsedMessage, account: string, tz?: string): Re
     subject: m.subject,
     from: m.from,
     to: m.to,
+    // Cc as parsed from the headers (same rule as To; "" when none). The Omni reply check allows
+    // from + to + cc, so a reply-all keeps the people who were on the email.
+    cc: m.cc,
     date: formatLocal(m.dateMs, tz),
     isUnread: m.isUnread,
     labels: m.labels.length ? m.labels : [m.mailbox.toUpperCase(), ...(m.isUnread ? ["UNREAD"] : [])],

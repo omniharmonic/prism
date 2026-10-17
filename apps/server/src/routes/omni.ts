@@ -22,6 +22,7 @@
  *    executor): loopback only; the grant in the body is the whole credential.
  */
 import { apnsApplicationForDevice, apnsEnabled, isApnsToken, isApnsEnvironment, isNotificationPreview, saveApnsToken, removeApnsTokenForDevice } from "../apns";
+import { proposeApproval } from "../omni/propose";
 import { proactiveIntake, acknowledgeProactiveIntake } from "../omni/proactive-intake";
 import { Hono, type Context } from "hono";
 import { omniVoiceApi } from "./omni-voice";
@@ -49,6 +50,7 @@ import {
   listThreads,
   newId,
   sweepRunningTurns,
+  runningThreadIds,
   runningRunIds,
   omniAudit,
   threadCards,
@@ -56,7 +58,7 @@ import {
   type ThreadRow,
   type ThreadState,
 } from "../omni/store";
-import { cancelTurn, emit, liveTurnCount, startTurn, stopOrphanedRuns } from "../omni/turns";
+import { cancelTurn, emit, liveTurnCount, notifyTurnEnded, startTurn, stopOrphanedRuns, withNotes } from "../omni/turns";
 import { config } from "../config";
 import { bareToolName } from "../omni/stream";
 import { publishNotice, pushOmni, subscribeNotices, subscribeThread, type ThreadMessage } from "../omni/bus";
@@ -64,7 +66,6 @@ import {
   APPROVAL_KINDS,
   SERVER_ONLY_KINDS,
   ApprovalInputError,
-  applyReplyContext,
   approvalView,
   claimApproval,
   closeApproval,
@@ -85,15 +86,17 @@ import {
 } from "../omni/approvals";
 import { buildToday, buildTasksPage, localDate, validDate, type Dispatch } from "../omni/today";
 import { runProtonSend } from "../omni/proton-send";
+import { replyRecipientsCheck, warmOriginalRecipients } from "../omni/recipients";
 import { runTweetSend } from "../omni/tweet-send";
 import { consumeSendGrant } from "../omni/send-grant";
-import { vaultClient, VaultError } from "../parachute";
-import { resolveVaultEntry } from "../db";
+import { withReplyContext } from "../omni/reply-context";
 
 import { DIALS, type InterruptContext } from "../omni/nudge-policy";
 import { priorNudgeSources, resolveNudgeSource, nudgeWeeklyAudit, latestNudgeAudit, FRESHNESS_SUBSYSTEMS, NUDGE_KINDS, upsertNudge, listNudges, getNudge, nudgeAction, nudgeSettings, setNudgeSettings, bindNudgeThread, type Candidate } from "../omni/nudges";
 import { startNudgeDelivery } from "../omni/nudge-delivery";
 import { resolveNote, readNoteContent } from "../omni/records";
+import { CardError, cardView, cardsByThread, getCard } from "../omni/cards";
+import { parseCardPublish, publishCard, listCardViews, snoozeCard, dismissCard, chooseCardOption, instructCard, cardAfterProposal, cardAfterDecision, relinkApproval, resolveCardSource, settleCardDrafts, updateCardFromThread } from "../omni/card-flow";
 import { readableNudgeText } from "../omni/titles";
 import { proactiveSourceHealth } from "../omni/source-health";
 import { syncAttentionPreferences, AttentionPreferenceError } from "../omni/attention-preferences";
@@ -112,7 +115,9 @@ export function mountOmni(app: Hono): void {
   // No in-memory stream survives a restart: a turn left `running` is interrupted — and the
   // Hermes run it was following is asked to stop (nobody is listening to it any more).
   const orphans = omniConfig.enabled() ? runningRunIds() : [];
+  const interrupted = omniConfig.enabled() ? runningThreadIds() : [];
   sweepRunningTurns();
+  for (const t of interrupted) notifyTurnEnded(t, "interrupted");
   if (orphans.length) stopOrphanedRuns(orphans);
   app.route("/api/omni", omniApi);
   if (omniConfig.enabled()) startNudgeDelivery();
@@ -247,21 +252,14 @@ async function jsonBody(c: Context): Promise<Record<string, unknown> | null> {
 }
 const bad = (c: Context, detail: string) => c.json({ error: "bad_request", detail }, 400);
 
-/** An email-reply draft gets its subject + threading from the PRIMARY vault's note now. */
-async function withReplyContext(kind: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
-  if (kind !== "email-reply") return payload;
-  let note: { tags?: string[] | null; metadata?: Record<string, unknown> | null } | null = null;
-  try {
-    note = (await vaultClient(resolveVaultEntry(undefined).id).getNote(String(payload.noteId))) as unknown as typeof note;
-  } catch (e) {
-    if (!(e instanceof VaultError && e.status === 404)) throw new ApprovalInputError("noteId: the email note could not be read right now; try again");
-  }
-  return applyReplyContext(payload, note, omniConfig.ownerEmail());
-}
 function hermesFailure(c: Context, e: unknown): Response {
   if (e instanceof HermesError) return c.json({ error: e.code }, e.status as 400);
   console.error(`[omni] ${(e as Error)?.message}`);
   return c.json({ error: "internal_error" }, 500);
+}
+function cardFailure(c: Context, e: unknown): Response {
+  if (e instanceof CardError) return c.json({ error: e.code, ...(e.detail ? { detail: e.detail } : {}) }, e.status);
+  return hermesFailure(c, e);
 }
 const iso = (v: number | null | undefined) => (v ? new Date(v).toISOString() : null);
 const tsIso = (v: number | string | null | undefined): string | null => {
@@ -412,8 +410,6 @@ function noteIdsOf(v: unknown): string[] | null {
   if (!Array.isArray(v) || v.length > 20 || v.some((x) => typeof x !== "string" || !NOTE_ID_RE.test(x))) return null;
   return v as string[];
 }
-/** The message Hermes receives: the person's text, then referenced note ids as data. */
-const withNotes = (text: string, ids: string[]) => (ids.length ? `${text}\n\n[Prism notes referenced (read them with your Prism tools): ${ids.join(", ")}]` : text);
 function idemKeyOf(c: Context): string | null | false {
   const k = c.req.header("idempotency-key");
   if (k === undefined) return null;
@@ -485,6 +481,7 @@ omniApi.get("/threads/:id", async (c) => {
     thread: { ...threadView(getThread(id), session), ...(nonmarking ? { lastSeq: readSequence } : {}) },
     messages: [...messages.map(messageView).filter(Boolean), ...proactiveMessages(omniConfig.ownerEmail(), id)].sort((a,b)=>String(a?.at??"").localeCompare(String(b?.at??""))),
     cards: threadCards(id),
+    itemCards: (settleCardDrafts(omniConfig.ownerEmail()), cardsByThread(omniConfig.ownerEmail(), id)).map((x) => cardView(x)),
     approvals: threadApprovals(id).map(approvalView),
     activeTurnId: activeTurn(id)?.id ?? null,
   });
@@ -676,16 +673,20 @@ omniApi.get("/events", (c) => {
 
 const STATUSES: ApprovalStatus[] = ["pending", "approved", "sent", "failed", "unknown", "expired", "cancelled", "revised"];
 
-omniApi.get("/approvals", (c) => {
+omniApi.get("/approvals", async (c) => {
   const st = c.req.query("status");
   if (st && !STATUSES.includes(st as ApprovalStatus)) return bad(c, `status: ${STATUSES.join("|")}`);
   expireApprovals();
-  return c.json({ approvals: listApprovals(omniConfig.ownerEmail(), (st as ApprovalStatus) ?? null).map(approvalView) });
+  const list = listApprovals(omniConfig.ownerEmail(), (st as ApprovalStatus) ?? null);
+  // Who is on each item a pending draft answers, so the app can mark anyone new ("New recipient").
+  await warmOriginalRecipients(omniConfig.ownerEmail(), list.filter((a) => a.status === "pending"));
+  return c.json({ approvals: list.map(approvalView) });
 });
 
-omniApi.get("/approvals/:id", (c) => {
+omniApi.get("/approvals/:id", async (c) => {
   expireApprovals();
   const a = getApproval(omniConfig.ownerEmail(), c.req.param("id") ?? "");
+  if (a) await warmOriginalRecipients(omniConfig.ownerEmail(), [a]);
   return a ? c.json({ approval: approvalView(a) }) : c.json({ error: "not_found" }, 404);
 });
 
@@ -727,10 +728,20 @@ omniApi.put("/approvals/:id", async (c) => {
   }
   const next = createApproval({ owner, threadId: a.threadId, kind: v.kind, payload: v.payload, summary: a.summary, ttlMs: omniConfig.approvalTtlMs(), revises: a.id });
   if (!closeApproval(a.id, "revised", o.via, o.device, null, next.id)) return c.json({ error: "already_decided" }, 409);
+  relinkApproval(owner, a.id, next.id);
   omniAudit({ actor: owner, via: o.via, action: "approval.edit", approvalId: a.id, threadId: a.threadId, digest: next.digest, status: "ok" });
   publishNotice({ type: "approval", id: next.id, op: "pending", threadId: a.threadId ?? undefined });
   return c.json({ approval: approvalView(next), replaced: a.id }, 201);
 });
+
+/** The card follows the decision; a failure here must never undo or hide a decision that already happened. */
+function cardBookkeeping(owner: string, approvalId: string, outcome: Parameters<typeof cardAfterDecision>[2]): void {
+  try {
+    cardAfterDecision(owner, approvalId, outcome);
+  } catch (e) {
+    console.error("omni: card bookkeeping failed", approvalId, e);
+  }
+}
 
 async function decide(c: Context): Promise<Response> {
   const owner = omniConfig.ownerEmail();
@@ -781,6 +792,7 @@ async function decide(c: Context): Promise<Response> {
     omniAudit({ actor: owner, via: o.via, action: `approval.${decision}`, approvalId: id, threadId: a.threadId, digest, status: "ok" });
     publishNotice({ type: "approval", id, op: decision === "cancel" ? "cancelled" : "revised", threadId: a.threadId ?? undefined });
     let turnId: string | null = null;
+    let revising = false;
     const feedback = typeof b.feedback === "string" ? b.feedback.trim().slice(0, 20_000) : "";
     // A denied tool call: the thread shows it (the turn that asked is still running).
     if (a.kind === "command" && a.threadId && getThread(a.threadId)) emit(a.threadId, null, { t: "approval", approval: approvalView(getApproval(owner, id)!) });
@@ -788,7 +800,10 @@ async function decide(c: Context): Promise<Response> {
       // The feedback goes back into the thread as a turn; Hermes proposes a new draft.
       const r = startTurn(a.threadId, `Revise the ${a.kind} draft (approval ${a.id}) as follows. Propose the new draft with omni_propose; do not send anything.\n\n${feedback}`, `revise-${key}`.slice(0, 200));
       turnId = "turn" in r ? r.turn.id : "active" in r ? r.active.id : r.replay.id;
+      // Only a turn that is running moves the card to working; a replayed (already ended) one would strand it there.
+      revising = "turn" in r || "active" in r;
     }
+    if (a.kind !== "command") cardBookkeeping(owner, id, revising ? "revised" : "cancelled");
     return c.json({ approval: approvalView(getApproval(owner, id)!), turnId });
   }
   // send: pre-check the executor so a disabled one costs nothing and keeps the approval pending.
@@ -797,6 +812,13 @@ async function decide(c: Context): Promise<Response> {
     const error = exec.available ? "executor_disabled" : "executor_unavailable";
     omniAudit({ actor: owner, via: o.via, action: "approval.send", approvalId: id, threadId: a.threadId, digest, status: "refused", error });
     return c.json({ error, executor: exec.name, detail: exec.available ? "this kind of action is switched off on the server (ACTIONS_*_ENABLED)" : "no executor is wired for this kind yet" }, 503);
+  }
+  // A reply goes only to people already on the email it answers (proton_send.py sends to the draft's list as
+  // written). Anyone else: refused before anything is claimed; the draft stays pending to edit or cancel.
+  const recipients = await replyRecipientsCheck(a, owner);
+  if (!recipients.ok) {
+    omniAudit({ actor: owner, via: o.via, action: "approval.send", approvalId: id, threadId: a.threadId, digest, status: "refused", error: "target_changed" });
+    return c.json({ error: "target_changed", detail: recipients.detail }, 409);
   }
   if (!claimApproval(id, digest, o.via, o.device, key)) return c.json({ error: "already_decided" }, 409);
   omniAudit({ actor: owner, via: o.via, action: "approval.approve", approvalId: id, threadId: a.threadId, digest, status: "ok" });
@@ -834,6 +856,8 @@ async function decide(c: Context): Promise<Response> {
   if (a.threadId && getThread(a.threadId)) {
     emit(a.threadId, null, { t: "approval", approval: approvalView(done) });
   }
+  // After the audit row and the notice: a real send always gets both, whatever the card does.
+  cardBookkeeping(owner, id, out.status);
   return c.json({ approval: approvalView(done) }, out.status === "sent" ? 200 : out.status === "failed" ? 422 : 502);
 }
 omniApi.post("/approvals/:id/decision", decide);
@@ -1059,16 +1083,12 @@ omniApi.post("/hooks/propose", async (c) => {
     throw e;
   }
   const ttl = typeof b.expiresInSec === "number" && b.expiresInSec >= 60 && b.expiresInSec <= 7 * 86_400 ? b.expiresInSec * 1000 : omniConfig.approvalTtlMs();
-  const a = createApproval({ owner, threadId, kind: v.kind, payload: v.payload, summary: typeof b.summary === "string" ? b.summary : null, ttlMs: ttl });
-  omniAudit({ actor: "hermes", via: "service-token", action: "approval.propose", approvalId: a.id, threadId, digest: a.digest, status: "ok" });
-  if (threadId) {
-    ensureThread({ id: threadId, source: "hermes" });
-    emit(threadId, null, { t: "approval", approval: approvalView(a) });
-    // A paused tool call: the turn is waiting for the person, and the thread says so.
-    if (a.kind === "command" && activeTurn(threadId)) emit(threadId, activeTurn(threadId)!.id, { t: "status", state: "needs-you", reason: "approval_requested" });
-  }
-  publishNotice({ type: "approval", id: a.id, op: "pending", threadId: threadId ?? undefined });
-  pushOmni("OMNI_APPROVAL", a.id);
+  const a = proposeApproval({ owner, threadId, kind: v.kind, payload: v.payload, summary: typeof b.summary === "string" ? b.summary : null, ttlMs: ttl, actor: "hermes", via: "service-token", push: false });
+  // A draft for a card is announced as that card ("Draft ready to send"), unless he asked for it (cardAfterProposal
+  // then pushes it as an approval itself); any other draft as itself.
+  const carded = a.kind === "command" ? null : cardAfterProposal(owner, threadId, a.id);
+  if (!carded) pushOmni("OMNI_APPROVAL", a.id);
+  if (a.kind !== "command") void warmOriginalRecipients(owner, [a]).catch(() => undefined);
   return c.json({ id: a.id, digest: a.digest, status: a.status, expiresAt: new Date(a.expiresAt).toISOString() }, 201);
 });
 
@@ -1174,6 +1194,124 @@ omniApi.post("/hooks/proactive", async c => {
  const body=await jsonBody(c);if(!body)return bad(c,"JSON object required");
  try {const decision=parseProactiveDecision(body);const result=await publishProactive(omniConfig.ownerEmail(),decision);return c.json(result,result.replayed?200:201);}
  catch(e){if(e instanceof ProactiveError)return c.json({error:e.code},e.status);return hermesFailure(c,e);}
+});
+
+/** The understanding step's card for one item. Proposes nothing outward; see docs/omni-module.md § Item cards. */
+omniApi.post("/hooks/cards", async (c) => {
+  const b = await jsonBody(c);
+  if (!b) return bad(c, "a JSON object body is required");
+  try {
+    const r = await publishCard(omniConfig.ownerEmail(), parseCardPublish(b));
+    return c.json({ card: cardView(r.card), created: r.created, changed: r.changed, droppedFacts: r.droppedFacts, ...(r.ignored ? { ignored: r.ignored } : {}), ...(r.flagged ? { flagged: r.flagged } : {}) }, r.created ? 201 : 200);
+  } catch (e) {
+    return cardFailure(c, e);
+  }
+});
+
+/** omni-bridge: is this thread an item card's thread? Its turns get no web, browser or fetch tools. */
+omniApi.get("/hooks/cards/thread/:threadId", (c) => {
+  const threadId = c.req.param("threadId") ?? "";
+  if (!SESSION_ID_RE.test(threadId)) return bad(c, "threadId: a thread (Hermes session) id");
+  return c.json({ carded: cardsByThread(omniConfig.ownerEmail(), threadId).length > 0 });
+});
+
+/** omni_card: the card's own turn posts an updated card into Decide. */
+omniApi.post("/hooks/cards/thread", async (c) => {
+  const b = await jsonBody(c);
+  if (!b || typeof b.threadId !== "string" || !SESSION_ID_RE.test(b.threadId)) return bad(c, "threadId: the card's thread (Hermes session) id");
+  try {
+    const r = await updateCardFromThread(omniConfig.ownerEmail(), b.threadId, b);
+    return c.json({ card: cardView(r.card), droppedFacts: r.droppedFacts });
+  } catch (e) {
+    return cardFailure(c, e);
+  }
+});
+
+// ── item cards (owner): Needs you's Decide / Approve / In motion ────────────
+
+const CARD_SECTIONS = ["decide", "approve", "motion"] as const;
+const validCardVersion = (v: unknown): v is string => typeof v === "string" && /^[a-f0-9]{16}$/.test(v);
+const CARD_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+omniApi.get("/cards", (c) => {
+  const section = c.req.query("section");
+  if (section !== undefined && section !== "all" && !(CARD_SECTIONS as readonly string[]).includes(section)) return bad(c, "section: decide|approve|motion|all");
+  expireApprovals();
+  const { cards, counts } = listCardViews(omniConfig.ownerEmail());
+  return c.json({ cards: section && section !== "all" ? cards.filter((v) => v.section === section) : cards, counts });
+});
+
+omniApi.get("/cards/:id", (c) => {
+  const id = c.req.param("id") ?? "";
+  expireApprovals();
+  settleCardDrafts(omniConfig.ownerEmail());
+  const card = CARD_ID_RE.test(id) ? getCard(omniConfig.ownerEmail(), id) : null;
+  return card ? c.json({ card: cardView(card) }) : c.json({ error: "not_found" }, 404);
+});
+
+omniApi.post("/cards/:id/snooze", async (c) => {
+  if (!humanOrigin(c).human) return c.json({ error: "human_origin_required" }, 403);
+  const b = await jsonBody(c);
+  if (!b) return bad(c, "a JSON object body is required");
+  const until = b.until;
+  const now = Date.now();
+  if (typeof until !== "number" || !Number.isSafeInteger(until) || until <= now || until > now + 30 * 86_400_000) return bad(c, "until: a future timestamp within 30 days");
+  try {
+    return c.json({ card: cardView(snoozeCard(omniConfig.ownerEmail(), c.req.param("id") ?? "", until, now)) });
+  } catch (e) {
+    return cardFailure(c, e);
+  }
+});
+
+omniApi.post("/cards/:id/dismiss", async (c) => {
+  if (!humanOrigin(c).human) return c.json({ error: "human_origin_required" }, 403);
+  const b = await jsonBody(c);
+  if (!b || (b.reason !== "not-needed" && b.reason !== "done")) return bad(c, "reason: not-needed|done");
+  try {
+    const o = humanOrigin(c);
+    expireApprovals();
+    return c.json({ card: cardView(dismissCard(omniConfig.ownerEmail(), c.req.param("id") ?? "", b.reason, Date.now(), { via: o.via, device: o.device })) });
+  } catch (e) {
+    return cardFailure(c, e);
+  }
+});
+
+omniApi.post("/cards/:id/instruct", async (c) => {
+  const o = humanOrigin(c);
+  if (!o.human) return c.json({ error: "human_origin_required" }, 403);
+  const key = idemKeyOf(c);
+  if (!key) return bad(c, "Idempotency-Key header: 8–200 characters of [A-Za-z0-9._:-] (required)");
+  const b = await jsonBody(c);
+  if (!b || typeof b.text !== "string") return bad(c, "text: required");
+  if (!validCardVersion(b.cardVersion)) return bad(c, "cardVersion: the card's version as it was shown");
+  const owner = omniConfig.ownerEmail();
+  try {
+    const r = instructCard(owner, c.req.param("id") ?? "", b.text, key, { via: o.via, device: o.device }, b.cardVersion);
+    if (r.replayed) c.header("Idempotent-Replayed", "true");
+    else omniAudit({ actor: owner, via: o.via, action: "card.instruct", threadId: (r.body.threadId as string | null) ?? null, status: "ok" });
+    return c.json(r.body, r.status);
+  } catch (e) {
+    return cardFailure(c, e);
+  }
+});
+
+omniApi.post("/cards/:id/choose", async (c) => {
+  const o = humanOrigin(c);
+  if (!o.human) return c.json({ error: "human_origin_required" }, 403);
+  const key = idemKeyOf(c);
+  if (!key) return bad(c, "Idempotency-Key header: 8–200 characters of [A-Za-z0-9._:-] (required)");
+  const b = await jsonBody(c);
+  if (!b || typeof b.optionId !== "string" || !b.optionId) return bad(c, "optionId: required");
+  if (!validCardVersion(b.cardVersion)) return bad(c, "cardVersion: the card's version as it was shown");
+  const owner = omniConfig.ownerEmail();
+  try {
+    const r = await chooseCardOption(owner, c.req.param("id") ?? "", b.optionId, key, { via: o.via }, b.cardVersion);
+    if (r.replayed) c.header("Idempotent-Replayed", "true");
+    else omniAudit({ actor: owner, via: o.via, action: "card.choose", approvalId: (r.body.approval as { id?: string } | null)?.id ?? null, threadId: (r.body.threadId as string | null) ?? null, status: "ok" });
+    return c.json(r.body, r.status);
+  } catch (e) {
+    return cardFailure(c, e);
+  }
 });
 
 // ── M3 nudges: hooks only propose, app presses only start private work ─────────
@@ -1282,7 +1420,7 @@ omniApi.get("/hooks/nudges/jobs",async c=>{
 omniApi.get("/hooks/nudges/sources",c=>c.json(priorNudgeSources(omniConfig.ownerEmail())));
 omniApi.post("/hooks/nudges/resolve",async c=>{
  const b=await jsonBody(c);if(!b||b.complete!==true||!Array.isArray(b.sourceIds)||b.sourceIds.length>5000||b.sourceIds.some(id=>typeof id!=="string"||!NOTE_ID_RE.test(id)))return bad(c,"complete verified resolution IDs required");
- for(const id of new Set(b.sourceIds as string[])){const resolved=resolveNudgeSource(omniConfig.ownerEmail(),id);if(resolved)publishNotice({type:"card",id:resolved,op:"nudge"});}
+ for(const id of new Set(b.sourceIds as string[])){resolveCardSource(omniConfig.ownerEmail(),id);const resolved=resolveNudgeSource(omniConfig.ownerEmail(),id);if(resolved)publishNotice({type:"card",id:resolved,op:"nudge"});}
  return c.json({resolved:new Set(b.sourceIds as string[]).size});
 });
 omniApi.post("/hooks/nudges/audit",async c=>{

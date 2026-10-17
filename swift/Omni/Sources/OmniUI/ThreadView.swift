@@ -159,7 +159,7 @@ struct ThreadView: View {
                             Text("Nothing here yet.").foregroundStyle(Color.quietText).frame(maxWidth: .infinity)
                         }
                         ForEach(model.timeline) { item in
-                            TimelineRow(item: item, model: model, approvals: session.approvals)
+                            TimelineRow(item: item, model: model, approvals: session.approvals, cards: session.cards)
                         }
                         Color.clear.frame(height: 1).id("bottom")
                     }

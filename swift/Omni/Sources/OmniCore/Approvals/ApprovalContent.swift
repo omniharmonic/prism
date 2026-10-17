@@ -20,6 +20,9 @@ public struct ApprovalContent: Equatable, Sendable {
     public let body: String?
     /// The payload key ``body`` came from.
     public let bodyKey: String?
+    /// Draft recipients who were not on the item it answers, as written (sorted). Their entries in
+    /// ``fields`` read "<address> (New recipient)".
+    public let newRecipients: [String]
     /// A device sign-in's matching code (`matchCode`, e.g. "482 913"), shown on the sign-in
     /// page the request came from. The owner compares the two before approving: a card
     /// whose code differs from — or is missing on — his sign-in page is someone else's.
@@ -44,10 +47,13 @@ public struct ApprovalContent: Equatable, Sendable {
     }
 
     public init(_ approval: Approval) {
-        self.init(kind: approval.kind, payload: approval.payload)
+        self.init(kind: approval.kind, payload: approval.payload, newRecipients: approval.newRecipients)
     }
 
-    public init(kind: ApprovalKind, payload: JSONValue) {
+    /// The payload keys that hold people a draft goes to.
+    static let recipientKeys: Set<String> = ["to", "cc", "expectTo", "attendees"]
+
+    public init(kind: ApprovalKind, payload: JSONValue, newRecipients: Set<String> = []) {
         let spec = Self.spec(for: kind)
         kindLabel = spec.label
         let object = payload.objectValue ?? [:]
@@ -64,8 +70,11 @@ public struct ApprovalContent: Equatable, Sendable {
             seen.insert(key)
             guard let value = object[key], !value.isNull else { continue }
             let text = Self.text(value)
+            let marked = Self.recipientKeys.contains(key) && kind != .walletProposal && !newRecipients.isEmpty
+                ? value.stringArrayValue.map { list in list.map { newRecipients.contains($0) ? "\($0) (\(CardText.newRecipient))" : $0 }.joined(separator: ", ") }
+                : nil
             let display = kind == .command && key == "origin" ? Self.askedBy(text)
-                : Self.timeKeys.contains(key) ? Self.momentText(text) ?? text : text
+                : Self.timeKeys.contains(key) ? Self.momentText(text) ?? text : marked ?? text
             fields.append(Field(key: key, label: label, value: display))
         }
         var body: String?
@@ -83,6 +92,7 @@ public struct ApprovalContent: Equatable, Sendable {
         self.fields = fields
         self.body = body
         self.bodyKey = body == nil ? nil : spec.body
+        self.newRecipients = newRecipients.sorted()
     }
 
     struct Spec {

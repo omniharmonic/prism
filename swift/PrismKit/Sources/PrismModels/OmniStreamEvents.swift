@@ -12,6 +12,8 @@ public enum OmniStreamEvent: Sendable, Equatable {
     case toolUse(id: String, name: String, input: JSONValue)
     case toolResult(toolUseId: String, ok: Bool, summary: String)
     case card(RecordCard)
+    /// An item card was created or changed in this thread (the same object Needs you shows).
+    case itemCard(OmniCard)
     /// A draft was proposed, or a decision finished.
     case approval(Approval)
     /// Thread state; `reason` = an error code, `queued`, `agent_message`,
@@ -69,6 +71,8 @@ public struct OmniStreamEnvelope: Sendable, Equatable {
                 return .toolResult(toolUseId: id, ok: ok, summary: obj["summary"]?.stringValue ?? "")
             case "card":
                 return sub("card", RecordCard.self).map(OmniStreamEvent.card)
+            case "item_card":
+                return sub("card", OmniCard.self).map(OmniStreamEvent.itemCard)
             case "approval":
                 return sub("approval", Approval.self).map(OmniStreamEvent.approval)
             case "status":
@@ -119,6 +123,9 @@ public struct TurnTranscript: Sendable, Equatable {
     public private(set) var runId: String?
     /// The most recent turn's result.
     public private(set) var result: TurnResult?
+    /// Item cards seen on the stream, newest state per card id (kept beside `items`: the app
+    /// renders them from its card model by id, so every surface shows the same state).
+    public private(set) var itemCards: [OmniCard] = []
 
     public init(lastSeq: Int = 0) {
         self.lastSeq = lastSeq
@@ -158,6 +165,8 @@ public struct TurnTranscript: Sendable, Equatable {
             }
         case .card(let card):
             items.append(.card(card))
+        case .itemCard(let card):
+            if let i = itemCards.firstIndex(where: { $0.id == card.id }) { itemCards[i] = card } else { itemCards.append(card) }
         case .approval(let approval):
             // A decision that finished updates the card already shown.
             if let i = items.firstIndex(where: { if case .approval(let a) = $0 { return a.id == approval.id } else { return false } }) {

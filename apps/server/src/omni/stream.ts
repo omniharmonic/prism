@@ -38,7 +38,7 @@
  *                                                    event for the same id corrects the first)
  *   status      {state, reason?}                     run.queued, approval.request (Hermes' own)
  *   result      {ok, durationMs, errorCode?}         run.completed, error
- * `card` and `approval` are added by the turn runner (records.ts, approvals.ts), not here.
+ * `card`, `item_card` and `approval` are added by the turn runner and the gateway, not here.
  *
  * SECURITY: tool inputs are redacted + truncated (`redactToolInput`), text and summaries
  * are secret-scrubbed; Hermes' raw tool output never reaches the app — it is read here only
@@ -55,6 +55,7 @@ export type OmniEvent =
   | { t: "tool_use"; id: string; name: string; input: unknown }
   | { t: "tool_result"; toolUseId: string; ok: boolean; summary: string }
   | { t: "card"; card: Record<string, unknown> }
+  | { t: "item_card"; card: Record<string, unknown> }
   | { t: "approval"; approval: Record<string, unknown> }
   | { t: "status"; state: string; reason?: string }
   | { t: "result"; ok: boolean; durationMs: number; errorCode?: string; error?: string };

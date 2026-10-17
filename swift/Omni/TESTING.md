@@ -96,7 +96,7 @@ launched with `OMNI_UITEST=1`:
   animation to end before each step; a spinner removed mid-transition had it waiting a minute
   at a time — one test took 19 minutes instead of one);
 - `OMNI_UITEST_FAULTS` changes a few answers to show states the dev backend cannot produce:
-  `digest-mismatch`, `markdown-sample`, `today-partial`, `today-fail`, `threads-fail`, `jobs-fail`, `sample-data`;
+  `digest-mismatch`, `card-sample` (Needs you's cards are made-up ones that change state when tapped, no backend), `markdown-sample`, `today-partial`, `today-fail`, `threads-fail`, `jobs-fail`, `sample-data`;
 - it refuses any server that is not `http://127.0.0.1:<port>`.
 
 `Scripts/check-release.sh` checks the source (the file and every use of it sit inside
@@ -118,6 +118,7 @@ release.
 | `test09SettingsAndSignOut` | Settings; Diagnostics; Copy All; Sign Out with its confirmation; back at sign-in |
 | `test10MacKeysAndWindow` (Mac) | ⌘N, the cursor in the composer, Shift-Return, Return, ⌘R, ⌘F, ⌘, |
 | `AccessibilityAuditTests` (iOS) | `performAccessibilityAudit` on sign-in, Today, Needs you, Threads, Recurring, a thread with a draft, a thread with a record card, New Chat, Settings |
+| `CardsUITests` | Needs you with sample cards (`card-sample`, `sample-data`): Decide, a one-tap option moves a card to In motion, Something else, Not needed; options are at least 44 pt tall (iOS); accessibility audit. Screenshots `cards-needs-you`, `cards-in-motion`, `cards-after-actions` |
 | `PhaseOneTests` | New Chat in the bar of Today, Needs you, Recurring, a thread and the Threads list (on iPad with the sidebar put away), labelled "New Chat", opening the composer; Settings on each iPhone tab; a markdown answer drawn as blocks (`markdown-sample` fault) |
 
 **What the accessibility audit asserts, and what it only reports.** A finding fails the test
@@ -155,6 +156,10 @@ swift test --filter OmniUISnapshotTests        # writes qa/screenshots/omni/mac/
 (transparent, behind everything, never key) and draws them into PNGs: 38 screens × light,
 dark, narrow. (`OMNI_SNAPSHOT_DIR=<folder>` writes them somewhere else.) The data is an in-memory gateway (`SampleService`), shaped as the real one
 answers. Safe to run while you work: nothing appears, nothing takes focus.
+
+Item-card screens in the gallery: `card-<state>` (one per card state, 8), `card-long-text-accessibility`
+(xxxL-and-up, four 80-character options, four facts), `needs-you-sections`, `needs-you-clear`,
+`thread-inline-card`, `settings-attention`.
 
 Its limits, plainly:
 

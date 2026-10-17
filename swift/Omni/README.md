@@ -73,6 +73,12 @@ keeps its sign-in there (see "Decisions" below).
   text of what would be sent; Send / Edit / Revise / Cancel Draft. Send is not offered when
   the draft does not match the server's fingerprint. Send asks for Touch ID or your
   password first.
+- **Needs you** has three sections: Decide (Omni's cards: what it understood about an email,
+  invite or task, with two to four ways to handle it; one tap starts the work, or write
+  "Something else…"), Approve (drafts ready to send, exactly as the approval card) and In
+  motion (Omni working, or waiting on someone else). Later and Not needed take a card away.
+  Nothing is sent by choosing an option; a draft waits for Send. The proactivity dial and the
+  nudge audit are in Settings → Attention.
 - **Today** reads the day’s agenda and tasks, names unavailable sections, and keeps
   previous content when refresh fails. **Recurring** creates and edits guarded local agent
   jobs, dispatches Run Now, and manages schedules; legacy script runners remain read-only.

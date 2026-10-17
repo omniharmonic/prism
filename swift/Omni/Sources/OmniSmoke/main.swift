@@ -187,6 +187,7 @@ func follow(_ omni: OmniClient, _ threadID: String, after: Int, onEvent: (@Senda
         case .toolUse(_, let name, _): out.names.append("tool_use(\(name))")
         case .toolResult: out.names.append("tool_result")
         case .card: out.names.append("card")
+        case .itemCard: out.names.append("item_card")
         case .approval: out.names.append("approval")
         case .status(let state, let reason): out.names.append("status(\(state.rawValue)\(reason.map { ":\($0)" } ?? ""))")
         case .result(let ok, _, let code): out.names.append("result(\(ok ? "ok" : code ?? "failed"))")
@@ -689,6 +690,7 @@ func run() async -> Int32 {
             case .tool: return "tool"
             case .card: return "card"
             case .approval: return "approval"
+            case .itemCard: return "item_card"
             case .turnEnded: return "ended"
             }
         }

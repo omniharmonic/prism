@@ -57,6 +57,7 @@ public final class ThreadModel {
 
     private let service: any OmniService
     private let approvals: ApprovalCenter
+    private let cards: CardsModel?
     private let sink: ErrorSink
     private let sleep: @Sendable (Duration) async throws -> Void
     private var detail: ThreadDetail?
@@ -90,11 +91,12 @@ public final class ThreadModel {
     }
 
     private let onRead: @MainActor (String, Int) -> Void
-    init(threadID: String, service: any OmniService, approvals: ApprovalCenter, sink: ErrorSink, sleep: @escaping @Sendable (Duration) async throws -> Void, onRead: @escaping @MainActor (String, Int) -> Void = { _, _ in }, onUnavailable: @escaping @MainActor (String) -> Void = { _ in }) {
+    init(threadID: String, service: any OmniService, approvals: ApprovalCenter, cards: CardsModel? = nil, sink: ErrorSink, sleep: @escaping @Sendable (Duration) async throws -> Void, onRead: @escaping @MainActor (String, Int) -> Void = { _, _ in }, onUnavailable: @escaping @MainActor (String) -> Void = { _ in }) {
         self.onRead = onRead
         self.threadID = threadID
         self.service = service
         self.approvals = approvals
+        self.cards = cards
         self.sink = sink
         self.sleep = sleep
         self.onUnavailable = onUnavailable
@@ -106,14 +108,23 @@ public final class ThreadModel {
 
     /// Everything the transcript shows, top to bottom.
     public var timeline: [TimelineItem] {
-        let liveItems = ThreadTimeline.live(transcript, turnRunning: isRunning)
+        // A draft shows once: while its card is draft-ready and shown inline, the card carries it.
+        var owned = Set<String>()
+        for card in (detail?.itemCards ?? []) + transcript.itemCards {
+            let current = cards?.card(for: card.id) ?? card
+            if current.state == .draftReady, let id = current.latestApprovalID { owned.insert(id) }
+        }
+        let liveItems = ThreadTimeline.live(transcript, turnRunning: isRunning).filter {
+            if case .approval(let id) = $0 { return !owned.contains(id) }
+            return true
+        }
         var liveApprovals = Set<String>()
         var liveCards = Set<String>()
         for item in liveItems {
             if case .approval(let id) = item { liveApprovals.insert(id) }
             if case .card(let id, _) = item { liveCards.insert(id) }
         }
-        var items = detail.map { ThreadTimeline.history($0, excludingApprovals: liveApprovals, excludingCards: liveCards) } ?? []
+        var items = detail.map { ThreadTimeline.history($0, excludingApprovals: liveApprovals.union(owned), excludingCards: liveCards) } ?? []
         if let createdVoicePrompt {
             items.insert(.message(id: "created-voice", role: .user, text: createdVoicePrompt, at: nil), at: 0)
         }
@@ -125,6 +136,9 @@ public final class ThreadModel {
             }
         }
         items.append(contentsOf: liveItems)
+        // Cards first seen on the stream (not yet in the stored detail) join at the end.
+        let stored = Set(detail?.itemCards.map(\.id) ?? [])
+        items.append(contentsOf: transcript.itemCards.filter { !stored.contains($0.id) }.map { .itemCard(id: $0.id) })
         if let turnEnded, !isRunning { items.append(.turnEnded(text: turnEnded)) }
         return items
     }
@@ -240,6 +254,7 @@ public final class ThreadModel {
         thread = fresh.thread
         if fresh.thread.lastSeq == acknowledgedSequence { thread?.unread = 0 }
         approvals.ingest(fresh.approvals)
+        cards?.ingest(fresh.itemCards)
         if followTask == nil { cursor = max(cursor, fresh.thread.lastSeq) }
         // The server now lists the message that was pending.
         if let pendingText, sendState == .idle, fresh.messages.last(where: { $0.role == .user })?.text == pendingText {
@@ -389,6 +404,7 @@ public final class ThreadModel {
                             progressed = true
                         }
                         if case .approval(let approval) = envelope.event { approvals.ingest([approval]) }
+                        if case .itemCard(let card) = envelope.event { cards?.ingest([card]) }
                         // Stored events of earlier turns are history, not this turn.
                         if replayedVoiceTurn != nil {
                             guard envelope.turnId == activeTurnID else { continue }

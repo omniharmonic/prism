@@ -37,7 +37,7 @@ final class MacSnapshotTests: XCTestCase {
         for variant in Self.variants {
             var walk = Walk(variant: variant, root: Self.outputRoot)
             try await walk.run()
-            XCTAssertGreaterThan(walk.count, 25, "fewer screens than expected were drawn for \(variant.folder)")
+            XCTAssertGreaterThan(walk.count, 35, "fewer screens than expected were drawn for \(variant.folder)")
         }
     }
 
@@ -71,6 +71,23 @@ struct SampleWindow: View {
         .environment(\.navigator, Navigator { session.destination = $0 })
         .task { await session.threads.refresh() }
         .task { await session.approvals.refresh() }
+    }
+}
+
+/// One card on its own, at a column's width.
+struct CardHarness: View {
+    let cards: CardsModel
+    let approvals: ApprovalCenter
+    let id: String
+    /// A window cannot be taller than the display, so a tall card is drawn in slices: this many points scrolled up.
+    var slice: CGFloat = 0
+    var body: some View {
+        // Not a ScrollView: the picture shows the card from its top, however tall it grows.
+        GeometryReader { _ in
+            CardView(cards: cards, approvals: approvals, id: id, now: CardingSampleService.t0).padding()
+                .offset(y: -slice)
+        }
+            .task { await approvals.refresh() }
     }
 }
 
@@ -183,7 +200,7 @@ struct Walk {
     }
 
     /// The signed-in window on `destination`.
-    mutating func screen(_ name: String, service: SampleService, _ destination: Destination?, search: String = "", settle: Duration = .milliseconds(900), then act: (@MainActor (AppModel) async -> Void)? = nil) async throws {
+    mutating func screen(_ name: String, service: SampleService, _ destination: Destination?, search: String = "", height: CGFloat? = nil, settle: Duration = .milliseconds(900), then act: (@MainActor (AppModel) async -> Void)? = nil) async throws {
         let app = model(service: service, diagnostics: DiagnosticsLog())
         await app.start()
         app.session?.threads.searchText = search
@@ -191,7 +208,7 @@ struct Walk {
         var after: (@MainActor () async -> Void)?
         if let act { after = { await act(app) } }
         guard let session = app.session else { return XCTFail("the sample did not sign in") }
-        try await draw(name, settle: settle, SampleWindow(session: session), then: after)
+        try await draw(name, size: height.map { CGSize(width: variant.size.width, height: $0) }, settle: settle, SampleWindow(session: session).environment(\.cardsNow, CardingSampleService.t0), then: after)
         app.session?.stop()
     }
 
@@ -251,7 +268,52 @@ struct Walk {
 
         // Approvals: the queue, and each kind in its thread.
         try await screen("needs-you-list", service: service, .needsYou)
-        try await screen("needs-you-nudges", service: nudging(), .needsYou)
+        try await screen("needs-you-sections", service: CardingSampleService.carding(), .needsYou)
+        let lower = CardingSampleService.carding()
+        lower.cardItems = lower.cardItems.filter { $0.section != .decide }
+        try await screen("needs-you-approve-motion", service: lower, .needsYou)
+        try await screen("thread-inline-card", service: CardingSampleService.carding(), .thread("card-thread"))
+        let clear = CardingSampleService()
+        clear.cardItems = [CardingSampleService.working(), CardingSampleService.waiting()]
+        try await screen("needs-you-clear", service: clear, .needsYou)
+        let attention = nudging()
+        attention.laterItems = [NudgingSampleService.nudge("later", kind: "task", title: "Renew the domain", summary: "Snoozed until Monday.", reasons: ["Snoozed"])]
+        attention.audit = try? JSONDecoder().decode(NudgeWeeklyAudit.self, from: Data(#"{"caught":7,"missed":1,"noise":3,"replied":9,"unknownChat":2,"since":1792000000000,"through":1792600000000}"#.utf8))
+        let nudgeCenter = NudgeCenter(service: attention, sink: ErrorSink(onSignedOut: {}))
+        try await draw("settings-attention", size: CGSize(width: 620, height: 900), NavigationStack { AttentionSettingsView(center: nudgeCenter) })
+
+        // Item cards: every state and source alone, then the long-text cases.
+        for (name, card) in CardingSampleService.gallery() {
+            let service = CardingSampleService.carding()
+            let sink = ErrorSink(onSignedOut: {})
+            let model = CardsModel(service: service, nudges: nil, sink: sink)
+            model.ingest([card])
+            try await draw("card-\(name)", size: CGSize(width: 560, height: 700), CardHarness(cards: model, approvals: ApprovalCenter(service: service, sink: sink), id: card.id))
+        }
+        // Draft ready, then a new message on the item, and a draft recipient who was not on it.
+        let flaggedService = CardingSampleService.newMessageService()
+        let flaggedSink = ErrorSink(onSignedOut: {})
+        let flaggedModel = CardsModel(service: flaggedService, nudges: nil, sink: flaggedSink)
+        flaggedModel.ingest([CardingSampleService.newMessage()])
+        try await draw("card-draft-ready-new-message", size: CGSize(width: 560, height: 860), CardHarness(cards: flaggedModel, approvals: ApprovalCenter(service: flaggedService, sink: flaggedSink), id: "card-ready"))
+        // A draft-ready card whose draft cannot be read: the error and Try again, not an endless "Loading".
+        let failedService = CardingSampleService()
+        let failedSink = ErrorSink(onSignedOut: {})
+        let failedModel = CardsModel(service: failedService, nudges: nil, sink: failedSink)
+        failedModel.ingest([CardingSampleService.draftReady()])
+        try await draw("card-draft-failed", size: CGSize(width: 560, height: 700), CardHarness(cards: failedModel, approvals: ApprovalCenter(service: failedService, sink: failedSink), id: "card-ready"))
+        let longService = CardingSampleService.carding()
+        let longSink = ErrorSink(onSignedOut: {})
+        let longModel = CardsModel(service: longService, nudges: nil, sink: longSink)
+        longModel.ingest([CardingSampleService.long()])
+        let longApprovals = ApprovalCenter(service: longService, sink: longSink)
+        let sliceHeight: CGFloat = 780
+        for (name, type, slices) in [("card-long-text", DynamicTypeSize.large, 2), ("card-long-text-xxxl", .xxxLarge, 2), ("card-long-text-accessibility", .accessibility3, 2)] {
+            for index in 0..<slices {
+                try await draw("\(name)-\(index + 1)", size: CGSize(width: 430, height: sliceHeight),
+                               CardHarness(cards: longModel, approvals: longApprovals, id: "card-long", slice: CGFloat(index) * (sliceHeight - 40)).environment(\.dynamicTypeSize, type))
+            }
+        }
         for (index, entry) in Self.kinds.enumerated() {
             try await screen("approval-\(entry.kind)", service: service, .thread("n\(index)"))
         }

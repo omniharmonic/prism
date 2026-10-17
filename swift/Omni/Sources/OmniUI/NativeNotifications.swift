@@ -172,7 +172,9 @@ public final class NativeNotifications: NSObject, UNUserNotificationCenterDelega
         guard let app, let session = app.session,
               let destination = navigation.take(signedIn: app.phase == .signedIn,
                 unlocked: !PrivacyLock.shared.locked, navigationReady: readySession === session) else { return }
+        let card = navigation.takeFocusedCard()
         session.openExternal(destination)
+        if let card { session.cards?.focus(card) }
     }
 
     nonisolated public func userNotificationCenter(_ center: UNUserNotificationCenter,

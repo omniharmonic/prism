@@ -237,7 +237,7 @@ struct SidebarList: View {
             row("Today", "sun.max").tag(Destination.today)
                 .accessibilityIdentifier("nav.today")
             row("Needs you", "hand.raised")
-                .badge(session.approvals.pendingCount)
+                .badge(session.needsYouCount)
                 .tag(Destination.needsYou)
                 .accessibilityIdentifier("nav.needsYou")
             ThreadSections(threads: session.threads) { id in Task { await session.removeThread(id) } }
@@ -343,7 +343,7 @@ struct TabMainView: View {
                         .screenActions(session)
                 }
             }
-            .badge(session.approvals.pendingCount)
+            .badge(session.needsYouCount)
             SwiftUI.Tab("Threads", systemImage: "bubble.left.and.text.bubble.right", value: Tab.threads) {
                 NavigationStack(path: $path) {
                     ThreadListScreen(session: session, showingSettings: $showingSettings)
