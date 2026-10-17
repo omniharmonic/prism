@@ -244,6 +244,10 @@ before sending again.
 |---|---|---|
 | `GET /api/omni/approvals?status=pending` | | `{approvals:[Approval]}` (expired ones are marked first) |
 | `GET /api/omni/approvals/:id` | | `{approval}` |
+
+Approval views carry `originalRecipients` (lowercased addresses on the item the draft answers: the
+email an `email-reply` answers, else the source item of the card an `email`/`calendar-invite` came
+from; `null` when unknown). The app labels every draft recipient not in it "New recipient".
 | `PUT /api/omni/approvals/:id` (edit) | `{digest: <of the draft edited>, payload}` | `201 {approval: <NEW, new digest>, replaced}`; the old one becomes `revised`. Human origin required. |
 | `POST /api/omni/approvals/:id/decision` (alias `/decide`) | `{decision: "send"\|"cancel"\|"revise", digest, feedback?}` (`approve`/`reject` and `payloadHash` accepted as synonyms); header `Idempotency-Key` **required** | see below |
 
@@ -255,6 +259,10 @@ Decision rules, in order:
    `Idempotent-Replayed: true`; another key → `409 already_decided` (`in_progress` while
    executing).
 4. `digest` ≠ the stored digest → `409 digest_mismatch` (the app must show the draft again).
+   An `email-reply` whose To/Cc names anyone not on the email it answers (its note's from / to /
+   cc / reply-to, read fresh; the owner's own address allowed) → `409 target_changed`, nothing
+   claimed, the approval stays pending (edit or cancel it). The Proton executor sends to the
+   draft's `expectTo`/`cc` as written, so this is where the reply's recipients are checked.
 5. `cancel` → `cancelled`. `revise` → `revised`, and with `feedback` a new turn asks Hermes
    for a new draft (`{approval, turnId}`).
 6. `send`: executor not wired → `503 executor_unavailable`; family flag off →
@@ -330,8 +338,15 @@ Wire shape (`cardView`, pinned by `apps/server/test/omni-cards-fixture.test.ts` 
  "recommended":"<option id>|null","itemRefs":["<note id>",…],"threadId":"…","approvalIds":["apr_…"],
  "chosenOptionId":null,"outcomes":[{"at":"ISO","action":"proposed|choose|…"}],
  "createdAt":"ISO","updatedAt":"ISO","snoozedUntil":null,
- "section":"decide|approve|motion|null","transitional":false,"nudgeId":null}
+ "section":"decide|approve|motion|null","transitional":false,"nudgeId":null,
+ "version":"<16 hex>","sourceChanged":false}
 ```
+
+`version` is the card's content version (a prefix of its content digest): choose and instruct send
+it back as `cardVersion`. It changes when the options, context or source revision change, not on a
+state change. `sourceChanged` is true while a `working` or `draft-ready` card has a newer message on
+its item than the one he chose against (see below). `waiting` is **reserved for Phase 2**: nothing
+moves a card there yet; its In motion row and its reopen rule are in place for when something does.
 
 Rules:
 
@@ -343,7 +358,13 @@ Rules:
 - A context fact is kept only if its `source` is null, `calendar`, one of the card's `itemRefs`, or a
   vault note that resolves. Other facts are dropped and counted (`droppedFacts`), never the card.
 - A re-publish updates only a `proposed`/`snoozed` card. `working` and `draft-ready` answer
-  `200 {ignored:"owner_acted"}` and change nothing. A card that is `sent`, `done`, `dismissed` or
+  `200 {ignored:"owner_acted"}` and change nothing for the same or a null `sourceRevision`. With a
+  NEW non-null `sourceRevision` (a new message while his draft waits or his turn runs) the card keeps
+  its state, options and pending draft, takes the new revision and context, sets `sourceChanged`,
+  records outcome `source-changed`, pushes `OMNI_CARD` and answers `200 {changed:true,
+  flagged:"source_changed"}`. Nothing is cancelled or sent; the app warns "Something new arrived
+  since this draft — review before sending" on the card and the approval, which stays decidable.
+  The flag clears when the card goes back to Decide. A card that is `sent`, `done`, `dismissed` or
   `waiting` answers the same for the same or a null `sourceRevision`, but is REOPENED (back to
   `proposed`, content replaced, outcome `reopened`) when the item arrives with a NEW non-null
   `sourceRevision` (the person wrote again). Reopening cancels any still-pending draft linked to the
@@ -355,10 +376,10 @@ Rules:
 |---|---|---|
 | `GET /api/omni/cards?section=decide\|approve\|motion\|all` | | `{cards, counts:{decide,approve,motion}}` — open cards plus, for a nudge with no card yet, a **transitional** card (`transitional:true`, `nudgeId`, no options; its actions are the nudge routes). Urgency first, then the oldest. |
 | `GET /api/omni/cards/:id` | | `{card}` |
-| `POST /api/omni/cards/:id/choose` + `Idempotency-Key` | `{optionId}` | With a draft: `201 {card (draft-ready), approval (pending), threadId, turnId:null}` — no model turn, no executor, no push. Without: `202 {card (working), approval:null, threadId, turnId}` — a turn in the card's thread with the chosen plan (quoted as "prepared by Omni earlier, chosen by Benjamin"). Same key → the stored answer + `Idempotent-Replayed: true`; same key, other option → `409 idempotency_conflict`; card not open → `409 card_not_open`. |
-| `POST /api/omni/cards/:id/instruct` + `Idempotency-Key` | `{text}` (1–4000) | `202 {card (working), turnId}` — "Something else…": his words start the card's turn. From `proposed`, `snoozed`, `draft-ready`. From `draft-ready` it cancels the card's pending draft first (one card, one live draft). |
+| `POST /api/omni/cards/:id/choose` + `Idempotency-Key` | `{optionId, cardVersion}` | With a draft: `201 {card (draft-ready), approval (pending), threadId, turnId:null}` — no model turn, no executor, no push. Without: `202 {card (working), approval:null, threadId, turnId}` — a turn in the card's thread. The prompt says Benjamin chose the option's LABEL and quotes the plan, fenced, as Omni's own earlier proposal written from untrusted item text (never as his instruction); the app shows the plan under each option. Same key → the stored answer + `Idempotent-Replayed: true`; same key, other option → `409 idempotency_conflict`; card not open → `409 card_not_open`; `cardVersion` missing → `400`; the card changed since the device loaded it → `409 card_changed` (nothing runs; the app refreshes and says "This card was updated — here's the new version"). |
+| `POST /api/omni/cards/:id/instruct` + `Idempotency-Key` | `{text (1–4000), cardVersion}` | `202 {card (working), approval:null, threadId, turnId}` — "Something else…": his words start the card's turn. From `proposed`, `snoozed`, `draft-ready`. From `draft-ready` it cancels the card's pending draft first (one card, one live draft). Same `cardVersion` rule as choose. |
 | `POST /api/omni/cards/:id/snooze` | `{until}` (ms, ≤30 days) | `{card}` — leaves Needs you until due; an `omni_feedback` row `snooze`. |
-| `POST /api/omni/cards/:id/dismiss` | `{reason:"not-needed"\|"done"}` | `{card}` — not-needed = `noise` feedback (the item's nudge too); done resolves the item's nudge. |
+| `POST /api/omni/cards/:id/dismiss` | `{reason:"not-needed"\|"done"}` | `{card}` — not-needed = `noise` feedback (the item's nudge too); done resolves the item's nudge. Also from `draft-ready`: the card's pending draft is cancelled; a draft being sent (`approved`) → `409 send_in_flight`. |
 
 Other codes: `404 not_found`; `400 unknown_option` (choose) and `invalid_instruction` (instruct); `409 turn_running`, `in_progress` and `card_has_no_thread`. All mutations need human origin (`X-Prism-Action-Origin: agent` → 403) and are audited
 (`card.choose`, `card.instruct`).
@@ -370,8 +391,16 @@ The approval gate moves the card:
   proposed while the card is `draft-ready` links to the card and cancels the previous pending one.
 - Send → `sent` (also when the decision arrives while the card is `working`); Cancel → back to
   `proposed`; Revise with feedback → `working`; Edit → the card follows the new approval;
-  failed/unknown → stays `draft-ready` (the approval shows how it ended). Only the card's latest
+  failed/unknown → back to `proposed` with outcome `draft-failed` (detail `failed`/`unknown`; an
+  `unknown` send may have gone out, the approval says to check Sent). Only the card's latest
   approval moves it.
+- A `draft-ready` card whose latest draft EXPIRED (24 h TTL) goes back to `proposed` with outcome
+  `draft-expired`, lazily on the read routes (`GET /cards`, `/cards/:id`, `/threads/:id`), which also
+  settle a failed/unknown draft the decision did not reach. A card never sits in Approve with a draft
+  that can no longer be sent.
+- A draft he explicitly asked for (his instruction, or Revise) is pushed as `OMNI_APPROVAL`, as
+  before cards; other card drafts are announced as the card. `omni_card` pushes at most once per
+  turn, and only when the options changed.
 - When a card's turn ends (done, error or interrupted) and the card is still `working` with no new
   linked approval, it goes back to `proposed` (outcome `turn-ended`): Omni's reply or question is in
   the thread, so a card never sits in motion forever.
@@ -492,7 +521,8 @@ The native **Run with Omni** action uses the existing thread-creation API with `
 | `POST /api/omni/hooks/approvals/:id/result` | `{ok: boolean}` | `200 {id, status}` — how an approved `command` ended: `sent` or `failed`. `409` unless it is a `command` in `approved`. |
 | `POST /api/omni/hooks/approvals/:id/withdraw` | `{}` | `200 {id, status}` — the plugin stopped waiting: a pending `command` becomes `cancelled` (`decidedVia: "withdrawn"`). Idempotent. |
 | `POST /api/omni/hooks/turn` | `{sessionId}` | `202 {ok, threadId}` — a turn the app did not start (the thread continued from the Hermes CLI, a cron job, Telegram): unread +1, notice, push `OMNI_THREAD`. The app then reads the thread. While the app's own turn runs on that thread the call is acknowledged and ignored (`ignored: "turn_running"`). |
-| `POST /api/omni/hooks/cards` | `{sourceKey, sourceRevision, evidence[], kind, headline, context[], ask?, urgency, options[], recommended?, itemRefs[]}` | `201 {card, created:true}` · `200 {card, changed, ignored?, droppedFacts}` — the understanding step's card. Evidence is re-read (stale `409 stale_evidence`, missing `422 source_unavailable`); a dismissed/resolved/archived item `409 source_suppressed`; invalid input `400 invalid_*` (including `invalid_evidence`) or `headline_not_readable`; thread = the item's nudge thread or `omni-proactive-<hash>` (created in Hermes when missing). Sends nothing. |
+| `POST /api/omni/hooks/cards` | `{sourceKey, sourceRevision, evidence[], kind, headline, context[], ask?, urgency, options[], recommended?, itemRefs[]}` | `201 {card, created:true}` · `200 {card, changed, ignored?, flagged?, droppedFacts}` — the understanding step's card. Evidence is re-read (stale `409 stale_evidence`, missing `422 source_unavailable`); a dismissed/resolved/archived item `409 source_suppressed`; invalid input `400 invalid_*` (including `invalid_evidence`) or `headline_not_readable`; thread = the item's nudge thread or `omni-proactive-<hash>` (created in Hermes when missing). Sends nothing. |
+| `GET /api/omni/hooks/cards/thread/:threadId` | | `200 {carded}` — is this thread an item card's thread? omni-bridge blocks web, browser and fetch tools on such a thread's turns (fails closed when it cannot ask). |
 | `POST /api/omni/hooks/cards/thread` | `{threadId, options[], recommended?, headline?, ask?, urgency?, context?, kind?}` | `200 {card, droppedFacts}` — `omni_card` from the card's own turn: new options, back to `proposed`, pushed. `404 no_card_for_thread`; `409 draft_waiting` while a draft waits for him. |
 
 The plugin is `hermes/plugins/omni-bridge` in the agent repo. `omni_propose` exists only on
