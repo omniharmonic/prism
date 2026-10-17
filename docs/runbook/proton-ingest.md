@@ -25,7 +25,7 @@ synthetic messages.
 | Notes | **One note per message**, tag `email`. |
 | Note path | `vault/messages/email/<slugify(subject)[:80] or no-subject>-<sha256(Message-ID)[:8]>` |
 | Content | `# subject`, then `**From:**`, `**To:**`, `**Cc:**`, `**Date:**` (host-local `YYYY-MM-DD HH:MM`) and `**Attachments:**` (names only), then `---` and the body. The body is the text/plain parts, or else stripped HTML. It is capped at 20 000 characters. |
-| Metadata (in this order) | `type, subject, from, to, date, isUnread, labels, messageCount (1), threadId, messageId, lastMessageAt, source ("proton-bridge"), account, mailbox, uid` |
+| Metadata (in this order) | `type, subject, from, to, cc ("" when none; notes from before Omni cards lack it), date, isUnread, labels, messageCount (1), threadId, messageId, lastMessageAt, source ("proton-bridge"), account, mailbox, uid` |
 | `labels` | The folder, `UNREAD`, and header-derived labels: `BULK / AUTOMATED / SOCIAL / CHAT / PROMOTIONS / TRANSACTIONAL / DIRECT`. The `message-classify` skill shortcuts on these. |
 | `threadId` | The root of the References chain. `@protonmail.internalid` entries are skipped. |
 | Flags | Read/unread only. It refreshes `{isUnread, labels}` for the about 500 most recently synced messages, with one GET per note. `\Flagged` is never stored. |
