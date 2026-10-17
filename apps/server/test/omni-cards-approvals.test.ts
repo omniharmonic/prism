@@ -18,7 +18,8 @@ import { proposeApproval } from "../src/omni/propose";
 import { setOmniPusherForTests } from "../src/omni/bus";
 import { getApproval, type ExecOutcome } from "../src/omni/approvals";
 import { turnSettled, notifyTurnEnded, startTurn } from "../src/omni/turns";
-import { cardPublish } from "./omni-card-samples";
+import { cardPublish, seenVersion } from "./omni-card-samples";
+import { setParticipantsReaderForTests } from "../src/omni/recipients";
 
 const owner = config.ownerEmail;
 const revision = "2026-10-15T10:00:00Z";
@@ -34,15 +35,16 @@ beforeEach(() => {
   setHermesFetchForTests(createHermesStub({ key: process.env.OMNI_HERMES_KEY!, script: () => ({ acts: [{ say: "On it." }] }) }).fetch);
   setOmniExecutorForTests(async () => { executed += 1; return outcome; });
   setOmniPusherForTests(async (_o, kind, id) => { pushes.push(`${kind}:${id}`); });
+  setParticipantsReaderForTests(async () => ["sam@example.com"]);
   setOmniRecordSourcesForTests({ resolver: async ({ id }) => ({ id: id!, path: `mail/${id}`, tags: ["email"], updatedAt: revision }) });
 });
-after(() => { setHermesFetchForTests(null); setOmniExecutorForTests(null); setOmniPusherForTests(null); setOmniRecordSourcesForTests({ resolver: null }); });
+after(() => { setParticipantsReaderForTests(null); setHermesFetchForTests(null); setOmniExecutorForTests(null); setOmniPusherForTests(null); setOmniRecordSourcesForTests({ resolver: null }); });
 
 type Answer = { card: { state: string }; approval: { id: string; digest: string } | null; turnId: string | null };
 const publish = async (over: Record<string, unknown> = {}) =>
   ((await (await omniApi.request("/hooks/cards", { method: "POST", headers: hook, body: JSON.stringify(cardPublish(over)) })).json()) as { card: { id: string; threadId: string } }).card;
 const choose = async (id: string, optionId: string, key: string) =>
-  (await (await omniApi.request(`/cards/${id}/choose`, { method: "POST", headers: { ...ownerH(), "idempotency-key": key }, body: JSON.stringify({ optionId }) })).json()) as Answer;
+  (await (await omniApi.request(`/cards/${id}/choose`, { method: "POST", headers: { ...ownerH(), "idempotency-key": key }, body: JSON.stringify({ optionId, cardVersion: seenVersion(owner, id) }) })).json()) as Answer;
 const decide = (id: string, digest: string, decision: string, key: string, extra: Record<string, unknown> = {}) =>
   omniApi.request(`/approvals/${id}/decision`, { method: "POST", headers: { ...ownerH(), "idempotency-key": key }, body: JSON.stringify({ decision, digest, ...extra }) });
 const propose = async (body: Record<string, unknown>) =>
@@ -58,7 +60,7 @@ test("Send on a card's draft marks the card sent and takes it out of Needs you",
   assert.equal(list.cards.length, 0);
 });
 
-test("Cancel puts the card back in Decide; a failed send keeps it in Approve", async () => {
+test("Cancel puts the card back in Decide; so does a failed send (draft-failed), to choose again", async () => {
   const card = await publish();
   const r = await choose(card.id, "a", "choose-key-0001");
   assert.equal((await decide(r.approval!.id, r.approval!.digest, "cancel", "cancel-key-0001")).status, 200);
@@ -68,8 +70,9 @@ test("Cancel puts the card back in Decide; a failed send keeps it in Approve", a
   const r2 = await choose(other.id, "a", "choose-key-0002");
   outcome = { status: "failed", detail: { executor: "test", error: "mailbox_full" } };
   assert.equal((await decide(r2.approval!.id, r2.approval!.digest, "send", "send-key-00002")).status, 422);
-  assert.equal(getCard(owner, other.id)!.state, "draft-ready");
-  assert.ok(getCard(owner, other.id)!.outcomes.some((o) => o.action === "approval-failed"));
+  assert.equal(getCard(owner, other.id)!.state, "proposed");
+  assert.equal(getCard(owner, other.id)!.chosenOptionId, null);
+  assert.deepEqual(getCard(owner, other.id)!.outcomes.at(-1), { at: getCard(owner, other.id)!.outcomes.at(-1)!.at, action: "draft-failed", approvalId: r2.approval!.id, detail: "failed" });
 });
 
 test("a draft the card's turn proposes makes it draft-ready; Edit follows the new approval; commands never touch cards", async () => {

@@ -1,3 +1,4 @@
+import { cardVersion, getCard } from "../src/omni/cards";
 /** Made-up card input shared by the card tests. Every name and address is invented. */
 export const cardInput = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
   sourceKey: "mail1",
@@ -21,3 +22,9 @@ export const cardPublish = (over: Record<string, unknown> = {}): Record<string, 
   const input = cardInput(over);
   return { ...input, evidence: [{ sourceId: input.sourceKey, revision: input.sourceRevision }], ...("evidence" in over ? { evidence: over.evidence } : {}) };
 };
+
+/** The version a device that just loaded the card would send with choose / instruct ("0"×16 for an unknown card). */
+export function seenVersion(owner: string, id: string): string {
+  const c = getCard(owner, id);
+  return c ? cardVersion(c) : "0".repeat(16);
+}

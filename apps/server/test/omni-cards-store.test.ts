@@ -4,7 +4,7 @@ import { resetDb } from "./helpers";
 import { config } from "../src/config";
 import { cardInput } from "./omni-card-samples";
 import {
-  parseCardInput, upsertCard, transitionCard, getCard, cardSection, listOpenCards, cardView, linkApproval,
+  parseCardInput, upsertCard, transitionCard, getCard, cardSection, listOpenCards, cardView, cardVersion, linkApproval,
   cardForApproval, replaceCardContent, CardError, resetCardsForTests, compareCardViews,
   cardsByThread, cardBySource, cardSourceKeys, ACTED_STATES, REOPENABLE_STATES, priorCardAction, reserveCardAction, finishCardAction, releaseCardAction,
 } from "../src/omni/cards";
@@ -222,8 +222,37 @@ test("a finished card reopens when its item changes; otherwise a re-publish is i
   for (const state of ["working", "draft-ready"] as const) {
     resetCardsForTests();
     const { card } = upsertCard(owner, parseCardInput(cardInput()), "t1", 1_000);
-    transitionCard(owner, card.id, ["proposed"], state, { action: "x" }, {}, 2_000);
-    assert.equal(publish("2026-10-16T09:00:00Z").ignored, "owner_acted", state);
-    assert.equal(getCard(owner, card.id)!.state, state);
+    transitionCard(owner, card.id, ["proposed"], state, { action: "x" }, { approvalId: "apr_1" }, 2_000);
+    assert.equal(publish("2026-10-15T10:00:00Z").ignored, "owner_acted", `${state} same revision`);
+    assert.equal(publish(null).ignored, "owner_acted", `${state} null revision`);
+    assert.equal(getCard(owner, card.id)!.sourceChanged, false);
+  }
+});
+
+test("a new message while his draft waits (or his turn runs) flags the card and keeps the draft", () => {
+  const ctx = [{ text: "Sam now asks for Monday instead", source: "mail1" }];
+  for (const state of ["working", "draft-ready"] as const) {
+    resetCardsForTests();
+    const { card } = upsertCard(owner, parseCardInput(cardInput()), "t1", 1_000);
+    transitionCard(owner, card.id, ["proposed"], state, { action: "choose", optionId: "a" }, { chosenOptionId: "a", approvalId: "apr_1" }, 2_000);
+    const before = getCard(owner, card.id)!;
+    const r = upsertCard(owner, parseCardInput(cardInput({ sourceRevision: "2026-10-16T09:00:00Z", headline: "A new take", context: ctx })), "t1", 3_000);
+    assert.deepEqual([r.changed, r.flagged, r.ignored], [true, "source_changed", undefined], state);
+    const c = getCard(owner, card.id)!;
+    assert.equal(c.state, state, "not cancelled, not sent, not reopened");
+    assert.equal(c.sourceChanged, true);
+    assert.equal(c.sourceRevision, "2026-10-16T09:00:00Z");
+    assert.deepEqual(c.context, ctx, "the new context");
+    assert.equal(c.headline, before.headline, "the options and headline he chose from stay");
+    assert.deepEqual(c.options, before.options);
+    assert.deepEqual([c.chosenOptionId, c.approvalIds], ["a", ["apr_1"]]);
+    assert.equal(c.outcomes.at(-1)!.action, "source-changed");
+    assert.notEqual(cardVersion(c), cardVersion(before), "a device that saw the old card must look again");
+    assert.equal(cardView(c).sourceChanged, true);
+    // A replay of the same new revision changes nothing more.
+    assert.equal(upsertCard(owner, parseCardInput(cardInput({ sourceRevision: "2026-10-16T09:00:00Z", context: ctx })), "t1", 4_000).ignored, "owner_acted");
+    // Back in Decide, the flag has done its job.
+    const back = transitionCard(owner, card.id, [state], "proposed", { action: "x" }, {}, 5_000)!;
+    assert.equal(back.sourceChanged, false);
   }
 });

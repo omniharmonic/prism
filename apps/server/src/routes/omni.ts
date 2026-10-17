@@ -82,6 +82,7 @@ import {
 } from "../omni/approvals";
 import { buildToday, buildTasksPage, localDate, validDate, type Dispatch } from "../omni/today";
 import { runProtonSend } from "../omni/proton-send";
+import { replyRecipientsCheck, warmOriginalRecipients } from "../omni/recipients";
 import { runTweetSend } from "../omni/tweet-send";
 
 import { DIALS, type InterruptContext } from "../omni/nudge-policy";
@@ -89,7 +90,7 @@ import { priorNudgeSources, resolveNudgeSource, nudgeWeeklyAudit, latestNudgeAud
 import { startNudgeDelivery } from "../omni/nudge-delivery";
 import { resolveNote, readNoteContent } from "../omni/records";
 import { CardError, cardView, cardsByThread, getCard } from "../omni/cards";
-import { parseCardPublish, publishCard, listCardViews, snoozeCard, dismissCard, chooseCardOption, instructCard, cardAfterProposal, cardAfterDecision, relinkApproval, resolveCardSource, updateCardFromThread } from "../omni/card-flow";
+import { parseCardPublish, publishCard, listCardViews, snoozeCard, dismissCard, chooseCardOption, instructCard, cardAfterProposal, cardAfterDecision, relinkApproval, resolveCardSource, settleCardDrafts, updateCardFromThread } from "../omni/card-flow";
 import { readableNudgeText } from "../omni/titles";
 import { proactiveSourceHealth } from "../omni/source-health";
 import { syncAttentionPreferences, AttentionPreferenceError } from "../omni/attention-preferences";
@@ -465,7 +466,7 @@ omniApi.get("/threads/:id", async (c) => {
     thread: { ...threadView(getThread(id), session), ...(nonmarking ? { lastSeq: readSequence } : {}) },
     messages: [...messages.map(messageView).filter(Boolean), ...proactiveMessages(omniConfig.ownerEmail(), id)].sort((a,b)=>String(a?.at??"").localeCompare(String(b?.at??""))),
     cards: threadCards(id),
-    itemCards: cardsByThread(omniConfig.ownerEmail(), id).map((x) => cardView(x)),
+    itemCards: (settleCardDrafts(omniConfig.ownerEmail()), cardsByThread(omniConfig.ownerEmail(), id)).map((x) => cardView(x)),
     approvals: threadApprovals(id).map(approvalView),
     activeTurnId: activeTurn(id)?.id ?? null,
   });
@@ -657,16 +658,20 @@ omniApi.get("/events", (c) => {
 
 const STATUSES: ApprovalStatus[] = ["pending", "approved", "sent", "failed", "unknown", "expired", "cancelled", "revised"];
 
-omniApi.get("/approvals", (c) => {
+omniApi.get("/approvals", async (c) => {
   const st = c.req.query("status");
   if (st && !STATUSES.includes(st as ApprovalStatus)) return bad(c, `status: ${STATUSES.join("|")}`);
   expireApprovals();
-  return c.json({ approvals: listApprovals(omniConfig.ownerEmail(), (st as ApprovalStatus) ?? null).map(approvalView) });
+  const list = listApprovals(omniConfig.ownerEmail(), (st as ApprovalStatus) ?? null);
+  // Who is on each item a pending draft answers, so the app can mark anyone new ("New recipient").
+  await warmOriginalRecipients(omniConfig.ownerEmail(), list.filter((a) => a.status === "pending"));
+  return c.json({ approvals: list.map(approvalView) });
 });
 
-omniApi.get("/approvals/:id", (c) => {
+omniApi.get("/approvals/:id", async (c) => {
   expireApprovals();
   const a = getApproval(omniConfig.ownerEmail(), c.req.param("id") ?? "");
+  if (a) await warmOriginalRecipients(omniConfig.ownerEmail(), [a]);
   return a ? c.json({ approval: approvalView(a) }) : c.json({ error: "not_found" }, 404);
 });
 
@@ -779,6 +784,13 @@ async function decide(c: Context): Promise<Response> {
     const error = exec.available ? "executor_disabled" : "executor_unavailable";
     omniAudit({ actor: owner, via: o.via, action: "approval.send", approvalId: id, threadId: a.threadId, digest, status: "refused", error });
     return c.json({ error, executor: exec.name, detail: exec.available ? "this kind of action is switched off on the server (ACTIONS_*_ENABLED)" : "no executor is wired for this kind yet" }, 503);
+  }
+  // A reply goes only to people already on the email it answers (proton_send.py sends to the draft's list as
+  // written). Anyone else: refused before anything is claimed; the draft stays pending to edit or cancel.
+  const recipients = await replyRecipientsCheck(a, owner);
+  if (!recipients.ok) {
+    omniAudit({ actor: owner, via: o.via, action: "approval.send", approvalId: id, threadId: a.threadId, digest, status: "refused", error: "target_changed" });
+    return c.json({ error: "target_changed", detail: recipients.detail }, 409);
   }
   if (!claimApproval(id, digest, o.via, o.device, key)) return c.json({ error: "already_decided" }, 409);
   omniAudit({ actor: owner, via: o.via, action: "approval.approve", approvalId: id, threadId: a.threadId, digest, status: "ok" });
@@ -1008,9 +1020,11 @@ omniApi.post("/hooks/propose", async (c) => {
   }
   const ttl = typeof b.expiresInSec === "number" && b.expiresInSec >= 60 && b.expiresInSec <= 7 * 86_400 ? b.expiresInSec * 1000 : omniConfig.approvalTtlMs();
   const a = proposeApproval({ owner, threadId, kind: v.kind, payload: v.payload, summary: typeof b.summary === "string" ? b.summary : null, ttlMs: ttl, actor: "hermes", via: "service-token", push: false });
-  // A draft for a card is announced as that card ("Draft ready to send"); any other draft as itself.
+  // A draft for a card is announced as that card ("Draft ready to send"), unless he asked for it (cardAfterProposal
+  // then pushes it as an approval itself); any other draft as itself.
   const carded = a.kind === "command" ? null : cardAfterProposal(owner, threadId, a.id);
   if (!carded) pushOmni("OMNI_APPROVAL", a.id);
+  if (a.kind !== "command") void warmOriginalRecipients(owner, [a]).catch(() => undefined);
   return c.json({ id: a.id, digest: a.digest, status: a.status, expiresAt: new Date(a.expiresAt).toISOString() }, 201);
 });
 
@@ -1124,10 +1138,17 @@ omniApi.post("/hooks/cards", async (c) => {
   if (!b) return bad(c, "a JSON object body is required");
   try {
     const r = await publishCard(omniConfig.ownerEmail(), parseCardPublish(b));
-    return c.json({ card: cardView(r.card), created: r.created, changed: r.changed, droppedFacts: r.droppedFacts, ...(r.ignored ? { ignored: r.ignored } : {}) }, r.created ? 201 : 200);
+    return c.json({ card: cardView(r.card), created: r.created, changed: r.changed, droppedFacts: r.droppedFacts, ...(r.ignored ? { ignored: r.ignored } : {}), ...(r.flagged ? { flagged: r.flagged } : {}) }, r.created ? 201 : 200);
   } catch (e) {
     return cardFailure(c, e);
   }
+});
+
+/** omni-bridge: is this thread an item card's thread? Its turns get no web, browser or fetch tools. */
+omniApi.get("/hooks/cards/thread/:threadId", (c) => {
+  const threadId = c.req.param("threadId") ?? "";
+  if (!SESSION_ID_RE.test(threadId)) return bad(c, "threadId: a thread (Hermes session) id");
+  return c.json({ carded: cardsByThread(omniConfig.ownerEmail(), threadId).length > 0 });
 });
 
 /** omni_card: the card's own turn posts an updated card into Decide. */
@@ -1145,6 +1166,7 @@ omniApi.post("/hooks/cards/thread", async (c) => {
 // ── item cards (owner): Needs you's Decide / Approve / In motion ────────────
 
 const CARD_SECTIONS = ["decide", "approve", "motion"] as const;
+const validCardVersion = (v: unknown): v is string => typeof v === "string" && /^[a-f0-9]{16}$/.test(v);
 const CARD_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 omniApi.get("/cards", (c) => {
@@ -1157,6 +1179,8 @@ omniApi.get("/cards", (c) => {
 
 omniApi.get("/cards/:id", (c) => {
   const id = c.req.param("id") ?? "";
+  expireApprovals();
+  settleCardDrafts(omniConfig.ownerEmail());
   const card = CARD_ID_RE.test(id) ? getCard(omniConfig.ownerEmail(), id) : null;
   return card ? c.json({ card: cardView(card) }) : c.json({ error: "not_found" }, 404);
 });
@@ -1180,7 +1204,9 @@ omniApi.post("/cards/:id/dismiss", async (c) => {
   const b = await jsonBody(c);
   if (!b || (b.reason !== "not-needed" && b.reason !== "done")) return bad(c, "reason: not-needed|done");
   try {
-    return c.json({ card: cardView(dismissCard(omniConfig.ownerEmail(), c.req.param("id") ?? "", b.reason)) });
+    const o = humanOrigin(c);
+    expireApprovals();
+    return c.json({ card: cardView(dismissCard(omniConfig.ownerEmail(), c.req.param("id") ?? "", b.reason, Date.now(), { via: o.via, device: o.device })) });
   } catch (e) {
     return cardFailure(c, e);
   }
@@ -1193,9 +1219,10 @@ omniApi.post("/cards/:id/instruct", async (c) => {
   if (!key) return bad(c, "Idempotency-Key header: 8–200 characters of [A-Za-z0-9._:-] (required)");
   const b = await jsonBody(c);
   if (!b || typeof b.text !== "string") return bad(c, "text: required");
+  if (!validCardVersion(b.cardVersion)) return bad(c, "cardVersion: the card's version as it was shown");
   const owner = omniConfig.ownerEmail();
   try {
-    const r = instructCard(owner, c.req.param("id") ?? "", b.text, key, { via: o.via, device: o.device });
+    const r = instructCard(owner, c.req.param("id") ?? "", b.text, key, { via: o.via, device: o.device }, b.cardVersion);
     if (r.replayed) c.header("Idempotent-Replayed", "true");
     else omniAudit({ actor: owner, via: o.via, action: "card.instruct", threadId: (r.body.threadId as string | null) ?? null, status: "ok" });
     return c.json(r.body, r.status);
@@ -1211,9 +1238,10 @@ omniApi.post("/cards/:id/choose", async (c) => {
   if (!key) return bad(c, "Idempotency-Key header: 8–200 characters of [A-Za-z0-9._:-] (required)");
   const b = await jsonBody(c);
   if (!b || typeof b.optionId !== "string" || !b.optionId) return bad(c, "optionId: required");
+  if (!validCardVersion(b.cardVersion)) return bad(c, "cardVersion: the card's version as it was shown");
   const owner = omniConfig.ownerEmail();
   try {
-    const r = chooseCardOption(owner, c.req.param("id") ?? "", b.optionId, key, { via: o.via });
+    const r = chooseCardOption(owner, c.req.param("id") ?? "", b.optionId, key, { via: o.via }, b.cardVersion);
     if (r.replayed) c.header("Idempotent-Replayed", "true");
     else omniAudit({ actor: owner, via: o.via, action: "card.choose", approvalId: (r.body.approval as { id?: string } | null)?.id ?? null, threadId: (r.body.threadId as string | null) ?? null, status: "ok" });
     return c.json(r.body, r.status);

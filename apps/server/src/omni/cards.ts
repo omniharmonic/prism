@@ -27,6 +27,11 @@ CREATE TABLE IF NOT EXISTS omni_card_actions (
  PRIMARY KEY(owner_email, card_id, idem_key)
 );
 `);
+// Added after the table first shipped to development databases: a new message arrived on the item while
+// the owner's draft or turn was under way (the card keeps the draft; the app warns before Send).
+if (!(db.prepare("PRAGMA table_info(omni_item_cards)").all() as Array<{ name: string }>).some((c) => c.name === "source_changed")) {
+  db.exec("ALTER TABLE omni_item_cards ADD COLUMN source_changed INTEGER NOT NULL DEFAULT 0");
+}
 
 export const CARD_KINDS = ["email", "message", "invite", "task", "scheduling", "other"] as const;
 export const CARD_STATES = ["proposed", "working", "draft-ready", "sent", "waiting", "snoozed", "dismissed", "done"] as const;
@@ -40,8 +45,11 @@ export type CardSection = "decide" | "approve" | "motion";
 export const SENDABLE_KINDS = new Set<string>(["email", "email-reply", "message", "calendar-rsvp", "calendar-invite"]);
 /** States the OWNER moved the card into: an agent re-publish never overwrites them. */
 export const ACTED_STATES = new Set<CardState>(["working", "draft-ready", "waiting", "sent", "done", "dismissed"]);
-/** Finished or waiting states a changed source item (new sourceRevision) reopens as `proposed`. */
+/** Finished or waiting states a changed source item (new sourceRevision) reopens as `proposed`.
+ *  `waiting` is reserved for Phase 2 (nothing moves a card there yet); its rules are already in place. */
 export const REOPENABLE_STATES = new Set<CardState>(["sent", "done", "dismissed", "waiting"]);
+/** The owner's draft or turn is under way: a changed item flags the card instead of replacing it. */
+export const FLAGGABLE_STATES = new Set<CardState>(["working", "draft-ready"]);
 export const URGENCY_RANK: Record<CardUrgency, number> = { today: 0, "this-week": 1, whenever: 2 };
 
 export interface CardFact { text: string; source: string | null }
@@ -55,6 +63,8 @@ export interface CardInput {
 export interface Card extends CardInput {
   id: string; owner: string; state: CardState; threadId: string | null; approvalIds: string[]; chosenOptionId: string | null;
   outcomes: CardOutcome[]; digest: string; snoozedUntil: number | null; createdAt: number; updatedAt: number;
+  /** A new message arrived on the item after the owner chose (draft-ready or working). */
+  sourceChanged: boolean;
 }
 
 export class CardError extends Error {
@@ -146,15 +156,23 @@ type Raw = {
   id: string; owner_email: string; source_key: string; source_revision: string | null; kind: string; state: string; headline: string;
   context: string; ask: string | null; urgency: string; options: string; recommended: string | null; item_refs: string; thread_id: string | null;
   approval_ids: string; chosen_option_id: string | null; outcomes: string; digest: string; snoozed_until: number | null; created_at: number; updated_at: number;
+  source_changed: number;
 };
 const toCard = (r: Raw): Card => ({
   id: r.id, owner: r.owner_email, sourceKey: r.source_key, sourceRevision: r.source_revision, kind: r.kind as CardKind, state: r.state as CardState,
   headline: r.headline, context: JSON.parse(r.context) as CardFact[], ask: r.ask, urgency: r.urgency as CardUrgency, options: JSON.parse(r.options) as CardOption[],
   recommended: r.recommended, itemRefs: JSON.parse(r.item_refs) as string[], threadId: r.thread_id, approvalIds: JSON.parse(r.approval_ids) as string[],
   chosenOptionId: r.chosen_option_id, outcomes: JSON.parse(r.outcomes) as CardOutcome[], digest: r.digest, snoozedUntil: r.snoozed_until,
-  createdAt: r.created_at, updatedAt: r.updated_at,
+  createdAt: r.created_at, updatedAt: r.updated_at, sourceChanged: !!r.source_changed,
 });
 const contentDigest = (input: CardInput): string => sha256(canonicalJson(input));
+const inputOf = (c: Card): CardInput => ({
+  sourceKey: c.sourceKey, sourceRevision: c.sourceRevision, kind: c.kind, headline: c.headline, context: c.context, ask: c.ask,
+  urgency: c.urgency, options: c.options, recommended: c.recommended, itemRefs: c.itemRefs,
+});
+/** What the owner's device saw: choose / instruct carry it back, and a card whose content changed since
+ *  (new options, a new message on the item) answers 409 card_changed. State changes alone keep it. */
+export const cardVersion = (c: Card): string => c.digest.slice(0, 16);
 const OPEN = "('proposed','snoozed','draft-ready','working','waiting')";
 
 export function getCard(owner: string, id: string): Card | null {
@@ -178,7 +196,7 @@ export const listOpenCards = (owner: string, now = Date.now()): Card[] =>
     .map(toCard).filter((c) => cardSection(c, now) !== null);
 
 /** Create, or refresh a card the owner has not acted on. Same content = no change (a replay). */
-export const upsertCard = db.transaction((owner: string, input: CardInput, threadId: string, now: number = Date.now()): { card: Card; created: boolean; changed: boolean; ignored?: "owner_acted" } => {
+export const upsertCard = db.transaction((owner: string, input: CardInput, threadId: string, now: number = Date.now()): { card: Card; created: boolean; changed: boolean; ignored?: "owner_acted"; flagged?: "source_changed" } => {
   const digest = contentDigest(input);
   const old = cardBySource(owner, input.sourceKey);
   if (!old) {
@@ -191,15 +209,24 @@ export const upsertCard = db.transaction((owner: string, input: CardInput, threa
   }
   if (REOPENABLE_STATES.has(old.state) && input.sourceRevision !== null && input.sourceRevision !== old.sourceRevision) {
     const outcomes = [...old.outcomes, { at: now, action: "reopened", detail: `${old.sourceRevision ?? "none"} -> ${input.sourceRevision}` }].slice(-50);
-    db.prepare(`UPDATE omni_item_cards SET state='proposed', source_revision=?, kind=?, headline=?, context=?, ask=?, urgency=?, options=?, recommended=?, item_refs=?, digest=?, chosen_option_id=NULL, snoozed_until=NULL, outcomes=?, thread_id=COALESCE(thread_id, ?), updated_at=? WHERE id=?`).run(
+    db.prepare(`UPDATE omni_item_cards SET state='proposed', source_revision=?, kind=?, headline=?, context=?, ask=?, urgency=?, options=?, recommended=?, item_refs=?, digest=?, chosen_option_id=NULL, snoozed_until=NULL, source_changed=0, outcomes=?, thread_id=COALESCE(thread_id, ?), updated_at=? WHERE id=?`).run(
       input.sourceRevision, input.kind, input.headline, JSON.stringify(input.context), input.ask, input.urgency, JSON.stringify(input.options), input.recommended,
       JSON.stringify(input.itemRefs), digest, JSON.stringify(outcomes), threadId, now, old.id);
     return { card: getCard(owner, old.id)!, created: false, changed: true };
   }
+  if (FLAGGABLE_STATES.has(old.state) && input.sourceRevision !== null && input.sourceRevision !== old.sourceRevision) {
+    // A new message while his draft waits (or his turn runs): the draft is neither cancelled nor sent. The card
+    // takes the new revision and context and is flagged, so the app warns before Send and he can choose again.
+    const merged: CardInput = { ...inputOf(old), sourceRevision: input.sourceRevision, context: input.context };
+    const outcomes = [...old.outcomes, { at: now, action: "source-changed", detail: `${old.sourceRevision ?? "none"} -> ${input.sourceRevision}` }].slice(-50);
+    db.prepare("UPDATE omni_item_cards SET source_revision=?, context=?, digest=?, source_changed=1, outcomes=?, updated_at=? WHERE id=?").run(
+      input.sourceRevision, JSON.stringify(input.context), contentDigest(merged), JSON.stringify(outcomes), now, old.id);
+    return { card: getCard(owner, old.id)!, created: false, changed: true, flagged: "source_changed" };
+  }
   if (ACTED_STATES.has(old.state)) return { card: old, created: false, changed: false, ignored: "owner_acted" };
   if (old.digest === digest) return { card: old, created: false, changed: false };
   const outcomes = [...old.outcomes, { at: now, action: "updated" }].slice(-50);
-  db.prepare(`UPDATE omni_item_cards SET source_revision=?, kind=?, headline=?, context=?, ask=?, urgency=?, options=?, recommended=?, item_refs=?, digest=?, outcomes=?, thread_id=COALESCE(thread_id, ?), updated_at=? WHERE id=?`).run(
+  db.prepare(`UPDATE omni_item_cards SET source_revision=?, kind=?, headline=?, context=?, ask=?, urgency=?, options=?, recommended=?, item_refs=?, digest=?, outcomes=?, source_changed=0, thread_id=COALESCE(thread_id, ?), updated_at=? WHERE id=?`).run(
     input.sourceRevision, input.kind, input.headline, JSON.stringify(input.context), input.ask, input.urgency, JSON.stringify(input.options), input.recommended,
     JSON.stringify(input.itemRefs), digest, JSON.stringify(outcomes), threadId, now, old.id);
   return { card: getCard(owner, old.id)!, created: false, changed: true };
@@ -217,8 +244,10 @@ export function transitionCard(
     const outcomes = [...c.outcomes, { at: now, ...outcome }].slice(-50);
     const chosen = patch.chosenOptionId !== undefined ? patch.chosenOptionId : c.chosenOptionId;
     const snoozed = to === "snoozed" ? (patch.snoozedUntil !== undefined ? patch.snoozedUntil : c.snoozedUntil) : null;
-    db.prepare("UPDATE omni_item_cards SET state=?, chosen_option_id=?, approval_ids=?, outcomes=?, snoozed_until=?, updated_at=? WHERE id=? AND owner_email=?")
-      .run(to, chosen, JSON.stringify(approvals), JSON.stringify(outcomes), snoozed, now, id, owner);
+    // Back in Decide (or closed), he chooses against the card as it now is: the "new message" flag has done its job.
+    const flag = c.sourceChanged && FLAGGABLE_STATES.has(to) ? 1 : 0;
+    db.prepare("UPDATE omni_item_cards SET state=?, chosen_option_id=?, approval_ids=?, outcomes=?, snoozed_until=?, source_changed=?, updated_at=? WHERE id=? AND owner_email=?")
+      .run(to, chosen, JSON.stringify(approvals), JSON.stringify(outcomes), snoozed, flag, now, id, owner);
     return getCard(owner, id);
   })();
 }
@@ -229,7 +258,7 @@ export function replaceCardContent(owner: string, id: string, input: CardInput, 
     const c = getCard(owner, id);
     if (!c || !from.includes(c.state) || input.sourceKey !== c.sourceKey) return null;
     const outcomes = [...c.outcomes, { at: now, action: "agent-update" }].slice(-50);
-    db.prepare(`UPDATE omni_item_cards SET state='proposed', source_revision=?, item_refs=?, kind=?, headline=?, context=?, ask=?, urgency=?, options=?, recommended=?, digest=?, chosen_option_id=NULL, snoozed_until=NULL, outcomes=?, updated_at=? WHERE id=?`).run(
+    db.prepare(`UPDATE omni_item_cards SET state='proposed', source_revision=?, item_refs=?, kind=?, headline=?, context=?, ask=?, urgency=?, options=?, recommended=?, digest=?, chosen_option_id=NULL, snoozed_until=NULL, source_changed=0, outcomes=?, updated_at=? WHERE id=?`).run(
       input.sourceRevision, JSON.stringify(input.itemRefs), input.kind, input.headline, JSON.stringify(input.context), input.ask, input.urgency, JSON.stringify(input.options), input.recommended, contentDigest(input), JSON.stringify(outcomes), now, id);
     return getCard(owner, id);
   })();
@@ -263,6 +292,7 @@ export function cardView(c: Card, now: number = Date.now()): Record<string, unkn
     outcomes: c.outcomes.map((o) => ({ ...o, at: iso(o.at) })),
     createdAt: iso(c.createdAt), updatedAt: iso(c.updatedAt), snoozedUntil: iso(c.snoozedUntil),
     section: cardSection(c, now), transitional: false, nudgeId: null,
+    version: cardVersion(c), sourceChanged: c.sourceChanged && FLAGGABLE_STATES.has(c.state),
   };
 }
 /** Urgency first, then the one waiting longest. Works on views (real and transitional). */

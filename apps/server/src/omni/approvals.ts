@@ -256,7 +256,14 @@ export function approvalView(a: Approval): Record<string, unknown> {
     supersededBy: a.supersededBy,
     revises: a.revises,
     executor: executorFor(a.kind),
+    originalRecipients: recipientsLookup(a),
   };
+}
+
+/** The addresses on the item a draft answers (recipients.ts fills it from a cache it warms); null = unknown. */
+let recipientsLookup: (a: Approval) => string[] | null = () => null;
+export function setApprovalRecipientsLookup(fn: (a: Approval) => string[] | null): void {
+  recipientsLookup = fn;
 }
 
 // ── executors ───────────────────────────────────────────────────────────────

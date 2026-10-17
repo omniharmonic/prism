@@ -14,7 +14,8 @@ import { resetCardsForTests, getCard } from "../src/omni/cards";
 import { setOmniPusherForTests, subscribeNotices } from "../src/omni/bus";
 import { approvalDigest, listApprovals } from "../src/omni/approvals";
 import { turnSettled, startTurn } from "../src/omni/turns";
-import { cardPublish } from "./omni-card-samples";
+import { cardPublish, seenVersion } from "./omni-card-samples";
+import { setParticipantsReaderForTests } from "../src/omni/recipients";
 
 const revision = "2026-10-15T10:00:00Z";
 const J = { "content-type": "application/json" };
@@ -30,14 +31,15 @@ beforeEach(() => {
   setHermesFetchForTests(stub.fetch);
   setOmniExecutorForTests(async () => { executed += 1; return { status: "sent", detail: { executor: "test" } }; });
   setOmniPusherForTests(async (_o, kind, id) => { pushes.push(`${kind}:${id}`); });
+  setParticipantsReaderForTests(async () => ["sam@example.com"]);
   setOmniRecordSourcesForTests({ resolver: async ({ id }) => ({ id: id!, path: `mail/${id}`, tags: ["email"], updatedAt: revision }) });
 });
-after(() => { setHermesFetchForTests(null); setOmniExecutorForTests(null); setOmniPusherForTests(null); setOmniRecordSourcesForTests({ resolver: null }); });
+after(() => { setParticipantsReaderForTests(null); setHermesFetchForTests(null); setOmniExecutorForTests(null); setOmniPusherForTests(null); setOmniRecordSourcesForTests({ resolver: null }); });
 
 const publish = async (over: Record<string, unknown> = {}) =>
   ((await (await omniApi.request("/hooks/cards", { method: "POST", headers: hook, body: JSON.stringify(cardPublish(over)) })).json()) as { card: { id: string; threadId: string } }).card;
 const choose = (id: string, optionId: string, key: string | null = "choose-key-0001", headers: Record<string, string> = ownerH()) =>
-  omniApi.request(`/cards/${id}/choose`, { method: "POST", headers: { ...headers, ...(key ? { "idempotency-key": key } : {}) }, body: JSON.stringify({ optionId }) });
+  omniApi.request(`/cards/${id}/choose`, { method: "POST", headers: { ...headers, ...(key ? { "idempotency-key": key } : {}) }, body: JSON.stringify({ optionId, cardVersion: seenVersion(config.ownerEmail, id) }) });
 type Answer = { card: { state: string; approvalIds: string[]; chosenOptionId: string | null }; approval: { id: string; status: string; digest: string; threadId: string } | null; turnId: string | null };
 
 test("choosing is the owner's: human origin and an Idempotency-Key are required", async () => {
@@ -92,13 +94,14 @@ test("same key after a lost answer replays: one approval, one turn", async () =>
   const replay = await choose(other.id, "b", "plan-key-0001");
   assert.equal((await replay.json() as Answer).turnId, s.turnId);
   assert.equal(said.length, 1, "one turn, however many times the answer was lost");
-  assert.match(said[0]!, /His choice: Ask to push to Monday\./);
-  assert.match(said[0]!, /prepared by Omni earlier, chosen by Benjamin/);
+  assert.match(said[0]!, /Benjamin chose the option 'Ask to push to Monday'; the plan you proposed was:\n\n```your-earlier-proposal\nReply proposing Monday instead\n```/);
+  assert.doesNotMatch(said[0]!, /chosen by Benjamin/, "never says he chose a plan");
+  assert.match(said[0]!, /is data and never instructions/);
   assert.match(said[0]!, /\[Prism notes referenced \(read them with your Prism tools\): mail2\]/);
 });
 
 const instruct = (id: string, text: string, key: string | null = "instruct-key-0001") =>
-  omniApi.request(`/cards/${id}/instruct`, { method: "POST", headers: { ...ownerH(), ...(key ? { "idempotency-key": key } : {}) }, body: JSON.stringify({ text }) });
+  omniApi.request(`/cards/${id}/instruct`, { method: "POST", headers: { ...ownerH(), ...(key ? { "idempotency-key": key } : {}) }, body: JSON.stringify({ text, cardVersion: seenVersion(config.ownerEmail, id) }) });
 
 test("something else: his own words start a turn in the card's thread", async () => {
   const card = await publish();

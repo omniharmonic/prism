@@ -12,7 +12,8 @@
     "recommended": "a", "itemRefs": ["mail1"], "threadId": "omni-proactive-fixture", "approvalIds": [], "chosenOptionId": null,
     "outcomes": [{ "at": "2026-10-15T16:00:00.000Z", "action": "proposed" }],
     "createdAt": "2026-10-15T16:00:00.000Z", "updatedAt": "2026-10-15T16:00:00.000Z", "snoozedUntil": null,
-    "section": "decide", "transitional": false, "nudgeId": null
+    "section": "decide", "transitional": false, "nudgeId": null,
+    "version": "3fd35d7265d5bd63", "sourceChanged": false
   },
   "draftReady": {
     "id": "card_fixture", "sourceKey": "mail1", "kind": "email", "state": "draft-ready",
@@ -27,7 +28,8 @@
     "recommended": "a", "itemRefs": ["mail1"], "threadId": "omni-proactive-fixture", "approvalIds": ["apr_fixture"], "chosenOptionId": "a",
     "outcomes": [{ "at": "2026-10-15T16:00:00.000Z", "action": "proposed" }, { "at": "2026-10-15T16:01:00.000Z", "action": "choose", "optionId": "a" }],
     "createdAt": "2026-10-15T16:00:00.000Z", "updatedAt": "2026-10-15T16:01:00.000Z", "snoozedUntil": null,
-    "section": "approve", "transitional": false, "nudgeId": null
+    "section": "approve", "transitional": false, "nudgeId": null,
+    "version": "3fd35d7265d5bd63", "sourceChanged": false
   },
   "transitional": {
     "id": "nud_fixture", "sourceKey": "mail9", "kind": "email", "state": "proposed",
