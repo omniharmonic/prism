@@ -1,5 +1,5 @@
 {
- "_comment": "CHANGE TOGETHER: one contract, a copy in each repo, byte for byte: agent tests/fixtures/server_cards.json (read by tests/test_proactive_cards.py) and prism apps/server/test/fixtures/omni-card-validation.json (checked by omni-card-validation-fixture.test.ts against the real parseCardInput). Shared fixture. Each case is a card as the agent hands it over (before sourceKey/itemRefs are added) and whether the SERVER accepts it. Mirrors parseCardInput in apps/server/src/omni/cards.ts (with plainInline/looksLikeSlug in omni/titles.ts, validatePayload in omni/approvals.ts, rsvpArgs in actions/calendar.ts). The publisher sends sourceKey and itemRefs = [event.id]; event.id here is mail1. Regenerate the verdicts by running the server function; do not edit them by hand. A case with agentTruncates is one the server rejects but the agent repairs (keeps four facts, or cuts a long fact to 200 characters) before publishing.",
+ "_comment": "CHANGE TOGETHER: one contract, a copy in each repo, byte for byte: agent tests/fixtures/server_cards.json (read by tests/test_proactive_cards.py) and prism apps/server/test/fixtures/omni-card-validation.json (checked by omni-card-validation-fixture.test.ts against the real parseCardInput). Shared fixture. Each case is a card as the agent hands it over (before sourceKey/itemRefs are added) and whether the SERVER accepts it. Mirrors parseCardInput in apps/server/src/omni/cards.ts (with plainInline/looksLikeSlug in omni/titles.ts, validatePayload in omni/approvals.ts, rsvpArgs in actions/calendar.ts). The publisher sends sourceKey and itemRefs = [event.id]; event.id here is mail1. Regenerate the verdicts by running the server function; do not edit them by hand. A case with agentTruncates is one the server rejects but the agent repairs (keeps four facts, or cuts a long fact to 200 characters) before publishing; agentRepairs: the agent repairs option ids (lowercase, at most 16 characters, unique) before publishing.",
  "event": {
   "id": "mail1",
   "revision": "r1"
@@ -1437,7 +1437,8 @@
      }
     ],
     "recommended": null
-   }
+   },
+   "agentRepairs": true
   },
   {
    "name": "uppercase option id",
@@ -1486,7 +1487,8 @@
      }
     ],
     "recommended": "yes-thu"
-   }
+   },
+   "agentRepairs": true
   },
   {
    "name": "option id of 17 characters",
@@ -1535,7 +1537,8 @@
      }
     ],
     "recommended": "yes-thu"
-   }
+   },
+   "agentRepairs": true
   },
   {
    "name": "option label of 81 characters",
