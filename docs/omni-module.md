@@ -260,9 +260,14 @@ Decision rules, in order:
    executing).
 4. `digest` ≠ the stored digest → `409 digest_mismatch` (the app must show the draft again).
    An `email-reply` whose To/Cc names anyone not on the email it answers (its note's from / to /
-   cc / reply-to, read fresh; the owner's own address allowed) → `409 target_changed`, nothing
-   claimed, the approval stays pending (edit or cancel it). The Proton executor sends to the
-   draft's `expectTo`/`cc` as written, so this is where the reply's recipients are checked.
+   cc / reply-to, read fresh; the owner's own address allowed) → `409 target_changed` with a plain
+   `detail`, nothing claimed, the approval stays pending (edit or cancel it). The Proton executor
+   sends to the draft's `expectTo`/`cc` as written, so this is where the reply's recipients are
+   checked. Both email ingests store the header Cc as metadata `cc` (after `to`, `""` when none),
+   so a reply-all is allowed; an email ingested before that has no `cc` key, and a reply that keeps
+   a Cc then answers "This older email has no Cc on record; remove the Cc or reply from your mail
+   app." An approval that ended `unknown` is final like any decided one: it can never be sent,
+   edited or decided again (409); choosing the card's option again makes a new pending draft.
 5. `cancel` → `cancelled`. `revise` → `revised`, and with `feedback` a new turn asks Hermes
    for a new draft (`{approval, turnId}`).
 6. `send`: executor not wired → `503 executor_unavailable`; family flag off →

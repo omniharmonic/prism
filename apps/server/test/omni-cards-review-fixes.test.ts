@@ -246,3 +246,99 @@ test("omni_card pushes at most once per turn, and only when the options changed"
   assert.equal((await update({ options: options("Offer Monday at 9") })).status, 200);
   assert.deepEqual(cardPushes(), [`OMNI_CARD:${card.id}`]);
 });
+
+// ── Round 2 ─────────────────────────────────────────────────────────────────
+
+const editDraft = (id: string, digest: string, payload: Record<string, unknown>) =>
+  omniApi.request(`/approvals/${id}`, { method: "PUT", headers: ownerH(), body: JSON.stringify({ digest, payload }) });
+
+test("N2: a reply-all keeps the original Cc; an older email with no Cc on record says why", async () => {
+  const card = await publish();
+  setParticipantsReaderForTests(async () => ({ addresses: ["sam@example.com", "pat@example.org"], hasCc: true }));
+  const all = await propose({ kind: "email-reply", threadId: card.threadId, payload: { noteId: "mail1", expectTo: ["sam@example.com"], cc: ["Pat@Example.org"], body: "Hi all" } });
+  assert.equal((await decide(all.id, all.digest, "send", "send-key-00001")).status, 200, "the original Cc is on the email");
+  setParticipantsReaderForTests(async () => ({ addresses: ["sam@example.com"], hasCc: false }));
+  const old = await propose({ kind: "email-reply", threadId: null, payload: { noteId: "mail1", expectTo: ["sam@example.com"], cc: ["pat@example.org"], body: "Hi all" } });
+  const res = await decide(old.id, old.digest, "send", "send-key-00002");
+  assert.equal(res.status, 409);
+  assert.deepEqual(await res.json(), { error: "target_changed", detail: "This older email has no Cc on record; remove the Cc or reply from your mail app." });
+  // An extra To on an older email is the ordinary refusal (it is not about a missing Cc record).
+  const extraTo = await propose({ kind: "email-reply", threadId: null, payload: { noteId: "mail1", expectTo: ["sam@example.com", "x@evil.test"], body: "Hi" } });
+  const r2 = (await (await decide(extraTo.id, extraTo.digest, "send", "send-key-00003")).json()) as { detail: string };
+  assert.match(r2.detail, /not on the original email/);
+  assert.equal(executed, 1);
+});
+
+test("unknown send: that draft can never be approved again; the card says check Sent and a new choice is a NEW draft", async () => {
+  const card = await publish();
+  const r = await choose(card.id, "a", "choose-key-0001");
+  outcome = { status: "unknown", detail: { executor: "test" } };
+  assert.equal((await decide(r.approval!.id, r.approval!.digest, "send", "send-key-00001")).status, 502);
+  assert.equal(getApproval(owner, r.approval!.id)!.status, "unknown");
+  outcome = { status: "sent", detail: { executor: "test" } };
+  // Re-deciding with another key, any decision, or editing it: refused, nothing executes.
+  for (const [decision, key] of [["send", "send-key-00002"], ["cancel", "cancel-key-0001"], ["revise", "revise-key-0001"]] as const) {
+    const again = await decide(r.approval!.id, r.approval!.digest, decision, key);
+    assert.deepEqual([again.status, ((await again.json()) as { error: string }).error], [409, "already_decided"], decision);
+  }
+  assert.equal((await editDraft(r.approval!.id, r.approval!.digest, { noteId: "mail1", expectTo: ["sam@example.com"], body: "Edited" })).status, 409);
+  assert.equal(executed, 1, "sent at most once");
+  const c = getCard(owner, card.id)!;
+  assert.deepEqual([c.state, c.outcomes.at(-1)!.action, c.outcomes.at(-1)!.detail], ["proposed", "draft-failed", "unknown"]);
+  // Choosing again is a NEW pending draft; the unknown one stays unknown.
+  const again = await choose(card.id, "a", "choose-key-0002");
+  assert.notEqual(again.approval!.id, r.approval!.id);
+  assert.equal(getApproval(owner, again.approval!.id)!.status, "pending");
+  assert.equal(getApproval(owner, r.approval!.id)!.status, "unknown");
+  assert.deepEqual(getCard(owner, card.id)!.approvalIds, [r.approval!.id, again.approval!.id]);
+});
+
+test("Not needed vs Send: a draft already sending is never cancelled; a Send before its claim loses to Not needed", async () => {
+  // (1) Send claimed first and is executing: Not needed is refused, the send completes and the card is sent.
+  const card = await publish();
+  const r = await choose(card.id, "a", "choose-key-0001");
+  let release!: () => void;
+  const gate = new Promise<void>((done) => { release = done; });
+  let entered!: () => void;
+  const executing = new Promise<void>((done) => { entered = done; });
+  setOmniExecutorForTests(async () => { executed += 1; entered(); await gate; return { status: "sent", detail: { executor: "test" } }; });
+  const sending = decide(r.approval!.id, r.approval!.digest, "send", "send-key-00001");
+  await executing;
+  const busy = await dismiss(card.id);
+  assert.deepEqual([busy.status, await errOf(busy)], [409, "send_in_flight"]);
+  assert.equal(getApproval(owner, r.approval!.id)!.status, "approved", "not cancelled");
+  release();
+  assert.equal((await sending).status, 200);
+  assert.equal(getCard(owner, card.id)!.state, "sent");
+
+  // (2) Not needed lands while Send is still before its claim (reading the email's recipients): the draft is
+  // cancelled, the Send then answers already_decided, and nothing is sent.
+  setOmniExecutorForTests(async () => { executed += 1; return outcome; });
+  const other = await publish({ sourceKey: "mail2", itemRefs: ["mail2"] });
+  const r2 = await choose(other.id, "a", "choose-key-0002");
+  let readRelease!: () => void;
+  const readGate = new Promise<void>((done) => { readRelease = done; });
+  let reading!: () => void;
+  const inRead = new Promise<void>((done) => { reading = done; });
+  setParticipantsReaderForTests(async () => { reading(); await readGate; return ["sam@example.com"]; });
+  const before = executed;
+  const late = decide(r2.approval!.id, r2.approval!.digest, "send", "send-key-00002");
+  await inRead;
+  assert.equal((await dismiss(other.id)).status, 200);
+  readRelease();
+  const lateRes = await late;
+  assert.deepEqual([lateRes.status, ((await lateRes.json()) as { error: string }).error], [409, "already_decided"]);
+  assert.equal(executed, before, "nothing sent");
+  assert.equal(getApproval(owner, r2.approval!.id)!.status, "cancelled");
+  assert.equal(getCard(owner, other.id)!.state, "dismissed");
+});
+
+test("a send that still goes out on a closed card is recorded on the card", async () => {
+  const card = await publish();
+  const r = await choose(card.id, "a", "choose-key-0001");
+  // A closed card whose draft is (somehow) still pending and is then sent: state stays, history says sent.
+  transitionCard(owner, card.id, ["draft-ready"], "done", { action: "test-closed" });
+  assert.equal((await decide(r.approval!.id, r.approval!.digest, "send", "send-key-00001")).status, 200);
+  const c = getCard(owner, card.id)!;
+  assert.deepEqual([c.state, c.outcomes.at(-1)!.action], ["done", "approval-sent"]);
+});

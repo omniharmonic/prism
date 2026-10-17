@@ -189,7 +189,10 @@ export function snoozeCard(owner: string, id: string, until: number, now: number
 export function dismissCard(owner: string, id: string, reason: "not-needed" | "done", now: number = Date.now(), origin: { via: string; device: string | null } = { via: "session", device: null }): Card {
   const to = reason === "done" ? "done" : "dismissed";
   const before = getCard(owner, id);
-  if (before?.state === "draft-ready" && before.approvalIds.some((a) => getApproval(owner, a)?.status === "approved")) {
+  // The Task 9 in-flight rule: a draft already claimed by Send is never overtaken. This whole function is
+  // synchronous, so Send cannot claim between this check and the cancels below; a Send that is still before its
+  // claim then finds its draft cancelled and answers already_decided (nothing is sent).
+  if (before && before.approvalIds.some((a) => getApproval(owner, a)?.status === "approved")) {
     throw new CardError("send_in_flight", 409, "the draft is being sent");
   }
   const card = transitionCard(owner, id, ["proposed", "snoozed", "waiting", "draft-ready"], to, { action: reason }, {}, now);
@@ -418,7 +421,13 @@ export function cardAfterDecision(owner: string, approvalId: string, outcome: "s
     from = ["working"];
     to = outcome === "sent" ? "sent" : "working";
     if (outcome === "revised") return null;
-  } else return null;
+  } else {
+    // A closed card (dismissed, done, sent) whose draft still went out: record it so the card's history is true.
+    if (outcome !== "sent" && outcome !== "unknown") return null;
+    const next = transitionCard(owner, card.id, [card.state], card.state, log);
+    if (next) announceCard(next, `approval-${outcome}`, { push: false });
+    return next;
+  }
   const next = transitionCard(owner, card.id, from, to, log, outcome === "cancelled" && to === "proposed" ? { chosenOptionId: null } : {});
   if (next) announceCard(next, to === card.state ? `approval-${outcome}` : to, { push: false });
   return next;
