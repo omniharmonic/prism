@@ -109,13 +109,26 @@ Publish outcomes:
 | 422, 5xx | retried up to 3 times |
 
 The resolve sweep reports open cards' source keys as well as nudge sources, so a card whose item was
-answered elsewhere closes. It never closes a card by age: a card on an item older than about 8 days
-is left for Benjamin to close, and a sweep that cannot read the card list skips cards instead of
-aborting.
+answered elsewhere closes. Cards are never closed by age and have no TTL. Replies are only looked for
+over the last 7 days, and card keys stay in the sweep for items up to 8 days old; a card on an older
+item is never auto-closed and is left for Benjamin to close. A sweep that cannot read the card list
+skips cards instead of aborting.
 
-Rollback: `--legacy-publish`, or `OMNI_PROACTIVE_LEGACY=1` in `~/.hermes/.env`. The next run
-publishes private preparations to `/hooks/proactive` exactly as before. Daily routines (morning,
-evening, tweet, nightly review) are unchanged in Phase 1.
+Rollback (agent side only):
+
+- The practical switch is the environment variable `OMNI_PROACTIVE_LEGACY=1`. The Mini's job
+  wrappers are SHA-pinned (`reviewed-jobs.ts`), so adding `--legacy-publish` to one would need a new
+  operator review. The wrapper written by `scripts/install_proactive.py` loads `.env` from the agent
+  repo (`<repo>/.env`) and then from the Hermes home (`<home>/.env`) with first-value-wins, and a
+  variable already in the process environment beats both. Put the line in `<repo>/.env` (or the
+  Hermes home `.env`) on the Mini; no wrapper change is needed. `--legacy-publish` does the same when
+  run by hand.
+- The next run publishes private preparations to `/hooks/proactive` exactly as before. Daily routines
+  (morning, evening, tweet, nightly review) are unchanged in Phase 1.
+- Confirm it took effect: the job receipt's `cards` key is `false` (it is `true` in cards mode).
+- What stays: cards already published stay in the app, the card routes and the `omni_card` thread
+  tool stay live, and a nudge on an item that has a card stays out of push and digest. There is no
+  server-side card kill switch; to remove a card, dismiss it in the app.
 
 Quality: `tests/test_proactive_card_quality.py` grades 32 synthetic items (8 each: email, chat,
 invite, task) with a fake reasoner. `python -m proactive_intelligence.card_quality` runs the real

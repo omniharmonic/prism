@@ -342,12 +342,12 @@ Rules:
 - Headlines that read like a slug, a path or markdown are refused (`headline_not_readable`).
 - A context fact is kept only if its `source` is null, `calendar`, one of the card's `itemRefs`, or a
   vault note that resolves. Other facts are dropped and counted (`droppedFacts`), never the card.
-- A re-publish updates only a `proposed`/`snoozed` card. `working`, `draft-ready` and `waiting` answer
-  `200 {ignored:"owner_acted"}` and change nothing. A card that is `sent`, `done` or `dismissed`
-  answers the same for the same or a null `sourceRevision`, but is REOPENED (back to `proposed`,
-  content replaced, outcome `reopened`) when the item arrives with a NEW non-null `sourceRevision`
-  (the person wrote again). Reopening cancels any still-pending draft linked to the card, so an old
-  draft cannot be sent against new content.
+- A re-publish updates only a `proposed`/`snoozed` card. `working` and `draft-ready` answer
+  `200 {ignored:"owner_acted"}` and change nothing. A card that is `sent`, `done`, `dismissed` or
+  `waiting` answers the same for the same or a null `sourceRevision`, but is REOPENED (back to
+  `proposed`, content replaced, outcome `reopened`) when the item arrives with a NEW non-null
+  `sourceRevision` (the person wrote again). Reopening cancels any still-pending draft linked to the
+  card, so an old draft cannot be sent against new content.
 - Dismissing a card (or its nudge) suppresses only the revision it was dismissed at: a later
   revision reopens it. A nudge the owner RESOLVED stays suppressing for good.
 
@@ -360,7 +360,7 @@ Rules:
 | `POST /api/omni/cards/:id/snooze` | `{until}` (ms, ≤30 days) | `{card}` — leaves Needs you until due; an `omni_feedback` row `snooze`. |
 | `POST /api/omni/cards/:id/dismiss` | `{reason:"not-needed"\|"done"}` | `{card}` — not-needed = `noise` feedback (the item's nudge too); done resolves the item's nudge. |
 
-All mutations need human origin (`X-Prism-Action-Origin: agent` → 403) and are audited
+Other codes: `404 not_found`; `400 unknown_option` (choose) and `invalid_instruction` (instruct); `409 turn_running`, `in_progress` and `card_has_no_thread`. All mutations need human origin (`X-Prism-Action-Origin: agent` → 403) and are audited
 (`card.choose`, `card.instruct`).
 
 The approval gate moves the card:
@@ -401,8 +401,11 @@ approvals have loaded. The attention dial, audit and snoozed nudges live in Sett
 `GET /api/omni/events` — SSE of ids-only notices, recycled every 15 min:
 `event: thread|approval|card|item-card`, `data: {type, id, op, threadId?}`. Ops: thread
 `created|working|done|needs-you|waiting|message`; approval
-`pending|sent|failed|unknown|cancelled|revised`; card = the record-card op; item-card =
-`created|updated|draft-ready|working|snoozed|dismissed|done|sent|resolved|draft-edited|approval-*`.
+`pending|sent|failed|unknown|cancelled|revised`; card = the record-card op. item-card ops, as the
+code emits them: `created`, `reopened`, `updated`, `snoozed`, `working`, `draft-ready`,
+`draft-edited`, `resolved`, `turn-ended`, `approval-<outcome>` (for example `approval-sent`, when the
+approval's outcome leaves the card in its state), or the plain new state (`proposed`, `done`,
+`dismissed`, `sent`, ...) when a decision moves the card.
 
 Push (APNs, generic by default, through the existing sender): `{aps:{alert:{title:"Omni", body:
 <generic>}, category}, type:"omni", category:"OMNI_THREAD"|"OMNI_APPROVAL"|"OMNI_CARD", id, url:
@@ -411,7 +414,7 @@ message, and when any non-cancelled turn ends for an existing thread. Stream
 subscriptions do not prove foreground visibility, so they never suppress completion
 pushes. Foreground presentation remains controlled by the OS.
 
-A card pushes when it is created and whenever it returns to `proposed` or becomes `draft-ready` from the agent. The title is the headline. The body is the context line plus "N options ready" or "Draft ready to send", per device preview (the generic preview setting sends the generic text). Off, Pause and quiet hours hold it. A nudge whose item has a card is not pushed on its own.
+A card pushes when it is created or reopened, and whenever it returns to `proposed` or becomes `draft-ready` from the agent. The title is the headline. The body is the context line plus "N options ready" or "Draft ready to send", per device preview: the title-only preference sends just "N options ready" or "Draft ready to send", the full preview adds the context line, and the generic setting sends generic text. Off, Pause and quiet hours hold it. A nudge whose item has a card is not pushed on its own.
 
 Each registration stores its own preview preference; existing and new registrations default to
 `generic`. Omission during token refresh preserves that device’s saved preference. The owner’s
@@ -489,7 +492,7 @@ The native **Run with Omni** action uses the existing thread-creation API with `
 | `POST /api/omni/hooks/approvals/:id/result` | `{ok: boolean}` | `200 {id, status}` — how an approved `command` ended: `sent` or `failed`. `409` unless it is a `command` in `approved`. |
 | `POST /api/omni/hooks/approvals/:id/withdraw` | `{}` | `200 {id, status}` — the plugin stopped waiting: a pending `command` becomes `cancelled` (`decidedVia: "withdrawn"`). Idempotent. |
 | `POST /api/omni/hooks/turn` | `{sessionId}` | `202 {ok, threadId}` — a turn the app did not start (the thread continued from the Hermes CLI, a cron job, Telegram): unread +1, notice, push `OMNI_THREAD`. The app then reads the thread. While the app's own turn runs on that thread the call is acknowledged and ignored (`ignored: "turn_running"`). |
-| `POST /api/omni/hooks/cards` | `{sourceKey, sourceRevision, evidence[], kind, headline, context[], ask?, urgency, options[], recommended?, itemRefs[]}` | `201 {card, created:true}` · `200 {card, changed, ignored?, droppedFacts}` — the understanding step's card. Evidence is re-read (stale `409 stale_evidence`, missing `422 source_unavailable`); a dismissed/resolved/archived item `409 source_suppressed`; invalid input `400 invalid_*` or `headline_not_readable`; thread = the item's nudge thread or `omni-proactive-<hash>` (created in Hermes when missing). Sends nothing. |
+| `POST /api/omni/hooks/cards` | `{sourceKey, sourceRevision, evidence[], kind, headline, context[], ask?, urgency, options[], recommended?, itemRefs[]}` | `201 {card, created:true}` · `200 {card, changed, ignored?, droppedFacts}` — the understanding step's card. Evidence is re-read (stale `409 stale_evidence`, missing `422 source_unavailable`); a dismissed/resolved/archived item `409 source_suppressed`; invalid input `400 invalid_*` (including `invalid_evidence`) or `headline_not_readable`; thread = the item's nudge thread or `omni-proactive-<hash>` (created in Hermes when missing). Sends nothing. |
 | `POST /api/omni/hooks/cards/thread` | `{threadId, options[], recommended?, headline?, ask?, urgency?, context?, kind?}` | `200 {card, droppedFacts}` — `omni_card` from the card's own turn: new options, back to `proposed`, pushed. `404 no_card_for_thread`; `409 draft_waiting` while a draft waits for him. |
 
 The plugin is `hermes/plugins/omni-bridge` in the agent repo. `omni_propose` exists only on
