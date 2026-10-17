@@ -85,7 +85,34 @@ struct ApprovalCardView: View {
         }
     }
 
+    /// A device sign-in's matching code, large and first: the owner compares it with the code
+    /// on the sign-in page before he approves. Without a code, a warning instead.
+    @ViewBuilder private func matchCode(_ content: ApprovalContent) -> some View {
+        if let notice = content.matchCodeNotice {
+            VStack(alignment: .leading, spacing: 4) {
+                if let code = content.matchCode {
+                    Text(ApprovalContent.matchCodeCaption).font(.callout).foregroundStyle(Color.quietText)
+                    Text(code)
+                        .font(.system(.largeTitle, design: .monospaced).weight(.semibold))
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("approval.matchCode")
+                    Text(notice).font(.callout).fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Label(notice, systemImage: "exclamationmark.triangle")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(Color.warningText)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("approval.matchCodeMissing")
+                }
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(content.matchCode.map { "\(ApprovalContent.matchCodeCaption): \($0.map { String($0) }.joined(separator: " ")). \(notice)" } ?? notice)
+            Divider()
+        }
+    }
+
     @ViewBuilder private func draft(_ content: ApprovalContent) -> some View {
+        matchCode(content)
         if typeSize.isAccessibilitySize {
             // Each label above its value: beside it, a long address gets a column five characters wide.
             VStack(alignment: .leading, spacing: 8) {
@@ -132,7 +159,7 @@ struct ApprovalCardView: View {
             #endif
             .controlSize(.regular)
             .fixedSize(horizontal: false, vertical: true)
-            if card.canOfferCancel(), !card.isCommand {
+            if card.canOfferCancel(), !card.isCommand, !card.isDeviceSignIn {
                 Button { confirmingCancel = true } label: {
                     Text("Cancel Draft").frame(minHeight: 44).contentShape(Rectangle())
                 }
@@ -158,20 +185,24 @@ struct ApprovalCardView: View {
                     .buttonStyle(.borderedProminent)
                     .accessibilityHint("Repeats the \(retry.rawValue) decision; the server will not act on it twice")
             } else if card.canOfferSend() {
-                Button { Task { await center.send(card.id) } } label: { actionLabel(card.isCommand ? "Approve Once" : "Send") }
+                Button { Task { await center.send(card.id) } } label: { actionLabel(card.isDeviceSignIn ? "Approve" : card.isCommand ? "Approve Once" : "Send") }
                     .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("approval.send")
-                    .accessibilityHint(card.isCommand ? "Lets Omni run exactly what is shown, once, after you confirm on this device" : "Sends exactly what is shown, after you confirm on this device")
+                    .accessibilityHint(card.isDeviceSignIn ? "Lets the device shown sign in as you, after you confirm on this device" : card.isCommand ? "Lets Omni run exactly what is shown, once, after you confirm on this device" : "Sends exactly what is shown, after you confirm on this device")
             }
             if card.canOfferEdit() {
                 Button { editing = ApprovalDraft(card.approval) } label: { actionLabel("Edit") }
                     .accessibilityIdentifier("approval.edit")
                     .accessibilityHint("Change the wording yourself")
             }
-            if card.canOfferCancel() && card.isCommand {
+            if card.canOfferCancel() && card.isDeviceSignIn {
+                Button(role: .destructive) { Task { await center.cancel(card.id) } } label: { actionLabel("Deny") }
+                    .accessibilityIdentifier("approval.deny")
+                    .accessibilityHint("The device is not signed in")
+            } else if card.canOfferCancel() && card.isCommand {
                 Button(role: .destructive) { Task { await center.cancel(card.id) } } label: { actionLabel("Deny") }
                     .accessibilityHint("Omni does not run it")
-            } else if card.canOfferCancel() {
+            } else if card.canOfferRevise() {
                 Button { revising = true } label: { actionLabel("Revise…") }
                     .accessibilityIdentifier("approval.revise")
                     .accessibilityHint("Ask Omni for a new draft")
@@ -193,6 +224,16 @@ struct ApprovalCardView: View {
 
     private func header(_ standing: ApprovalCard.Standing, _ card: ApprovalCard) -> String {
         let kind = card.content.kindLabel
+        if card.isDeviceSignIn {
+            switch standing {
+            case .pending: return "SIGN IN A NEW DEVICE · APPROVE?"
+            case .sending: return "SIGN IN A NEW DEVICE · APPROVING"
+            case .sent: return "SIGN IN A NEW DEVICE · APPROVED"
+            case .cancelled, .revised: return "SIGN IN A NEW DEVICE · DENIED"
+            case .expired: return "SIGN IN A NEW DEVICE · EXPIRED"
+            default: break
+            }
+        }
         if card.isCommand {
             switch standing {
             case .pending: return "OMNI IS WAITING · APPROVE?"
@@ -621,8 +662,7 @@ struct NudgeCardView: View {
             }
         } else if let link = PrismSourceLink(web: item.sourceLink, noteID: item.candidate.sourceId) {
             Button {
-                if let native = link.native { openURL(native) { accepted in if !accepted { openURL(link.web) } } }
-                else { openURL(link.web) }
+                SourceLinkOpener.open(link, with: openURL)
             } label: { Text("Open source").frame(minHeight: 44).contentShape(Rectangle()) }
             .contextMenu { Button("Open in Browser") { openURL(link.web) } }
         }

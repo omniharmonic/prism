@@ -6,7 +6,7 @@ process.env.OMNI_PROTON_SEND = process.execPath; // "configured": the executor i
 import { omniApi, setOmniExecutorForTests } from "../src/routes/omni";
 import { config } from "../src/config";
 import { db } from "../src/db";
-import { resetDb, makeSession, sessionCookie } from "./helpers";
+import { resetDb, makeSession, sessionCookie, deviceAuth } from "./helpers";
 import { createHermesStub } from "../scripts/lib/hermes-stub";
 import { setHermesFetchForTests } from "../src/omni/hermes-client";
 import { setOmniRecordSourcesForTests } from "../src/omni/records";
@@ -18,18 +18,24 @@ import { proposeApproval } from "../src/omni/propose";
 import { setOmniPusherForTests } from "../src/omni/bus";
 import { getApproval, type ExecOutcome } from "../src/omni/approvals";
 import { turnSettled, notifyTurnEnded, startTurn } from "../src/omni/turns";
-import { cardPublish, seenVersion } from "./omni-card-samples";
+import { cardPublish, seenVersion, installReplyNotes, clearReplyNotes } from "./omni-card-samples";
 import { setParticipantsReaderForTests } from "../src/omni/recipients";
+import { protonSendArgs, setProtonSpawnerForTests } from "../src/omni/proton-send";
+import { consumeSendGrant, emailSendDigest } from "../src/omni/send-grant";
+import { setReplyNoteReaderForTests } from "../src/omni/reply-context";
 
 const owner = config.ownerEmail;
 const revision = "2026-10-15T10:00:00Z";
 const J = { "content-type": "application/json" };
 const hook = { ...J, authorization: `Bearer ${process.env.OMNI_SERVICE_TOKEN}` };
 const ownerH = () => ({ ...J, cookie: sessionCookie(makeSession(config.ownerEmail)) });
+/** One door: approving a send and editing a draft need the owner's DEVICE token (the Omni app), not a session. */
+const ownerDevice = () => ({ ...J, ...deviceAuth(config.ownerEmail) });
 let executed = 0;
 let outcome: ExecOutcome = { status: "sent", detail: { executor: "test" } };
 let pushes: string[] = [];
 beforeEach(() => {
+  installReplyNotes();
   resetDb(); resetOmniStoreForTests(); resetNudgesForTests(); resetCardsForTests(); executed = 0; pushes = [];
   outcome = { status: "sent", detail: { executor: "test" } };
   setHermesFetchForTests(createHermesStub({ key: process.env.OMNI_HERMES_KEY!, script: () => ({ acts: [{ say: "On it." }] }) }).fetch);
@@ -38,7 +44,7 @@ beforeEach(() => {
   setParticipantsReaderForTests(async () => ["sam@example.com"]);
   setOmniRecordSourcesForTests({ resolver: async ({ id }) => ({ id: id!, path: `mail/${id}`, tags: ["email"], updatedAt: revision }) });
 });
-after(() => { setParticipantsReaderForTests(null); setHermesFetchForTests(null); setOmniExecutorForTests(null); setOmniPusherForTests(null); setOmniRecordSourcesForTests({ resolver: null }); });
+after(() => { clearReplyNotes(); setParticipantsReaderForTests(null); setHermesFetchForTests(null); setOmniExecutorForTests(null); setOmniPusherForTests(null); setOmniRecordSourcesForTests({ resolver: null }); });
 
 type Answer = { card: { state: string }; approval: { id: string; digest: string } | null; turnId: string | null };
 const publish = async (over: Record<string, unknown> = {}) =>
@@ -46,7 +52,7 @@ const publish = async (over: Record<string, unknown> = {}) =>
 const choose = async (id: string, optionId: string, key: string) =>
   (await (await omniApi.request(`/cards/${id}/choose`, { method: "POST", headers: { ...ownerH(), "idempotency-key": key }, body: JSON.stringify({ optionId, cardVersion: seenVersion(owner, id) }) })).json()) as Answer;
 const decide = (id: string, digest: string, decision: string, key: string, extra: Record<string, unknown> = {}) =>
-  omniApi.request(`/approvals/${id}/decision`, { method: "POST", headers: { ...ownerH(), "idempotency-key": key }, body: JSON.stringify({ decision, digest, ...extra }) });
+  omniApi.request(`/approvals/${id}/decision`, { method: "POST", headers: { ...ownerDevice(), "idempotency-key": key }, body: JSON.stringify({ decision, digest, ...extra }) });
 const propose = async (body: Record<string, unknown>) =>
   (await (await omniApi.request("/hooks/propose", { method: "POST", headers: hook, body: JSON.stringify(body) })).json()) as { id: string; digest: string };
 
@@ -88,7 +94,7 @@ test("a draft the card's turn proposes makes it draft-ready; Edit follows the ne
   assert.deepEqual(getCard(owner, card.id)!.approvalIds, [p.id]);
   assert.ok(pushes.includes(`OMNI_CARD:${card.id}`));
   assert.equal(pushes.includes(`OMNI_APPROVAL:${p.id}`), false, "one notification, the card's");
-  const edit = await omniApi.request(`/approvals/${p.id}`, { method: "PUT", headers: ownerH(), body: JSON.stringify({ digest: p.digest, payload: { noteId: "mail1", expectTo: ["sam@example.com"], body: "Hi Sam,\n\nMonday works better. Thanks!\n\nBenjamin" } }) });
+  const edit = await omniApi.request(`/approvals/${p.id}`, { method: "PUT", headers: ownerDevice(), body: JSON.stringify({ digest: p.digest, payload: { noteId: "mail1", expectTo: ["sam@example.com"], body: "Hi Sam,\n\nMonday works better. Thanks!\n\nBenjamin" } }) });
   assert.equal(edit.status, 201);
   const edited = (await edit.json() as { approval: { id: string; digest: string } }).approval;
   assert.deepEqual(getCard(owner, card.id)!.approvalIds, [p.id, edited.id]);
@@ -247,7 +253,7 @@ test("editing an older draft does not move the card's latest", async () => {
   transitionCard(owner, card.id, ["proposed"], "working", { action: "instruct" }, { approvalId: old.id });
   const newer = sentPending(card.id, { body: "Hi Sam,\n\nNewer.\n\nBenjamin" });
   transitionCard(owner, card.id, ["working"], "draft-ready", { action: "draft" }, { approvalId: newer.id });
-  const edit = await omniApi.request(`/approvals/${old.id}`, { method: "PUT", headers: ownerH(), body: JSON.stringify({ digest: old.digest, payload: draftBody("Hi Sam,\n\nEdited old.\n\nBenjamin") }) });
+  const edit = await omniApi.request(`/approvals/${old.id}`, { method: "PUT", headers: ownerDevice(), body: JSON.stringify({ digest: old.digest, payload: draftBody("Hi Sam,\n\nEdited old.\n\nBenjamin") }) });
   assert.equal(edit.status, 201);
   assert.deepEqual(getCard(owner, card.id)!.approvalIds, [old.id, newer.id]);
 });
@@ -343,4 +349,48 @@ test("resolved elsewhere with a send in flight: the card is not closed, the send
   assert.equal(getCard(owner, card.id)!.state, "draft-ready");
   assert.ok(outcomesOf(card.id).includes("resolved-elsewhere:send in flight"));
   assert.equal(getApproval(owner, r.approval!.id)!.status, "approved");
+});
+
+// ── one door × cards: a card's reply draft is created through the same step as any other ────────
+
+test("one door: a reply draft created from a card carries the note's fixed subject and threading, and passes the send script's grant check", async () => {
+  const card = await publish();
+  const r = await choose(card.id, "a", "choose-key-od01");
+  const a = getApproval(owner, r.approval!.id)!;
+  assert.deepEqual(
+    { subject: a.payload.subject, inReplyTo: a.payload.inReplyTo, references: a.payload.references },
+    { subject: "Re: Grant budget", inReplyTo: "<mail1@mail.example>", references: "<mail1@mail.example>" },
+  );
+  // The send script's argv check (proton-send refuses a reply without these) accepts it.
+  const argv = protonSendArgs("email-reply", a.payload, owner)!;
+  assert.ok(argv, "protonSendArgs accepts the card's reply");
+  assert.deepEqual(argv.slice(argv.indexOf("--in-reply-to"), argv.indexOf("--in-reply-to") + 2), ["--in-reply-to", "<mail1@mail.example>"]);
+  // Send through the REAL executor: the script is handed a one-time grant bound to exactly this draft, and it verifies.
+  setOmniExecutorForTests(null);
+  let verdict: unknown = null;
+  setProtonSpawnerForTests(async (_cmd, args, o) => {
+    const val = (flag: string) => args[args.indexOf(flag) + 1];
+    const all = (flag: string) => args.flatMap((x, i) => (x === flag ? [args[i + 1]!] : []));
+    const seen = { noteId: val("--reply-to-note"), expectTo: all("--to"), cc: all("--cc"), subject: val("--subject"), inReplyTo: val("--in-reply-to"), references: val("--references"), body: o.input };
+    verdict = consumeSendGrant(r.approval!.id, o.grant, emailSendDigest("email-reply", seen), (id) => getApproval(owner, id)?.status ?? null);
+    return { code: 0, signal: null, stdout: '{"messageId":"<sent@x>"}', stderr: "", timedOut: false };
+  });
+  try {
+    assert.equal((await decide(r.approval!.id, r.approval!.digest, "send", "send-key-od01")).status, 200);
+    assert.deepEqual(verdict, { ok: true });
+    assert.equal(getApproval(owner, r.approval!.id)!.status, "sent");
+  } finally {
+    setProtonSpawnerForTests(null);
+    setOmniExecutorForTests(async () => { executed += 1; return outcome; });
+  }
+});
+
+test("one door: a card reply draft whose item is not a stored, threadable email is refused at choose (no approval, card unchanged)", async () => {
+  setReplyNoteReaderForTests(async () => ({ tags: ["note"], metadata: {} }));
+  const card = await publish();
+  const res = await omniApi.request(`/cards/${card.id}/choose`, { method: "POST", headers: { ...ownerH(), "idempotency-key": "choose-key-od02" }, body: JSON.stringify({ optionId: "a", cardVersion: seenVersion(owner, card.id) }) });
+  assert.equal(res.status, 400);
+  assert.match(((await res.json()) as { detail?: string }).detail ?? "", /noteId/);
+  assert.equal(getCard(owner, card.id)!.state, "proposed");
+  assert.deepEqual(getCard(owner, card.id)!.approvalIds, []);
 });

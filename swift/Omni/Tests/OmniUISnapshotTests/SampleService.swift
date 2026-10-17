@@ -35,6 +35,11 @@ class SampleService: OmniService, @unchecked Sendable {
 
     // MARK: Building the sample
 
+    /// An approval that belongs to no thread (a device sign-in waits in Needs you only).
+    func addApproval(_ row: [String: Any]) {
+        lock.withLock { approvalRows.append(row) }
+    }
+
     @discardableResult
     func addThread(_ id: String, _ title: String, state: String = "done", preview: String? = nil, unread: Int = 0, gone: Bool = false, waitingOn: String? = nil, messages: [(String, String)] = [], tools: [String] = [], cards: [[String: Any]] = [], approvals: [[String: Any]] = [], itemCards: [OmniCard] = [], live: [OmniStreamEnvelope] = []) -> String {
         var row: [String: Any] = ["id": id, "title": title, "state": state, "unread": unread, "pinned": false, "archived": false, "running": state == "working", "lastSeq": 0, "source": "text", "gone": gone, "lastActivityAt": "2026-10-09T15:0\(threadRows.count % 10):00.000Z"]

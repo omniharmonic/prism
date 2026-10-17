@@ -9,7 +9,8 @@ import { bindNudgeThread, listNudges, nudgeAction, resolveNudgeSource, type Cand
 import { clip, plainText } from "./titles";
 import { activeTurn, ensureThread, getThread, omniAudit, sha256 } from "./store";
 import { omniConfig } from "./config";
-import { approvalView, closeApproval, getApproval, listApprovals } from "./approvals";
+import { ApprovalInputError, approvalView, canonicalJson, closeApproval, getApproval, listApprovals } from "./approvals";
+import { withReplyContext } from "./reply-context";
 import { proposeApproval } from "./propose";
 import { recordProactiveOwnerTurn } from "./proactive";
 import { emit, onTurnEnded, startTurn, withNotes } from "./turns";
@@ -268,7 +269,24 @@ function sameVersion(card: Card, seen: string): void {
   if (seen !== cardVersion(card)) throw new CardError("card_changed", 409, "the card was updated since it was shown");
 }
 
-export function chooseCardOption(owner: string, cardId: string, optionId: string, key: string, origin: { via: string }, version: string): CardActionAnswer {
+/** The card option's draft as it will be proposed: an email-reply goes through one door's
+ *  draft-creation step (withReplyContext), which fixes its subject and threading headers from the
+ *  stored email note, exactly as the propose hook does. Errors are kept and raised only if the
+ *  draft is actually proposed (a replay of a finished choose never re-reads the note's verdict). */
+type PreparedDraft = { from: string; payload: Record<string, unknown> } | { from: string; error: unknown };
+async function prepareOptionDraft(owner: string, cardId: string, optionId: string): Promise<PreparedDraft | null> {
+  const draft = getCard(owner, cardId)?.options.find((o) => o.id === optionId)?.draft;
+  if (!draft) return null;
+  const from = canonicalJson(draft);
+  try {
+    return { from, payload: await withReplyContext(draft.kind, draft.payload) };
+  } catch (e) {
+    return { from, error: e instanceof ApprovalInputError ? new CardError("invalid_draft", 400, e.message) : e };
+  }
+}
+
+export async function chooseCardOption(owner: string, cardId: string, optionId: string, key: string, origin: { via: string }, version: string): Promise<CardActionAnswer> {
+  const prepared = await prepareOptionDraft(owner, cardId, optionId);
   return idempotent(owner, cardId, key, `choose:${optionId}`, () => {
     const card = getCard(owner, cardId);
     if (!card) throw new CardError("not_found", 404);
@@ -276,12 +294,16 @@ export function chooseCardOption(owner: string, cardId: string, optionId: string
     const option = card.options.find((o) => o.id === optionId);
     if (!option) throw new CardError("unknown_option", 400, `optionId: one of ${card.options.map((o) => o.id).join(", ")}`);
     if (option.draft) {
+      // Prepared from exactly this draft, or not at all (the card changed during the note read): fail closed.
+      if (!prepared || prepared.from !== canonicalJson(option.draft)) throw new CardError("card_changed", 409, "the card was updated since it was shown");
+      if ("error" in prepared) throw prepared.error;
+      const payload = prepared.payload;
       // The draft is exactly what the card showed. It becomes a PENDING approval: Send is a separate tap.
       const claimed = transitionCard(owner, cardId, ["proposed", "snoozed"], "draft-ready", { action: "choose", optionId }, { chosenOptionId: optionId });
       if (!claimed) throw notOpen(owner, cardId);
       let a;
       try {
-        a = proposeApproval({ owner, threadId: claimed.threadId, kind: option.draft.kind, payload: option.draft.payload, summary: option.label, ttlMs: omniConfig.approvalTtlMs(), actor: owner, via: origin.via, push: false });
+        a = proposeApproval({ owner, threadId: claimed.threadId, kind: option.draft.kind, payload, summary: option.label, ttlMs: omniConfig.approvalTtlMs(), actor: owner, via: origin.via, push: false });
       } catch (e) {
         transitionCard(owner, cardId, ["draft-ready"], card.state, { action: "refused", detail: "propose_failed" }, { chosenOptionId: card.chosenOptionId, snoozedUntil: card.snoozedUntil });
         throw e;

@@ -191,6 +191,9 @@ export function liveActionErrorText(e: unknown): string {
       return "You are not in that room.";
     case "forbidden":
       return "Only the server owner can do this.";
+    case "device_required":
+      // One door (2026-10-15): sends to other people need the owner's signed-in device.
+      return "Sending works from the Omni app or the Prism app on your device — not from a browser session. Nothing was sent.";
     case "upstream_failed":
       return e.sent === "unknown" ? "The service did not confirm — it may have gone through. Check before retrying." : "The service could not be reached. Nothing was sent.";
     case "rsvp_not_applicable":

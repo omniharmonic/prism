@@ -68,6 +68,7 @@ import {
   setDeviceAuthCodeDevice,
   type DeviceAuthRequestRow,
 } from "../db";
+import { clearConfirmation, confirmationAvailable, confirmationState, matchCodeFor, needsDeviceConfirmation, otherPendingSignIn, requestConfirmation, requestHints } from "../auth/device-confirm";
 
 export const deviceAuth = new Hono();
 
@@ -284,18 +285,55 @@ deviceAuth.post("/device/approve", async (c) => {
   if (!f.csrf || !safeEqual(f.csrf, consentCsrf(f.req, sid))) return errorPage(c, 403, "Invalid form token.");
   const req = getDeviceAuthRequest(f.req);
   if (!req) return errorPage(c, 400, "This sign-in request expired or was already used.");
-  deleteDeviceAuthRequest(req.id);
-  clearReqCookie(c);
-  setDoneCookie(c, f.decision === "approve" ? "approved" : "denied");
 
   if (f.decision !== "approve") {
+    deleteDeviceAuthRequest(req.id);
+    clearReqCookie(c);
+    setDoneCookie(c, "denied");
     return c.redirect(withParams(req.redirect_uri, { error: "access_denied", state: req.state }));
   }
+  // One door (review R2-1): with a live device on the account, a session's consent is not
+  // enough — an existing device must approve this exact sign-in in Omni. The request stays
+  // parked; this browser waits on /auth/device/wait.
+  if (needsDeviceConfirmation(s.email)) {
+    // The approval must fit inside the parked request's life (R4 M-a): too little left → start again.
+    if (req.expires_at - Date.now() < 60_000) {
+      deleteDeviceAuthRequest(req.id);
+      clearReqCookie(c);
+      return errorPage(c, 400, "This sign-in request is about to expire. Start again from the app.");
+    }
+    // With Omni off there is no device to approve from: refuse rather than fall back to a
+    // session's consent (review round 3, probe F). Bootstrap rules still apply.
+    if (!confirmationAvailable()) {
+      deleteDeviceAuthRequest(req.id);
+      clearReqCookie(c);
+      return page(c, 403, "Approve from a device",
+        `<h1>This sign-in needs approval from a device you already use</h1><p>New devices are approved in the Omni app, which is switched off on this server. ` +
+        `Sign in from a device you already use, or ask the server's operator.</p>`);
+    }
+    // One at a time (review I1): a second request would look just like the owner's own.
+    if (otherPendingSignIn(req.id)) {
+      c.header("Cache-Control", "no-store");
+      return page(c, 403, "Another sign-in is waiting",
+        `<h1>Another sign-in is already waiting for approval</h1>` +
+        `<p><strong>The waiting request is NOT this one.</strong> Deny it in Omni, then try again — unless you started a sign-in on another device a moment ago.</p>` +
+        `<p class="muted">Only one new device can wait for approval at a time; this sign-in was not started.</p>`);
+    }
+    requestConfirmation(req, s.email, req.label ?? defaultLabelFor(req.client_id), requestHints((k) => c.req.header(k)));
+    return waitingPage(c, req.id);
+  }
+  deleteDeviceAuthRequest(req.id);
+  clearReqCookie(c);
+  setDoneCookie(c, "approved");
+  return mintCodeAndRedirect(c, req, s.email);
+});
+
+function mintCodeAndRedirect(c: Context, req: DeviceAuthRequestRow, email: string) {
   const code = randomId(32);
   const now = Date.now();
   insertDeviceAuthCode({
     code_hash: sha256hex(code),
-    email: s.email,
+    email,
     client_id: req.client_id,
     code_challenge: req.code_challenge,
     redirect_uri: req.redirect_uri,
@@ -304,6 +342,46 @@ deviceAuth.post("/device/approve", async (c) => {
     expires_at: now + AUTH_CODE_TTL_MS,
   });
   return c.redirect(withParams(req.redirect_uri, { code, state: req.state }));
+}
+
+function waitingPage(c: Context, reqId: string) {
+  c.header("Refresh", "3; url=/auth/device/wait");
+  return page(
+    c,
+    200,
+    "Approve on your device",
+    `<meta http-equiv="refresh" content="3; url=/auth/device/wait">` +
+      `<h1>Approve this sign-in on a device you already use</h1>` +
+      `<p>Your code:</p><p style="font:600 32px ui-monospace,Menlo,monospace;letter-spacing:4px;margin:6px 0 14px">${esc(matchCodeFor(reqId))}</p>` +
+      `<p>Open the Omni app on your phone, iPad or Mac: the request is waiting under <strong>Needs you</strong> as “Sign in a new device”. ` +
+      `Approve it only if it shows this same code. ` +
+      `This page continues by itself once you approve.</p>` +
+      `<p class="muted">Denying it there, or 10 minutes without an answer, cancels this sign-in.</p>`,
+  );
+}
+
+/** The parked request, once an existing device decided (polled by the waiting page). */
+deviceAuth.get("/device/wait", (c) => {
+  const req = pendingDeviceRequest(c);
+  if (!req) {
+    const done = getCookie(c, DONE_COOKIE);
+    if (done === "approved" || done === "denied") return alreadyDecidedPage(c, done);
+    return errorPage(c, 400, "This sign-in request expired or was already used.");
+  }
+  const s = readSession(c);
+  if (!s) return errorPage(c, 401, "You're not signed in.");
+  const st = confirmationState(req.id);
+  if (st.state === "pending") return waitingPage(c, req.id);
+  if (st.state === "none") return errorPage(c, 400, "This sign-in request was not approved here. Start again from the app.");
+  deleteDeviceAuthRequest(req.id);
+  clearConfirmation(req.id);
+  clearReqCookie(c);
+  if (st.state === "denied" || st.email !== s.email) {
+    setDoneCookie(c, "denied");
+    return c.redirect(withParams(req.redirect_uri, { error: "access_denied", state: req.state }));
+  }
+  setDoneCookie(c, "approved");
+  return mintCodeAndRedirect(c, req, st.email);
 });
 
 // ---------------------------------------------------------------- token
@@ -319,7 +397,7 @@ deviceAuth.post("/device/token", async (c) => {
   if (!row) return oauthError(c, 400, "invalid_grant");
   if (row.used_at !== null) {
     // Replay of a redeemed code: someone else may hold it — kill what it minted.
-    if (row.device_id) await revokeDevice(row.device_id);
+    if (row.device_id) await revokeDevice(row.device_id, "replay");
     return oauthError(c, 400, "invalid_grant", "code already used");
   }
   // Claim BEFORE checking the verifier: any attempt burns the code (no retries).
@@ -343,7 +421,7 @@ deviceAuth.post("/device/revoke", async (c) => {
   if (f.token) {
     if (f.token.startsWith(DEVICE_TOKEN_PREFIX)) {
       const row = getDeviceTokenByHash(sha256hex(f.token));
-      if (row) await revokeDevice(row.id);
+      if (row) await revokeDevice(row.id, "token");
     }
     return c.json({ ok: true });
   }
@@ -353,6 +431,9 @@ deviceAuth.post("/device/revoke", async (c) => {
   // revokes ITSELF (sign out).
   const id = f.device_id ?? who.deviceId;
   if (!id) return c.json({ error: "bad_request" }, 400);
+  // One door (R2-1): a browser session cannot revoke devices — emptying the account would
+  // reopen first-device bootstrap for whoever holds that session. Revoke from a device.
+  if (!who.deviceId) return c.json({ error: "device_required", detail: "revoke devices from the Omni or Prism app on a signed-in device" }, 403);
   const row = getDeviceToken(id);
   if (!row || (row.email !== who.email && who.email !== config.ownerEmail)) return c.json({ error: "not_found" }, 404);
   await revokeDevice(row.id);
@@ -382,6 +463,7 @@ deviceAuth.get("/devices", (c) => {
 deviceAuth.delete("/devices/:id", async (c) => {
   const who = identity(c);
   if (!who) return c.json({ error: "unauthorized" }, 401);
+  if (!who.deviceId) return c.json({ error: "device_required", detail: "revoke devices from the Omni or Prism app on a signed-in device" }, 403);
   const row = getDeviceToken(c.req.param("id"));
   // 404 (not 403) for someone else's device: don't confirm it exists.
   if (!row || (row.email !== who.email && who.email !== config.ownerEmail)) return c.json({ error: "not_found" }, 404);

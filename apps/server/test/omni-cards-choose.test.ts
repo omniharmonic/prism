@@ -4,7 +4,7 @@ process.env.OMNI_ENABLED = "true"; process.env.OMNI_SERVICE_TOKEN = "test-servic
 process.env.OMNI_HERMES_URL = "http://127.0.0.1:8642"; process.env.OMNI_HERMES_KEY = "test-hermes-key-0123456789";
 import { omniApi, setOmniExecutorForTests } from "../src/routes/omni";
 import { config } from "../src/config";
-import { resetDb, makeSession, sessionCookie } from "./helpers";
+import { resetDb, makeSession, sessionCookie, deviceAuth } from "./helpers";
 import { createHermesStub } from "../scripts/lib/hermes-stub";
 import { setHermesFetchForTests } from "../src/omni/hermes-client";
 import { setOmniRecordSourcesForTests } from "../src/omni/records";
@@ -14,18 +14,21 @@ import { resetCardsForTests, getCard } from "../src/omni/cards";
 import { setOmniPusherForTests, subscribeNotices } from "../src/omni/bus";
 import { approvalDigest, listApprovals } from "../src/omni/approvals";
 import { turnSettled, startTurn } from "../src/omni/turns";
-import { cardPublish, seenVersion } from "./omni-card-samples";
+import { cardPublish, seenVersion, installReplyNotes, clearReplyNotes } from "./omni-card-samples";
 import { setParticipantsReaderForTests } from "../src/omni/recipients";
 
 const revision = "2026-10-15T10:00:00Z";
 const J = { "content-type": "application/json" };
 const hook = { ...J, authorization: `Bearer ${process.env.OMNI_SERVICE_TOKEN}` };
 const ownerH = () => ({ ...J, cookie: sessionCookie(makeSession(config.ownerEmail)) });
+/** One door: approving a send and editing a draft need the owner's DEVICE token (the Omni app), not a session. */
+const ownerDevice = () => ({ ...J, ...deviceAuth(config.ownerEmail) });
 let stub: ReturnType<typeof createHermesStub>;
 let said: string[] = [];
 let executed = 0;
 let pushes: string[] = [];
 beforeEach(() => {
+  installReplyNotes();
   resetDb(); resetOmniStoreForTests(); resetNudgesForTests(); resetCardsForTests(); said = []; executed = 0; pushes = [];
   stub = createHermesStub({ key: process.env.OMNI_HERMES_KEY!, script: (ctx) => { said.push(ctx.message); return { acts: [{ say: "Working on it." }] }; } });
   setHermesFetchForTests(stub.fetch);
@@ -34,7 +37,7 @@ beforeEach(() => {
   setParticipantsReaderForTests(async () => ["sam@example.com"]);
   setOmniRecordSourcesForTests({ resolver: async ({ id }) => ({ id: id!, path: `mail/${id}`, tags: ["email"], updatedAt: revision }) });
 });
-after(() => { setParticipantsReaderForTests(null); setHermesFetchForTests(null); setOmniExecutorForTests(null); setOmniPusherForTests(null); setOmniRecordSourcesForTests({ resolver: null }); });
+after(() => { clearReplyNotes(); setParticipantsReaderForTests(null); setHermesFetchForTests(null); setOmniExecutorForTests(null); setOmniPusherForTests(null); setOmniRecordSourcesForTests({ resolver: null }); });
 
 const publish = async (over: Record<string, unknown> = {}) =>
   ((await (await omniApi.request("/hooks/cards", { method: "POST", headers: hook, body: JSON.stringify(cardPublish(over)) })).json()) as { card: { id: string; threadId: string } }).card;
@@ -62,7 +65,10 @@ test("an option with a draft becomes a pending approval in the card's thread; no
   assert.equal(body.approval!.status, "pending");
   assert.deepEqual(body.card.approvalIds, [body.approval!.id]);
   assert.equal(body.approval!.threadId, card.threadId);
-  assert.equal(body.approval!.digest, approvalDigest("email-reply", { noteId: "mail1", expectTo: ["sam@example.com"], body: "Hi Sam,\n\nThursday afternoon works. I'll send comments by 4.\n\nBenjamin" }));
+  assert.equal(body.approval!.digest, approvalDigest("email-reply", {
+    noteId: "mail1", expectTo: ["sam@example.com"], body: "Hi Sam,\n\nThursday afternoon works. I'll send comments by 4.\n\nBenjamin",
+    subject: "Re: Grant budget", inReplyTo: "<mail1@mail.example>", references: "<mail1@mail.example>",
+  }), "one door: the card's reply draft carries the note's subject and threading");
   assert.equal(body.turnId, null);
   assert.equal(said.length, 0, "no model turn for a ready draft");
   assert.equal(executed, 0);
@@ -142,7 +148,7 @@ test("something else on a ready draft cancels the pending draft: one card, one l
   assert.equal(audit[0]!.actor, config.ownerEmail);
   await turnSettled(body.turnId!);
   assert.equal(said.length, 1);
-  const send = await omniApi.request(`/approvals/${ready.approval!.id}/decision`, { method: "POST", headers: { ...ownerH(), "idempotency-key": "send-cancelled-0001" }, body: JSON.stringify({ decision: "send", digest: ready.approval!.digest }) });
+  const send = await omniApi.request(`/approvals/${ready.approval!.id}/decision`, { method: "POST", headers: { ...ownerDevice(), "idempotency-key": "send-cancelled-0001" }, body: JSON.stringify({ decision: "send", digest: ready.approval!.digest }) });
   assert.equal(send.status, 409);
   assert.equal(executed, 0);
 });

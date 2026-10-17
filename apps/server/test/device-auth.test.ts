@@ -559,7 +559,14 @@ test("devices: list own; can't see or revoke another user's device; owner may li
   const ownerH = { cookie: sessionCookie(makeSession(OWNER)), ...tunnel() };
   const all = (await (await app.request("/auth/devices?all=1", { headers: ownerH })).json()) as { devices: unknown[] };
   assert.equal(all.devices.length, 2);
-  assert.equal((await app.request(`/auth/devices/${b.id}`, { method: "DELETE", headers: ownerH })).status, 200);
+  // One door (R2-1): a browser session cannot revoke devices (it could empty the account and
+  // reopen first-device bootstrap); the owner revokes from a device.
+  assert.equal((await app.request(`/auth/devices/${b.id}`, { method: "DELETE", headers: ownerH })).status, 403);
+  const bySession = await app.request("/auth/device/revoke", { method: "POST", headers: { ...ownerH, "content-type": "application/json" }, body: JSON.stringify({ device_id: b.id }) });
+  assert.equal(bySession.status, 403);
+  assert.equal((await app.request("/auth/me", { headers: { ...bearer(b.token), ...tunnel() } })).status, 200, "still live");
+  const ownerDev = { ...bearer(issueDeviceToken(OWNER, "Owner phone", "prism-native").token), ...tunnel() };
+  assert.equal((await app.request(`/auth/devices/${b.id}`, { method: "DELETE", headers: ownerDev })).status, 200);
   assert.equal((await app.request("/auth/me", { headers: { ...bearer(b.token), ...tunnel() } })).status, 401);
 
   // Own device revoke via DELETE.
@@ -642,12 +649,14 @@ test("L2: a device token must supply the current password; success revokes the a
   assert.equal((await me(bearer(other.token))).status, 401, "other devices are evicted");
   assert.equal((await me(bearer(stranger.token))).status, 200, "another account's devices are untouched");
 
-  // A browser-session password change evicts every device of the account.
+  // One door (review C1): a browser-session password change revokes NO device — emptying the
+  // account would reopen first-device sign-in for whoever holds the session.
   const third = issueDeviceToken(MEMBER, "tablet", "prism-native");
   const viaSession = await changePw({ cookie: sessionCookie(makeSession(MEMBER)) }, { currentPassword: "new passphrase here", newPassword: "third passphrase here" });
   assert.equal(viaSession.status, 200);
-  assert.equal((await me(bearer(caller.token))).status, 401);
-  assert.equal((await me(bearer(third.token))).status, 401);
+  assert.equal(((await viaSession.json()) as { revokedDevices: number }).revokedDevices, 0);
+  assert.equal((await me(bearer(caller.token))).status, 200);
+  assert.equal((await me(bearer(third.token))).status, 200);
 });
 
 // ------------------------------------------------------------- L3: minted credentials die with the device
@@ -683,7 +692,7 @@ test("L3: MCP tokens minted via a device token are recorded with it and revoked 
     const sessionJti = ((await viaSession.json()) as { jti: string }).jti;
     assert.equal(getMcpToken(sessionJti)?.device_id ?? null, null);
 
-    const del = await app.request(`/auth/devices/${dev.id}`, { method: "DELETE", headers: { cookie: sessionCookie(makeSession(OWNER)), ...tunnel() } });
+    const del = await app.request(`/auth/devices/${dev.id}`, { method: "DELETE", headers: { ...bearer(issueDeviceToken(OWNER, "Owner phone", "prism-native").token), ...tunnel() } });
     assert.equal(del.status, 200);
     assert.deepEqual(revoked, [jti], "only the device's token is revoked at the hub");
     assert.ok(getMcpToken(jti)?.revoked_at);

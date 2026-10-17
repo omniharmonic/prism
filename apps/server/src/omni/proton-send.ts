@@ -8,7 +8,11 @@
  * Invariants:
  *  - Fixed argv; every user value is its own argv element after a flag, the body goes
  *    on stdin. No shell.
- *  - The child gets an allowlisted env (HOME/USER/PATH/locale/TZ) — never a Prism secret.
+ *  - The child gets an allowlisted env (HOME/USER/PATH/locale/TZ) — never a Prism secret —
+ *    plus ONE one-time send grant (send-grant.ts), on an inherited pipe (fd 3), bound to this approval and the digest
+ *    of exactly these recipients/subject/body. proton_send.py verifies (and consumes) it
+ *    with this server over loopback before it opens the SMTP socket; without it the
+ *    script refuses ("Sends must be approved in Omni").
  *    proton_send.py reads the Bridge password from the Keychain and its Parachute token
  *    from the agent repo's own .env.
  *  - Outcome is conservative: only a refusal that provably happened before the SMTP
@@ -20,6 +24,7 @@ import { existsSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
 import { omniConfig } from "./config";
 import type { ApprovalKind, ExecOutcome } from "./approvals";
+import { emailSendDigest, GRANT_ENV, GRANT_FD, mintSendGrant, revokeSendGrant } from "./send-grant";
 
 const ENV_KEYS = ["HOME", "USER", "LOGNAME", "PATH", "LANG", "TMPDIR", "TZ"];
 
@@ -38,11 +43,13 @@ export function protonSendArgs(kind: ApprovalKind, p: Record<string, unknown>, s
     if (typeof p.subject !== "string") return null;
     args.push("--subject", p.subject);
   } else if (kind === "email-reply") {
-    // The recipients Benjamin saw on the card are sent explicitly; the note only
-    // supplies subject + threading headers.
-    if (typeof p.noteId !== "string") return null;
+    // Everything Benjamin saw on the card is sent explicitly: recipients, and the subject
+    // and threading headers Prism resolved from the note at propose time. The note
+    // supplies nothing at send time. A reply proposed before that existed is refused.
+    if (typeof p.noteId !== "string" || typeof p.subject !== "string" || !p.subject || typeof p.inReplyTo !== "string" || !p.inReplyTo) return null;
     to = list(p.expectTo);
-    args.push("--reply-to-note", p.noteId);
+    args.push("--reply-to-note", p.noteId, "--subject", p.subject, "--in-reply-to", p.inReplyTo);
+    if (typeof p.references === "string" && p.references) args.push("--references", p.references);
   } else return null;
   if (to.length === 0) return null;
   const cc = list(p.cc);
@@ -62,6 +69,7 @@ const PRE_SEND = [
   /^ERROR: No Parachute note/m,
   /^ERROR: Cannot parse a reply address/m,
   /^ERROR: Refusing to send/m,
+  /^ERROR: Sends must be approved in Omni/m,
   /^ERROR: Body is \d+ chars/m,
   /^ERROR: cannot reach Proton Bridge SMTP/m,
   /^ERROR: .*does not offer STARTTLS/m,
@@ -71,11 +79,17 @@ const PRE_SEND = [
   /^usage: /m,
 ];
 
-export type Spawner = (cmd: string, args: string[], o: { cwd: string; env: Record<string, string>; input: string; timeoutMs: number }) => Promise<{ code: number | null; signal: string | null; stdout: string; stderr: string; timedOut: boolean }>;
+export type Spawner = (cmd: string, args: string[], o: { cwd: string; env: Record<string, string>; input: string; timeoutMs: number; grant?: string }) => Promise<{ code: number | null; signal: string | null; stdout: string; stderr: string; timedOut: boolean }>;
 
 export const realSpawner: Spawner = (cmd, args, o) =>
   new Promise((resolve) => {
-    const child = spawn(cmd, args, { cwd: o.cwd, env: o.env, stdio: ["pipe", "pipe", "pipe"] });
+    // A send grant rides an extra pipe at fd 3 (never the environment: `ps eww` shows it).
+    const child = spawn(cmd, args, { cwd: o.cwd, env: o.env, stdio: o.grant !== undefined ? ["pipe", "pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe"] });
+    if (o.grant !== undefined) {
+      const g = child.stdio[3] as NodeJS.WritableStream | null;
+      g?.on?.("error", () => {});
+      g?.end(o.grant);
+    }
     let stdout = "";
     let stderr = "";
     let timedOut = false;
@@ -105,7 +119,7 @@ export function setProtonSpawnerForTests(s: Spawner | null): void {
 
 const scrub = (s: string): string => s.replace(/[A-Za-z0-9+/=_-]{32,}/g, "[redacted]").slice(-400);
 
-export async function runProtonSend(kind: ApprovalKind, payload: Record<string, unknown>): Promise<ExecOutcome> {
+export async function runProtonSend(kind: ApprovalKind, payload: Record<string, unknown>, approvalId: string): Promise<ExecOutcome> {
   const script = omniConfig.protonSendPath();
   if (!script || !protonSendConfigured()) return { status: "disabled", detail: { error: "executor_disabled", executor: "proton-send" } };
   const args = protonSendArgs(kind, payload, omniConfig.ownerEmail());
@@ -114,12 +128,22 @@ export async function runProtonSend(kind: ApprovalKind, payload: Record<string, 
   const env: Record<string, string> = {};
   for (const k of ENV_KEYS) if (process.env[k]) env[k] = process.env[k]!;
   for (const [k, v] of Object.entries(process.env)) if (k.startsWith("LC_") && v) env[k] = v;
-  const r = await spawner(omniConfig.protonPython(), [script, ...args], {
-    cwd: dirname(dirname(script)), // the agent repo root (scripts/proton_send.py)
-    env,
-    input: body,
-    timeoutMs: omniConfig.protonSendTimeoutMs(),
-  });
+  if (kind !== "email" && kind !== "email-reply") return { status: "failed", detail: { error: "invalid_payload", executor: "proton-send" } };
+  const grant = mintSendGrant(approvalId, emailSendDigest(kind, payload));
+  env[GRANT_ENV.fd] = String(GRANT_FD);
+  env[GRANT_ENV.approval] = approvalId;
+  let r: Awaited<ReturnType<Spawner>>;
+  try {
+    r = await spawner(omniConfig.protonPython(), [script, ...args], {
+      cwd: dirname(dirname(script)), // the agent repo root (scripts/proton_send.py)
+      env,
+      input: body,
+      timeoutMs: omniConfig.protonSendTimeoutMs(),
+      grant,
+    });
+  } finally {
+    revokeSendGrant(grant); // unused (the script refused early, or never started): withdrawn
+  }
   const detail: Record<string, unknown> = { executor: "proton-send", exitCode: r.code };
   if (r.code === 0) {
     const m = r.stdout.match(/\{[\s\S]*\}\s*$/);

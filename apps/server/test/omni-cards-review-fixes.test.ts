@@ -6,7 +6,7 @@ process.env.OMNI_PROTON_SEND = process.execPath; // "configured": the executor i
 import { omniApi, setOmniExecutorForTests } from "../src/routes/omni";
 import { config } from "../src/config";
 import { db } from "../src/db";
-import { resetDb, makeSession, sessionCookie } from "./helpers";
+import { resetDb, makeSession, sessionCookie, deviceAuth } from "./helpers";
 import { createHermesStub } from "../scripts/lib/hermes-stub";
 import { setHermesFetchForTests } from "../src/omni/hermes-client";
 import { setOmniRecordSourcesForTests } from "../src/omni/records";
@@ -17,7 +17,7 @@ import { setOmniPusherForTests } from "../src/omni/bus";
 import { getApproval, type ExecOutcome } from "../src/omni/approvals";
 import { startTurn, turnSettled } from "../src/omni/turns";
 import { setParticipantsReaderForTests, draftRecipients } from "../src/omni/recipients";
-import { cardPublish, seenVersion } from "./omni-card-samples";
+import { cardPublish, seenVersion, installReplyNotes, clearReplyNotes } from "./omni-card-samples";
 
 /** Final whole-branch review fixes (Important 1–5, Minors 1, 2). */
 const owner = config.ownerEmail;
@@ -25,12 +25,15 @@ const revision = "2026-10-15T10:00:00Z";
 const J = { "content-type": "application/json" };
 const hook = { ...J, authorization: `Bearer ${process.env.OMNI_SERVICE_TOKEN}` };
 const ownerH = () => ({ ...J, cookie: sessionCookie(makeSession(config.ownerEmail)) });
+/** One door: approving a send and editing a draft need the owner's DEVICE token (the Omni app), not a session. */
+const ownerDevice = () => ({ ...J, ...deviceAuth(config.ownerEmail) });
 let executed = 0;
 let outcome: ExecOutcome = { status: "sent", detail: { executor: "test" } };
 let pushes: string[] = [];
 let onItem: string[] | null = ["sam@example.com"];
 let rev = revision;
 beforeEach(() => {
+  installReplyNotes();
   resetDb(); resetOmniStoreForTests(); resetNudgesForTests(); resetCardsForTests(); executed = 0; pushes = []; onItem = ["sam@example.com"]; rev = revision;
   outcome = { status: "sent", detail: { executor: "test" } };
   setHermesFetchForTests(createHermesStub({ key: process.env.OMNI_HERMES_KEY!, script: () => ({ acts: [{ say: "On it." }] }) }).fetch);
@@ -39,7 +42,7 @@ beforeEach(() => {
   setOmniRecordSourcesForTests({ resolver: async ({ id }) => ({ id: id!, path: `mail/${id}`, tags: ["email"], updatedAt: rev }) });
   setParticipantsReaderForTests(async () => onItem);
 });
-after(() => { setParticipantsReaderForTests(null); setHermesFetchForTests(null); setOmniExecutorForTests(null); setOmniPusherForTests(null); setOmniRecordSourcesForTests({ resolver: null }); });
+after(() => { clearReplyNotes(); setParticipantsReaderForTests(null); setHermesFetchForTests(null); setOmniExecutorForTests(null); setOmniPusherForTests(null); setOmniRecordSourcesForTests({ resolver: null }); });
 
 type Answer = { card: { state: string }; approval: { id: string; digest: string } | null; turnId: string | null };
 const publishRaw = (over: Record<string, unknown> = {}) => omniApi.request("/hooks/cards", { method: "POST", headers: hook, body: JSON.stringify(cardPublish(over)) });
@@ -50,7 +53,7 @@ const choose = async (id: string, optionId: string, key: string) => (await (awai
 const instructRaw = (id: string, text: string, key: string, version: string = seenVersion(owner, id)) =>
   omniApi.request(`/cards/${id}/instruct`, { method: "POST", headers: { ...ownerH(), "idempotency-key": key }, body: JSON.stringify({ text, cardVersion: version }) });
 const decide = (id: string, digest: string, decision: string, key: string) =>
-  omniApi.request(`/approvals/${id}/decision`, { method: "POST", headers: { ...ownerH(), "idempotency-key": key }, body: JSON.stringify({ decision, digest }) });
+  omniApi.request(`/approvals/${id}/decision`, { method: "POST", headers: { ...ownerDevice(), "idempotency-key": key }, body: JSON.stringify({ decision, digest }) });
 const dismiss = (id: string) => omniApi.request(`/cards/${id}/dismiss`, { method: "POST", headers: ownerH(), body: JSON.stringify({ reason: "not-needed" }) });
 const propose = async (body: Record<string, unknown>) =>
   (await (await omniApi.request("/hooks/propose", { method: "POST", headers: hook, body: JSON.stringify(body) })).json()) as { id: string; digest: string };
@@ -250,7 +253,7 @@ test("omni_card pushes at most once per turn, and only when the options changed"
 // ── Round 2 ─────────────────────────────────────────────────────────────────
 
 const editDraft = (id: string, digest: string, payload: Record<string, unknown>) =>
-  omniApi.request(`/approvals/${id}`, { method: "PUT", headers: ownerH(), body: JSON.stringify({ digest, payload }) });
+  omniApi.request(`/approvals/${id}`, { method: "PUT", headers: ownerDevice(), body: JSON.stringify({ digest, payload }) });
 
 test("N2: a reply-all keeps the original Cc; an older email with no Cc on record says why", async () => {
   const card = await publish();

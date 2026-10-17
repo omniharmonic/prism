@@ -30,13 +30,14 @@ import { configureEmailActions, smtpSend, buildReply, validateSendInput, imapMai
 import { setActionsGogRunnerForTests } from "../src/actions/calendar";
 import { setMatrixActionClientForTests, txnIdFor } from "../src/actions/matrix";
 import { validateProtonCredential, type ProtonCredential } from "../src/worker/proton";
-import { resetDb, makeSession, sessionCookie, makeCapability, installFakeVault, type FakeVault } from "./helpers";
+import { resetDb, makeSession, sessionCookie, deviceAuth, makeCapability, installFakeVault, type FakeVault } from "./helpers";
 
 const J = { "content-type": "application/json" };
 const VAULT = "primary";
 const SELF = "me@example.test";
 const PIN = "ab".repeat(32);
-const owner = () => ({ ...J, cookie: sessionCookie(makeSession(config.ownerEmail)) });
+const owner = () => ({ ...J, ...deviceAuth() });
+const ownerSession = () => ({ ...J, cookie: sessionCookie(makeSession(config.ownerEmail)) });
 let keyN = 0;
 const freshKey = () => `test-key-${Date.now()}-${++keyN}`;
 
@@ -236,7 +237,7 @@ test("email send: composes a proper message from the Bridge account; audit holds
   const row = rows[0]!;
   assert.equal(row.action, "email.send");
   assert.equal(row.status, "ok");
-  assert.equal(row.via, "session");
+  assert.equal(row.via, "device");
   assert.equal(row.origin, "human");
   assert.equal(row.actor_email, config.ownerEmail);
   const dump = JSON.stringify(row);
@@ -503,8 +504,9 @@ test("calendar update + delete: idempotent replay (gog runs once), key reuse 422
   assert.equal((await post("/calendar/delete", { eventId: "evt2" }, h)).status, 422);
   // CSRF: a form body / a sibling-site fetch / a foreign Origin never reach gog.
   assert.equal((await post("/calendar/update", { eventId: "evt1", title: "x" }, { ...keyed(), "content-type": "text/plain" })).status, 415);
-  assert.equal((await post("/calendar/update", { eventId: "evt1", title: "x" }, { ...keyed(), "sec-fetch-site": "same-site" })).status, 403);
-  assert.equal((await post("/calendar/delete", { eventId: "evt1" }, { ...keyed(), origin: "https://evil.example.test" })).status, 403);
+  const keyedSession = () => ({ ...ownerSession(), "idempotency-key": freshKey() });
+  assert.equal((await post("/calendar/update", { eventId: "evt1", title: "x" }, { ...keyedSession(), "sec-fetch-site": "same-site" })).status, 403);
+  assert.equal((await post("/calendar/delete", { eventId: "evt1" }, { ...keyedSession(), origin: "https://evil.example.test" })).status, 403);
   assert.equal(gogCalls.length, 1);
   assert.equal((await post("/calendar/update", { eventId: "evt5", title: "Secret project title", attendees: ["alice@example.test"] }, keyed())).status, 200);
   const rows = auditRows().filter((r) => String(r.action).startsWith("calendar."));
@@ -767,7 +769,7 @@ test("matrix allowlist: agent origin (in-process MCP, loopback owner token, or a
   assert.deepEqual(rows.map((r) => [r.via, r.origin, r.status]), [
     ["mcp", "agent", "refused"],
     ["local-token", "agent", "refused"],
-    ["session", "agent", "refused"],
+    ["device", "agent", "refused"],
     ["mcp", "agent", "ok"],
     ["mcp", "agent", "refused"],
   ]);
@@ -937,7 +939,7 @@ test("SMTP: a non-loopback host is refused without connecting", async () => {
 
 test("M1 CSRF: text/plain or form bodies → 415; cross-site / same-site fetch → 403; foreign Origin → 403; nothing sent", async () => {
   const body = JSON.stringify(sendBody());
-  const req = (h: Record<string, string>) => actionsApi.request("/email/send", { method: "POST", headers: { cookie: owner().cookie, "idempotency-key": freshKey(), ...h }, body });
+  const req = (h: Record<string, string>) => actionsApi.request("/email/send", { method: "POST", headers: { cookie: ownerSession().cookie, "idempotency-key": freshKey(), ...h }, body });
   assert.equal((await req({ "content-type": "text/plain" })).status, 415);
   assert.equal((await req({ "content-type": "application/x-www-form-urlencoded" })).status, 415);
   assert.equal((await req({})).status, 415, "no content type");
@@ -945,8 +947,12 @@ test("M1 CSRF: text/plain or form bodies → 415; cross-site / same-site fetch �
   assert.equal((await req({ ...J, "sec-fetch-site": "same-site" })).status, 403, "a sibling subdomain is same-site");
   assert.equal((await req({ ...J, origin: "https://evil.example.test" })).status, 403);
   assert.equal(sent.length, 0);
-  assert.equal((await req({ ...J, "sec-fetch-site": "same-origin", origin: config.appOrigin })).status, 200, "the PWA itself");
-  assert.equal((await req({ ...J, origin: config.nativeOrigins[0]! })).status, 200, "a native shell origin");
+  // One door: a browser session passes CSRF but cannot send to other people (device only).
+  const pwa = await req({ ...J, "sec-fetch-site": "same-origin", origin: config.appOrigin });
+  assert.equal(pwa.status, 403, "the PWA itself, on a session: device required");
+  assert.deepEqual(await pwa.json().then((j: { error: string; sent?: boolean }) => [j.error, j.sent]), ["device_required", false]);
+  assert.equal((await req({ ...J, origin: config.nativeOrigins[0]! })).status, 403, "a native shell origin on a session cookie");
+  assert.equal(sent.length, 0);
   // A native bearer device token is not an ambient credential: its cross-site fetch is fine.
   const dev = issueDeviceToken(config.ownerEmail, "phone", "prism-ios").token;
   const r = await actionsApi.request("/matrix/send", {
@@ -955,7 +961,7 @@ test("M1 CSRF: text/plain or form bodies → 415; cross-site / same-site fetch �
     body: JSON.stringify({ roomId: "!room1:hs.example.test", body: "from the phone" }),
   });
   assert.equal(r.status, 200);
-  assert.equal(sent.length, 2);
+  assert.equal(sent.length, 0, "no email left on a session");
 });
 
 test("M2: matrix/google credentials are server-owner-only to write; actions read ONLY the primary vault's credentials", async () => {

@@ -1,4 +1,5 @@
 import { cardVersion, getCard } from "../src/omni/cards";
+import { setReplyNoteReaderForTests } from "../src/omni/reply-context";
 /** Made-up card input shared by the card tests. Every name and address is invented. */
 export const cardInput = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
   sourceKey: "mail1",
@@ -28,3 +29,14 @@ export function seenVersion(owner: string, id: string): string {
   const c = getCard(owner, id);
   return c ? cardVersion(c) : "0".repeat(16);
 }
+
+/** Every card test's email items are stored email notes with a Message-ID, so a reply draft created from a card
+ *  (or proposed by its turn) gets one door's fixed subject and threading headers. Only WHERE the note is read
+ *  from is replaced; applyReplyContext and the send script's check are the real ones. */
+export function installReplyNotes(): void {
+  setReplyNoteReaderForTests(async (noteId) => ({
+    tags: ["email"],
+    metadata: { type: "email", from: "Sam <sam@example.com>", subject: "Grant budget", messageId: `<${noteId}@mail.example>` },
+  }));
+}
+export const clearReplyNotes = (): void => setReplyNoteReaderForTests(null);

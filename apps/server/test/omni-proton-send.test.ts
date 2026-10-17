@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { config } from "../src/config";
 import { protonSendArgs, runProtonSend, setProtonSpawnerForTests, type Spawner } from "../src/omni/proton-send";
 import { executorFor } from "../src/omni/approvals";
+import { outstandingGrants } from "../src/omni/send-grant";
 
 const SELF = "synergy@benjaminlife.one";
 type Call = Parameters<Spawner>;
@@ -47,21 +48,27 @@ test("argv: fixed flags, one element per value, --allow-external only for third 
   const ext = protonSendArgs("email", { to: ["kevin@example.org"], cc: [SELF], subject: "Hi; rm -rf /", body: "b" }, SELF)!;
   assert.ok(ext.includes("--allow-external"));
   assert.equal(ext[ext.indexOf("--subject") + 1], "Hi; rm -rf /", "a value is one argv element, never a shell");
-  const rep = protonSendArgs("email-reply", { noteId: "n1", expectTo: ["kevin@example.org"], body: "b" }, SELF)!;
-  assert.deepEqual(rep.slice(5, 9), ["--reply-to-note", "n1", "--to", "kevin@example.org"], "the recipients on the card are sent explicitly");
+  const rep = protonSendArgs("email-reply", { noteId: "n1", expectTo: ["kevin@example.org"], subject: "Re: Hi", inReplyTo: "<m1@x>", references: "<r@x> <m1@x>", body: "b" }, SELF)!;
+  assert.deepEqual(rep.slice(5), ["--reply-to-note", "n1", "--subject", "Re: Hi", "--in-reply-to", "<m1@x>", "--references", "<r@x> <m1@x>", "--to", "kevin@example.org", "--allow-external"], "recipients, subject and threading on the card are sent explicitly");
+  assert.equal(protonSendArgs("email-reply", { noteId: "n1", expectTo: ["kevin@example.org"], body: "b" }, SELF), null, "a reply without resolved subject/threading is refused");
   assert.equal(protonSendArgs("email", { to: [], subject: "s" }, SELF), null);
   assert.equal(protonSendArgs("tweet", { text: "x" }, SELF), null);
 });
 
 test("run: body on stdin, allowlisted env, cwd = agent repo root, messageId parsed", async () => {
-  const out = await runProtonSend("email", { to: ["kevin@example.org"], subject: "S", body: "Plain body" });
+  const out = await runProtonSend("email", { to: ["kevin@example.org"], subject: "S", body: "Plain body" }, "apr_test");
   assert.equal(out.status, "sent");
   assert.equal(out.detail.messageId, "<m1@x>");
   const [, args, o] = calls[0]!;
   assert.equal(args[0], process.execPath);
   assert.equal(o.input, "Plain body");
   assert.ok(!("SUPER_SECRET_TOKEN" in o.env) && !("PROTON_SEND_ALLOW_EXTERNAL" in o.env), "no Prism env, no recipient policy from Prism");
-  assert.ok(Object.keys(o.env).every((k) => ["HOME", "USER", "LOGNAME", "PATH", "LANG", "TMPDIR", "TZ"].includes(k) || k.startsWith("LC_")));
+  assert.ok(Object.keys(o.env).every((k) => ["HOME", "USER", "LOGNAME", "PATH", "LANG", "TMPDIR", "TZ", "PRISM_SEND_GRANT_FD", "PRISM_SEND_GRANT_APPROVAL"].includes(k) || k.startsWith("LC_")));
+  // One-time grant for THIS approval; withdrawn once the child has exited.
+  assert.equal(o.env.PRISM_SEND_GRANT_APPROVAL, "apr_test");
+  assert.equal(o.env.PRISM_SEND_GRANT_FD, "3");
+  assert.match(o.grant!, /^[A-Za-z0-9_-]{43}$/, "the grant rides fd 3, not the environment");
+  assert.equal(outstandingGrants(), 0);
 });
 
 test("outcomes: pre-socket refusals are failed; SMTP trouble, timeouts and signals are unknown", async () => {
@@ -71,16 +78,17 @@ test("outcomes: pre-socket refusals are failed; SMTP trouble, timeouts and signa
     "ERROR: --allow-external was passed but third-party outbound mail is switched OFF.",
     "ERROR: cannot reach Proton Bridge SMTP at 127.0.0.1:1025 (refused).",
     "ERROR: Bridge SMTP TLS fingerprint does not match the pin.",
+    "ERROR: Sends must be approved in Omni (the one-time send grant was refused: digest_mismatch).",
   ]) {
     reply = { code: 1, signal: null, stdout: "", stderr, timedOut: false };
-    assert.equal((await runProtonSend("email", p)).status, "failed", stderr);
+    assert.equal((await runProtonSend("email", p, "apr_test")).status, "failed", stderr);
   }
   reply = { code: 1, signal: null, stdout: "", stderr: "ERROR: Bridge refused the message: (451, b'later')", timedOut: false };
-  assert.equal((await runProtonSend("email", p)).status, "unknown");
+  assert.equal((await runProtonSend("email", p, "apr_test")).status, "unknown");
   reply = { code: null, signal: "SIGTERM", stdout: "", stderr: "", timedOut: true };
-  const t = await runProtonSend("email", p);
+  const t = await runProtonSend("email", p, "apr_test");
   assert.equal(t.status, "unknown");
   assert.equal(t.detail.error, "timeout");
   delete process.env.OMNI_PROTON_SEND;
-  assert.equal((await runProtonSend("email", p)).status, "disabled");
+  assert.equal((await runProtonSend("email", p, "apr_test")).status, "disabled");
 });
