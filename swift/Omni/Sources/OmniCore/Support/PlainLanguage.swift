@@ -55,6 +55,10 @@ public enum PlainLanguage {
             case "digest_mismatch": return "The draft changed on the server. Review the latest version."
             case "already_decided": return "This was already decided."
             case "in_progress": return "This is already being sent."
+            // The server says why in plain words (who is not on the email, or that an older email has no Cc on record).
+            case "target_changed": return f.detail ?? "This reply would go to someone who isn’t on the original email. Edit the draft or cancel it."
+            case "card_changed": return CardText.cardChanged
+            case "send_in_flight": return "This draft is being sent, so it can’t be set aside now."
             default: return "Omni is still working on the last message."
             }
         case .rejected(let f):

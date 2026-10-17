@@ -282,6 +282,19 @@ final class ApprovalCenterTests: XCTestCase {
         XCTAssertNotEqual(service.decides[0].key, service.decides[1].key)
     }
 
+    func testARecipientRefusalSaysWhyNotAGenericError() async {
+        let why = "This older email has no Cc on record; remove the Cc or reply from your mail app."
+        service.decisions(.failure(PrismError.conflict(ServerFailure(status: 409, code: "target_changed", detail: why, body: Data()))))
+        service.approvalReads(.success(Fixture.approval("apr1")))
+        let center = make()
+        center.ingest([Fixture.approval("apr1")])
+        await center.send("apr1")
+        XCTAssertEqual(center.card(for: "apr1")?.notice?.text, why)
+        XCTAssertEqual(PlainLanguage.message(for: .conflict(Fixture.failure(409, "target_changed"))),
+                       "This reply would go to someone who isn’t on the original email. Edit the draft or cancel it.")
+        XCTAssertEqual(PlainLanguage.message(for: .conflict(Fixture.failure(409, "send_in_flight"))), "This draft is being sent, so it can’t be set aside now.")
+    }
+
     func testAChangedDraftOnTheServerIsShownAgainInsteadOfSent() async {
         let changed = Fixture.approval("apr1", payload: ["to": ["dana@example.com"], "subject": "Budget call", "body": "A different body."])
         service.decisions(.failure(PrismError.conflict(Fixture.failure(409, "digest_mismatch"))))
