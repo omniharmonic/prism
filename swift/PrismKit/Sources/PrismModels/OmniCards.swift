@@ -100,21 +100,46 @@ public struct OmniCard: Codable, Sendable, Equatable, Identifiable {
     public let version: String?
     /// A new message arrived on the item after he chose (draft-ready or working): review before sending.
     public let sourceChanged: Bool
+    /// The newest entry of the card's history (`outcomes`): what last happened to it, e.g.
+    /// `draft-expired` or `draft-failed` (detail `failed` / `unknown`).
+    public let lastOutcome: Outcome?
+
+    public struct Outcome: Codable, Sendable, Equatable {
+        public let action: String
+        public let detail: String?
+        public init(action: String, detail: String? = nil) { self.action = action; self.detail = detail }
+    }
 
     public init(id: String, sourceKey: String, kind: CardKind, state: CardState, headline: String, context: [Fact] = [], ask: String? = nil,
                 urgency: CardUrgency = .whenever, options: [Option] = [], recommended: String? = nil, itemRefs: [String] = [], threadId: String? = nil,
                 approvalIds: [String] = [], chosenOptionId: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil, snoozedUntil: Date? = nil,
-                section: CardSection? = nil, transitional: Bool = false, nudgeId: String? = nil, version: String? = nil, sourceChanged: Bool = false) {
+                section: CardSection? = nil, transitional: Bool = false, nudgeId: String? = nil, version: String? = nil, sourceChanged: Bool = false,
+                lastOutcome: Outcome? = nil) {
         self.id = id; self.sourceKey = sourceKey; self.kind = kind; self.state = state; self.headline = headline; self.context = context
         self.ask = ask; self.urgency = urgency; self.options = options; self.recommended = recommended; self.itemRefs = itemRefs
         self.threadId = threadId; self.approvalIds = approvalIds; self.chosenOptionId = chosenOptionId; self.createdAt = createdAt
         self.updatedAt = updatedAt; self.snoozedUntil = snoozedUntil; self.section = section; self.transitional = transitional; self.nudgeId = nudgeId
-        self.version = version; self.sourceChanged = sourceChanged
+        self.version = version; self.sourceChanged = sourceChanged; self.lastOutcome = lastOutcome
     }
 
     enum CodingKeys: String, CodingKey {
         case id, sourceKey, kind, state, headline, context, ask, urgency, options, recommended, itemRefs, threadId, approvalIds
-        case chosenOptionId, createdAt, updatedAt, snoozedUntil, section, transitional, nudgeId, version, sourceChanged
+        case chosenOptionId, createdAt, updatedAt, snoozedUntil, section, transitional, nudgeId, version, sourceChanged, outcomes
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id); try c.encode(sourceKey, forKey: .sourceKey); try c.encode(kind, forKey: .kind)
+        try c.encode(state, forKey: .state); try c.encode(headline, forKey: .headline); try c.encode(context, forKey: .context)
+        try c.encodeIfPresent(ask, forKey: .ask); try c.encode(urgency, forKey: .urgency); try c.encode(options, forKey: .options)
+        try c.encodeIfPresent(recommended, forKey: .recommended); try c.encode(itemRefs, forKey: .itemRefs)
+        try c.encodeIfPresent(threadId, forKey: .threadId); try c.encode(approvalIds, forKey: .approvalIds)
+        try c.encodeIfPresent(chosenOptionId, forKey: .chosenOptionId); try c.encodeIfPresent(createdAt, forKey: .createdAt)
+        try c.encodeIfPresent(updatedAt, forKey: .updatedAt); try c.encodeIfPresent(snoozedUntil, forKey: .snoozedUntil)
+        try c.encodeIfPresent(section, forKey: .section); try c.encode(transitional, forKey: .transitional)
+        try c.encodeIfPresent(nudgeId, forKey: .nudgeId); try c.encodeIfPresent(version, forKey: .version)
+        try c.encode(sourceChanged, forKey: .sourceChanged)
+        if let lastOutcome { try c.encode([lastOutcome], forKey: .outcomes) }
     }
 
     public init(from decoder: any Decoder) throws {
@@ -141,6 +166,7 @@ public struct OmniCard: Codable, Sendable, Equatable, Identifiable {
         nudgeId = try c.decodeIfPresent(String.self, forKey: .nudgeId)
         version = try c.decodeIfPresent(String.self, forKey: .version)
         sourceChanged = try c.decodeIfPresent(Bool.self, forKey: .sourceChanged) ?? false
+        lastOutcome = (try? c.decodeIfPresent([Outcome].self, forKey: .outcomes))??.last
     }
 
     /// Decodes an array of cards, dropping elements that fail. Logs ONE line with the count dropped
@@ -172,7 +198,8 @@ public struct OmniCard: Codable, Sendable, Equatable, Identifiable {
         OmniCard(id: id, sourceKey: sourceKey, kind: kind, state: state, headline: headline, context: context, ask: ask, urgency: urgency,
                  options: options, recommended: recommended, itemRefs: itemRefs, threadId: threadId, approvalIds: approvalIds,
                  chosenOptionId: chosenOptionId, createdAt: createdAt, updatedAt: updatedAt, snoozedUntil: snoozedUntil,
-                 section: section, transitional: transitional, nudgeId: nudgeId, version: version, sourceChanged: sourceChanged)
+                 section: section, transitional: transitional, nudgeId: nudgeId, version: version, sourceChanged: sourceChanged,
+                 lastOutcome: lastOutcome)
     }
 }
 

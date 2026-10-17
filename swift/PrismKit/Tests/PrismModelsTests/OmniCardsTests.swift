@@ -30,6 +30,12 @@ final class OmniCardsTests: XCTestCase {
         XCTAssertNil(c.latestApprovalID)
         XCTAssertEqual(c.version, "3fd35d7265d5bd63")
         XCTAssertFalse(c.sourceChanged)
+        XCTAssertEqual(c.lastOutcome, OmniCard.Outcome(action: "proposed"))
+    }
+
+    func testTheLastOutcomeSaysWhatHappenedToTheDraft() throws {
+        let c = try PrismJSON.decoder().decode(OmniCard.self, from: Data(#"{"id":"card_x","state":"proposed","headline":"Sam","outcomes":[{"at":"2026-10-15T16:00:00.000Z","action":"choose","optionId":"a"},{"at":"2026-10-16T16:00:00.000Z","action":"draft-failed","approvalId":"apr_1","detail":"unknown"}]}"#.utf8))
+        XCTAssertEqual(c.lastOutcome, OmniCard.Outcome(action: "draft-failed", detail: "unknown"))
     }
 
     func testAFlaggedCardSaysSoAndTheOptimisticCopyKeepsTheVersion() throws {
