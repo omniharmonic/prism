@@ -63,3 +63,60 @@ The coordinator checks canonical Sent evidence immediately before publication an
 
 
 `POST /api/omni/hooks/proactive/source-health` accepts `{}` under the service hook guard. It returns `{sources:[{name,status,kind,lastSuccessAt,staleAfterMs,failureStreak,reconcileOwed,reconcileStuck}],checkedAt}` from the existing worker health registry, filtered to the configured Omni primary vault. Only the three explicit nonnegative count fields accompany the health fields; invalid count data marks coverage failing. No errors, arbitrary detail fields, credentials, message contents or secondary-vault rows leave this endpoint. The coordinator treats unhealthy or unknown channel coverage as a reason to hold that channel's reasoning and report a coverage warning; healthy task sources can still proceed. A healthy vault does not establish a healthy Matrix or mail ingest.
+
+## Cards mode (the understanding step, 2026-10-15)
+
+Item runs (`--reconcile`, `--event-intake`) ask the reasoner for one decision per event, with a
+**card** for every `surface`/`work` decision (agent repo `scripts/proactive_intelligence/cards.py`:
+`SYSTEM_CARDS`, `validate_card`). Cards are published to `POST /api/omni/hooks/cards`; see
+`docs/omni-module.md` § Item cards for the card and the routes.
+
+Context the reasoner gets:
+
+- Person notes for everyone on the item, matched by **strong key only**: an exact email address or
+  an exact Matrix id (no case folding) claimed by exactly one person note. Benjamin's own addresses
+  are excluded, and tombstoned or non-human notes are never matched.
+- His calendar. The window is the item's time anchor (a deadline or a time written in the item)
+  clamped to now minus 7 days ... now plus 30 days, then 7 days either side, and it always includes
+  now ... now plus 7 days, so an old item still sees the coming week. An unreadable or possibly
+  incomplete calendar is reported, never guessed.
+- Linked tasks and projects, and up to three other open, unresolved items with the same people.
+
+The Hermes run for cards:
+
+- Memory is READ-ONLY: the model can recall, but nothing from the run is saved (email and chat text
+  must not enter Hermes memory). If Hermes has a memory method the guard does not know, the run
+  refuses to start.
+- Only the read-only vault tools are allowed: `query_notes`, `find_path`, `vault_info`, under either
+  name (`mcp__parachute__*` on the Mini, `mcp_parachute_*` on older Hermes). At most 6 tool calls.
+- Time limit 90 seconds, plus a 15 second grace after which the parent stops the run.
+- Any other tool call is refused and the run fails.
+- If Hermes offers none of the vault tools, the run still happens without them, logs a warning and
+  is counted in the job receipt (`cardsRunsWithoutVaultTools`; named refusals in `runRefusals`).
+
+A context fact that cites no supplied source is dropped. A bad card drops only that card: the
+decision stays a plain nudge with `cardError` recorded, and the run succeeds.
+
+Publish outcomes:
+
+| Answer | Result |
+|---|---|
+| 201 / 200 | published |
+| 400 `invalid_*`, `headline_not_readable` | `refused`. On the first attempt only, and only when no card for that source was ever published, the decision is published once as a legacy nudge so Benjamin still hears about it. |
+| 409 `stale_evidence` | `stale` |
+| 409 `source_suppressed` | `suppressed` |
+| other 409 | final |
+| 422, 5xx | retried up to 3 times |
+
+The resolve sweep reports open cards' source keys as well as nudge sources, so a card whose item was
+answered elsewhere closes. It never closes a card by age: a card on an item older than about 8 days
+is left for Benjamin to close, and a sweep that cannot read the card list skips cards instead of
+aborting.
+
+Rollback: `--legacy-publish`, or `OMNI_PROACTIVE_LEGACY=1` in `~/.hermes/.env`. The next run
+publishes private preparations to `/hooks/proactive` exactly as before. Daily routines (morning,
+evening, tweet, nightly review) are unchanged in Phase 1.
+
+Quality: `tests/test_proactive_card_quality.py` grades 32 synthetic items (8 each: email, chat,
+invite, task) with a fake reasoner. `python -m proactive_intelligence.card_quality` runs the real
+model over the same items, by hand on the Mini; it publishes and sends nothing.
