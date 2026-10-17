@@ -8,6 +8,8 @@ import SwiftUI
 struct ApprovalCardView: View {
     let center: ApprovalCenter
     let id: String
+    /// Said above the draft (a card's "Something new arrived since this draft"). The draft stays decidable.
+    var warning: String? = nil
     @State private var editing: ApprovalDraft?
     @State private var revising = false
     @State private var feedback = ""
@@ -29,10 +31,23 @@ struct ApprovalCardView: View {
                 Spacer()
                 if card.isBusy { ProgressView().controlSize(.small).accessibilityLabel("Working") }
             }
+            if standing == .pending, let warning {
+                Label(warning, systemImage: "envelope.badge")
+                    .font(.callout.weight(.semibold)).foregroundStyle(Color.warningText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("approval.\(card.id).warning")
+            }
             if standing == .revised {
                 // A replaced draft is history: one line is enough.
                 EmptyView()
             } else {
+                if !card.content.newRecipients.isEmpty {
+                    // Someone the original item did not include: a person must notice before Send.
+                    Label("\(CardText.newRecipient): \(card.content.newRecipients.joined(separator: ", ")) — not on the original thread", systemImage: "person.crop.circle.badge.exclamationmark")
+                        .font(.callout.weight(.semibold)).foregroundStyle(Color.warningText)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("approval.\(card.id).newRecipient")
+                }
                 draft(card.content)
             }
             if let line = card.statusLine() {

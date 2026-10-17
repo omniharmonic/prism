@@ -290,6 +290,12 @@ struct Walk {
             model.ingest([card])
             try await draw("card-\(name)", size: CGSize(width: 560, height: 700), CardHarness(cards: model, approvals: ApprovalCenter(service: service, sink: sink), id: card.id))
         }
+        // Draft ready, then a new message on the item, and a draft recipient who was not on it.
+        let flaggedService = CardingSampleService.newMessageService()
+        let flaggedSink = ErrorSink(onSignedOut: {})
+        let flaggedModel = CardsModel(service: flaggedService, nudges: nil, sink: flaggedSink)
+        flaggedModel.ingest([CardingSampleService.newMessage()])
+        try await draw("card-draft-ready-new-message", size: CGSize(width: 560, height: 860), CardHarness(cards: flaggedModel, approvals: ApprovalCenter(service: flaggedService, sink: flaggedSink), id: "card-ready"))
         // A draft-ready card whose draft cannot be read: the error and Try again, not an endless "Loading".
         let failedService = CardingSampleService()
         let failedSink = ErrorSink(onSignedOut: {})

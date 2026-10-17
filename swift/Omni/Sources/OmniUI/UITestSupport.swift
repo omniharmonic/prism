@@ -380,11 +380,11 @@ extension FaultInjectingService: CardService {
     func card(_ id: String) async throws -> OmniCard {
         try await cardBase.card(id)
     }
-    func chooseCardOption(_ id: String, optionID: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult {
-        faults.contains("card-sample") ? try await UITestSampleCards.shared.choose(id, optionID) : try await cardBase.chooseCardOption(id, optionID: optionID, idempotencyKey: idempotencyKey)
+    func chooseCardOption(_ id: String, optionID: String, cardVersion: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult {
+        faults.contains("card-sample") ? try await UITestSampleCards.shared.choose(id, optionID) : try await cardBase.chooseCardOption(id, optionID: optionID, cardVersion: cardVersion, idempotencyKey: idempotencyKey)
     }
-    func instructCard(_ id: String, text: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult {
-        faults.contains("card-sample") ? try await UITestSampleCards.shared.instruct(id) : try await cardBase.instructCard(id, text: text, idempotencyKey: idempotencyKey)
+    func instructCard(_ id: String, text: String, cardVersion: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult {
+        faults.contains("card-sample") ? try await UITestSampleCards.shared.instruct(id) : try await cardBase.instructCard(id, text: text, cardVersion: cardVersion, idempotencyKey: idempotencyKey)
     }
     func snoozeCard(_ id: String, until: Date) async throws -> OmniCard {
         faults.contains("card-sample") ? try await UITestSampleCards.shared.snooze(id) : try await cardBase.snoozeCard(id, until: until)

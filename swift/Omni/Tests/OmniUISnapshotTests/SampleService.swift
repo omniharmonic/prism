@@ -343,8 +343,34 @@ final class CardingSampleService: SampleService, CardService, @unchecked Sendabl
                         options: (1...4).map { i in .init(id: "o\(i)", label: String("Option \(i): reply with the numbers we have and promise the rest by Thursday noon, sorry".prefix(80)), plan: "Reply", produces: ["email-reply"], draft: i == 1 ? replyDraft : nil) },
                         recommended: "o1", itemRefs: ["01JEXAMPLE0000000000000007"], threadId: "card-thread", createdAt: t0.addingTimeInterval(-600), updatedAt: t0, section: .decide)
     }
+    /// Draft ready, and Dana wrote again since: the card and its inline approval say so; the draft
+    /// also copies someone who was not on her email ("New recipient").
+    static func newMessage() -> OmniCard {
+        let c = draftReady()
+        return OmniCard(id: "card-ready", sourceKey: c.sourceKey, kind: c.kind, state: c.state, headline: c.headline,
+                        context: [.init(text: "Dana wrote again: she can also do 11", source: "01JEXAMPLE0000000000000003")], urgency: c.urgency, options: c.options,
+                        recommended: c.recommended, itemRefs: c.itemRefs, threadId: c.threadId, approvalIds: c.approvalIds, chosenOptionId: c.chosenOptionId,
+                        createdAt: c.createdAt, updatedAt: c.updatedAt, section: c.section, version: "0123456789abcdef", sourceChanged: true)
+    }
+    static func newMessageService() -> CardingSampleService {
+        let service = CardingSampleService()
+        var draft = SampleService.draft("apr-card", thread: "card-thread", kind: "email-reply", payload: ["noteId": "01JEXAMPLE0000000000000003", "expectTo": ["dana@example.net"], "cc": ["assistant@example.org"], "body": "Hi Dana,\n\nFriday at ten works.\n\nBenjamin"])
+        draft["originalRecipients"] = ["dana@example.net"]
+        service.addThread("card-thread", "Dana's spec review", state: "waiting", preview: "I drafted a reply for you to review.",
+                          messages: [("assistant", "Dana asked whether Friday at ten works.")], approvals: [draft], itemCards: [newMessage()])
+        service.cardItems = [newMessage()]
+        return service
+    }
+    /// Back in Decide after a send whose outcome is unknown: the card says to check Sent first.
+    static func afterUnknownSend() -> OmniCard {
+        let c = proposed()
+        return OmniCard(id: c.id, sourceKey: c.sourceKey, kind: c.kind, state: .proposed, headline: c.headline, context: c.context, ask: c.ask, urgency: c.urgency,
+                        options: c.options, recommended: c.recommended, itemRefs: c.itemRefs, threadId: c.threadId, approvalIds: ["apr-old"],
+                        createdAt: c.createdAt, updatedAt: c.updatedAt, section: .decide, version: "0123456789abcdef",
+                        lastOutcome: .init(action: "draft-failed", detail: "unknown"))
+    }
     static func gallery() -> [(String, OmniCard)] {
-        [("proposed", proposed()), ("draft-ready", draftReady()), ("invite", invite()), ("task", task()), ("working", working()), ("waiting", waiting()), ("sent", sent()), ("transitional", transitional())]
+        [("proposed", proposed()), ("draft-ready", draftReady()), ("invite", invite()), ("task", task()), ("working", working()), ("waiting", waiting()), ("sent", sent()), ("transitional", transitional()), ("after-unknown-send", afterUnknownSend())]
     }
     /// Everything at once, plus the draft's approval and the card thread with a card inline.
     static func carding() -> CardingSampleService {
@@ -367,8 +393,8 @@ final class CardingSampleService: SampleService, CardService, @unchecked Sendabl
         guard let found = cardItems.first(where: { $0.id == id }) else { throw PrismError.invalidRequest("sample") }
         return found
     }
-    func chooseCardOption(_ id: String, optionID: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult { throw PrismError.invalidRequest("sample") }
-    func instructCard(_ id: String, text: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult { throw PrismError.invalidRequest("sample") }
+    func chooseCardOption(_ id: String, optionID: String, cardVersion: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult { throw PrismError.invalidRequest("sample") }
+    func instructCard(_ id: String, text: String, cardVersion: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult { throw PrismError.invalidRequest("sample") }
     func snoozeCard(_ id: String, until: Date) async throws -> OmniCard { throw PrismError.invalidRequest("sample") }
     func dismissCard(_ id: String, reason: CardDismissReason) async throws -> OmniCard { throw PrismError.invalidRequest("sample") }
 }

@@ -123,6 +123,19 @@ struct CardView: View {
                     Text(card.headline).font(.headline).fixedSize(horizontal: false, vertical: true).accessibilityAddTraits(.isHeader)
                     contextLine(card)
                 }
+                // Draft ready: the inline approval says it, right above the draft; otherwise the card does.
+                if card.sourceChanged, !(card.state == .draftReady && card.latestApprovalID.flatMap { approvals.card(for: $0) } != nil) {
+                    Label(CardText.sourceChanged, systemImage: "envelope.badge")
+                        .font(.callout.weight(.semibold)).foregroundStyle(Color.warningText)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("card.\(card.id).sourceChanged")
+                }
+                if let line = CardText.lastDraftLine(card) {
+                    Label(line, systemImage: "clock.arrow.circlepath")
+                        .font(.callout).foregroundStyle(Color.warningText)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("card.\(card.id).lastDraft")
+                }
                 switch card.state {
                 case .draftReady: draftReady(card)
                 case .working, .waiting: motion(card)
@@ -206,11 +219,18 @@ struct CardView: View {
         return Button { Task { await cards.choose(card.id, optionID: option.id) } } label: {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 if recommended { Image(systemName: "star.fill").font(.caption).accessibilityHidden(true) }
-                Text(option.label).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(option.label).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                    // What Omni will do: he sees the plan before he picks it (the turn quotes it as Omni's own words).
+                    Text(option.plan)
+                        .font(.footnote).foregroundStyle(Color.quietText)
+                        .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
         .buttonStyle(CardOptionStyle(recommended: recommended, fullWidth: fullWidth))
         .accessibilityLabel(recommended ? "Recommended: \(option.label)" : option.label)
+        .accessibilityValue(option.plan)
         .accessibilityHint(option.draft != nil ? "Makes this draft ready for you to review. Nothing is sent." : "Omni starts on this. Nothing is sent without your approval.")
         .accessibilityIdentifier("card.\(card.id).option.\(option.id)")
     }
@@ -244,7 +264,7 @@ struct CardView: View {
     @ViewBuilder private func draftReady(_ card: OmniCard) -> some View {
         if let approvalID = card.latestApprovalID {
             if approvals.card(for: approvalID) != nil {
-                ApprovalCardView(center: approvals, id: approvalID)
+                ApprovalCardView(center: approvals, id: approvalID, warning: card.sourceChanged ? CardText.sourceChanged : nil)
             } else if draftUnavailable {
                 VStack(alignment: .leading, spacing: CardMetrics.optionSpacing) {
                     Label("Couldn’t load the draft.", systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(Color.warningText).fixedSize(horizontal: false, vertical: true)
@@ -260,6 +280,8 @@ struct CardView: View {
                     }
             }
         }
+        // Not this draft: tell Omni what to do instead (the waiting draft is retired).
+        somethingElse(card)
     }
 
     private func motion(_ card: OmniCard) -> some View {
@@ -294,6 +316,11 @@ struct CardView: View {
                 }
             } label: { Text(card.transitional ? "Open" : "Open thread").foregroundStyle(Color.quietText).touchTarget() }
             .accessibilityIdentifier("card.\(card.id).open")
+        }
+        if card.state == .draftReady {
+            Button { Task { await cards.notNeeded(card.id) } } label: { Text("Not needed").foregroundStyle(Color.quietText).touchTarget() }
+                .accessibilityHint("Takes this off Needs you and discards the draft. Nothing is sent.")
+                .accessibilityIdentifier("card.\(card.id).notNeeded")
         }
         if card.state == .proposed || card.state == .snoozed {
             Menu {

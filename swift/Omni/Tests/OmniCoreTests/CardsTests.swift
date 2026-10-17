@@ -13,7 +13,7 @@ private func sample(_ id: String, urgency: CardUrgency = .thisWeek, created: Tim
              ],
              recommended: transitional ? nil : "a", itemRefs: ["src-\(id)"], threadId: "t-\(id)",
              createdAt: Date(timeIntervalSince1970: created), updatedAt: Date(timeIntervalSince1970: created),
-             section: .decide, transitional: transitional, nudgeId: transitional ? "nud-\(id)" : nil)
+             section: .decide, transitional: transitional, nudgeId: transitional ? "nud-\(id)" : nil, version: transitional ? nil : "v-\(id)-000000000")
 }
 
 private let pendingApproval: Approval = try! JSONDecoder().decode(Approval.self, from: Data(#"{"id":"apr_1","threadId":"t-c1","kind":"email-reply","payload":{"noteId":"src","expectTo":["sam@example.com"],"body":"Yes."},"digest":"\#(String(repeating: "a", count: 64))","summary":"Say yes","status":"pending"}"#.utf8))
@@ -21,6 +21,7 @@ private let pendingApproval: Approval = try! JSONDecoder().decode(Approval.self,
 private actor CardFake: CardService {
     var list: [OmniCard]
     var chooseKeys: [IdempotencyKey] = []
+    var versions: [String] = []
     var chooseFailures: [any Error] = []
     var snoozes = 0
     var served: OmniCard?
@@ -37,8 +38,9 @@ private actor CardFake: CardService {
         if let hook = duringList { await hook() }
         return CardList(cards: list, counts: .init(decide: list.filter { $0.section == .decide }.count, approve: list.filter { $0.section == .approve }.count, motion: list.filter { $0.section == .motion }.count))
     }
-    func chooseCardOption(_ id: String, optionID: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult {
+    func chooseCardOption(_ id: String, optionID: String, cardVersion: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult {
         chooseKeys.append(idempotencyKey)
+        versions.append(cardVersion)
         if let hook = duringChoose { await hook() }
         if !chooseFailures.isEmpty { throw chooseFailures.removeFirst() }
         let card = list.first { $0.id == id }!
@@ -48,7 +50,8 @@ private actor CardFake: CardService {
             : card.with(state: .working, chosenOptionId: optionID, section: .motion)
         return CardActionResult(card: next, approval: option.draft != nil ? pendingApproval : nil, threadId: card.threadId, turnId: option.draft == nil ? "turn_1" : nil)
     }
-    func instructCard(_ id: String, text: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult {
+    func instructCard(_ id: String, text: String, cardVersion: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult {
+        versions.append(cardVersion)
         let card = list.first { $0.id == id }!
         return CardActionResult(card: card.with(state: .working, chosenOptionId: nil, section: .motion), approval: nil, threadId: card.threadId, turnId: "turn_2")
     }
@@ -108,6 +111,67 @@ private actor NudgeRecorder: NudgeService {
         XCTAssertEqual(cards.approve.map(\.id), ["c1"])
         XCTAssertNil(cards.notice(for: "c1"))
         XCTAssertTrue(cards.busy.isEmpty)
+    }
+
+    func testChooseAndInstructSendTheVersionOfTheCardOnScreen() async {
+        let (cards, fake) = model([sample("c1", created: 1, draft: false), sample("c2", created: 2)])
+        await cards.refresh()
+        _ = await cards.choose("c1", optionID: "b")
+        _ = await cards.instruct("c2", text: "Ask for the PDF")
+        let versions = await fake.versions
+        XCTAssertEqual(versions, ["v-c1-000000000", "v-c2-000000000"])
+    }
+
+    func testAChangedCardIsReplacedByItsNewVersionAndSaysSo() async {
+        let (cards, fake) = model([sample("c1", created: 1)])
+        await cards.refresh()
+        let base = sample("c1", created: 1)
+        let fresh = OmniCard(id: "c1", sourceKey: base.sourceKey, kind: .email, state: .proposed, headline: base.headline,
+                             options: [.init(id: "a", label: "Decline politely", plan: "Reply declining", produces: ["email-reply"], draft: nil),
+                                       .init(id: "b", label: "Ask for Monday", plan: "Reply proposing Monday", produces: ["email-reply"], draft: nil)],
+                             recommended: nil, threadId: base.threadId, createdAt: base.createdAt, updatedAt: Date(timeIntervalSince1970: 50),
+                             section: .decide, version: "v-c1-111111111")
+        await fake.serve(fresh)
+        await fake.failNextChoose([PrismError.conflict(ServerFailure(status: 409, code: "card_changed", detail: nil, body: Data()))])
+        let result = await cards.choose("c1", optionID: "a")
+        XCTAssertNil(result, "nothing ran")
+        XCTAssertEqual(cards.card(for: "c1")?.options.first?.label, "Decline politely", "the new version is on screen")
+        XCTAssertEqual(cards.card(for: "c1")?.state, .proposed)
+        XCTAssertEqual(cards.notice(for: "c1"), CardText.cardChanged)
+        XCTAssertEqual(CardText.cardChanged, "This card was updated — here’s the new version.")
+    }
+
+    func testSomethingElseWorksOnADraftReadyCard() async {
+        let ready = sample("c1", created: 1).with(state: .draftReady, chosenOptionId: "a", section: .approve)
+        let (cards, _) = model([ready])
+        await cards.refresh()
+        let result = await cards.instruct("c1", text: "Say yes but ask for the PDF first")
+        XCTAssertEqual(result?.card.state, .working)
+        XCTAssertEqual(cards.inMotion.map(\.id), ["c1"])
+        XCTAssertTrue(CardsModel.isInstructable(ready))
+        XCTAssertFalse(CardsModel.isChoosable(ready), "an option is still not choosable while a draft waits")
+    }
+
+    func testTheLastDraftLineExplainsWhyTheCardIsBackInDecide() {
+        let base = sample("c1", created: 1)
+        func with(_ action: String, _ detail: String?) -> OmniCard {
+            OmniCard(id: "c1", sourceKey: base.sourceKey, kind: .email, state: .proposed, headline: base.headline, section: .decide, lastOutcome: .init(action: action, detail: detail))
+        }
+        XCTAssertEqual(CardText.lastDraftLine(with("draft-expired", "expired")), "The last draft expired before it was sent. Choose again.")
+        XCTAssertEqual(CardText.lastDraftLine(with("draft-failed", "failed")), "The last draft didn’t send. Choose again.")
+        XCTAssertEqual(CardText.lastDraftLine(with("draft-failed", "unknown")), "The last draft may have been sent — check Sent before choosing again.")
+        XCTAssertNil(CardText.lastDraftLine(with("choose", nil)))
+        XCTAssertNil(CardText.lastDraftLine(base))
+    }
+
+    func testTheApprovalViewMarksANewRecipient() throws {
+        let approval = try JSONDecoder().decode(Approval.self, from: Data(#"{"id":"apr_2","kind":"email-reply","payload":{"noteId":"src","expectTo":["sam@example.com"],"cc":["assistant@evil.test"],"body":"Yes."},"digest":"d","status":"pending","originalRecipients":["sam@example.com"]}"#.utf8))
+        let content = ApprovalContent(approval)
+        XCTAssertEqual(content.newRecipients, ["assistant@evil.test"])
+        XCTAssertEqual(content.fields.first { $0.key == "cc" }?.value, "assistant@evil.test (New recipient)")
+        XCTAssertEqual(content.fields.first { $0.key == "expectTo" }?.value, "sam@example.com")
+        let unknown = try JSONDecoder().decode(Approval.self, from: Data(#"{"id":"apr_3","kind":"email","payload":{"to":["ana@example.org"],"subject":"s","body":"b"},"digest":"d","status":"pending"}"#.utf8))
+        XCTAssertTrue(ApprovalContent(unknown).newRecipients.isEmpty, "unknown original: no label")
     }
 
     func testADefiniteRefusalDropsTheKey() async {

@@ -5,6 +5,23 @@ import OmniClient
 public enum CardText {
     public static let alreadyHandled = "This was already handled."
     public static let couldNotDo = "Couldn’t do that just now. Try again."
+    /// choose / instruct answered `card_changed`: the card on screen is now the new version.
+    public static let cardChanged = "This card was updated — here’s the new version."
+    /// A new message on the item after he chose: on the card and on its inline approval.
+    public static let sourceChanged = "Something new arrived since this draft — review before sending."
+    /// A draft recipient who was not on the original item (the approval view's label).
+    public static let newRecipient = "New recipient"
+
+    /// What happened to the card's last draft, when it is back in Decide because of it. Nil otherwise.
+    public static func lastDraftLine(_ card: OmniCard) -> String? {
+        guard card.state == .proposed || card.state == .snoozed, let last = card.lastOutcome else { return nil }
+        switch (last.action, last.detail) {
+        case ("draft-expired", _): return "The last draft expired before it was sent. Choose again."
+        case ("draft-failed", "unknown"): return "The last draft may have been sent — check Sent before choosing again."
+        case ("draft-failed", _): return "The last draft didn’t send. Choose again."
+        default: return nil
+        }
+    }
 
     public static func kindLabel(_ kind: CardKind) -> String {
         switch kind {

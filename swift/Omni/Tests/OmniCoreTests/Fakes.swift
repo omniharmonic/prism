@@ -437,8 +437,8 @@ extension FakeService: CardService {
         return CardList(cards: open, counts: .init(decide: open.filter { $0.section == .decide }.count, approve: open.filter { $0.section == .approve }.count, motion: open.filter { $0.section == .motion }.count))
     }
     func card(_ id: String) async throws -> OmniCard { throw PrismError.invalidRequest("fake") }
-    func chooseCardOption(_ id: String, optionID: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult { throw PrismError.invalidRequest("fake") }
-    func instructCard(_ id: String, text: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult { throw PrismError.invalidRequest("fake") }
+    func chooseCardOption(_ id: String, optionID: String, cardVersion: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult { throw PrismError.invalidRequest("fake") }
+    func instructCard(_ id: String, text: String, cardVersion: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult { throw PrismError.invalidRequest("fake") }
     func snoozeCard(_ id: String, until: Date) async throws -> OmniCard { throw PrismError.invalidRequest("fake") }
     func dismissCard(_ id: String, reason: CardDismissReason) async throws -> OmniCard { throw PrismError.invalidRequest("fake") }
 }

@@ -8,8 +8,8 @@ import PrismTransport
 public protocol CardService: Sendable {
     func cards(section: CardSection?) async throws -> CardList
     func card(_ id: String) async throws -> OmniCard
-    func chooseCardOption(_ id: String, optionID: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult
-    func instructCard(_ id: String, text: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult
+    func chooseCardOption(_ id: String, optionID: String, cardVersion: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult
+    func instructCard(_ id: String, text: String, cardVersion: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult
     func snoozeCard(_ id: String, until: Date) async throws -> OmniCard
     func dismissCard(_ id: String, reason: CardDismissReason) async throws -> OmniCard
 }
@@ -17,11 +17,11 @@ public protocol CardService: Sendable {
 extension LiveOmniService: CardService {
     public func cards(section: CardSection?) async throws -> CardList { try await client.cards(section: section) }
     public func card(_ id: String) async throws -> OmniCard { try await client.card(id) }
-    public func chooseCardOption(_ id: String, optionID: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult {
-        try await client.chooseCardOption(id, optionID: optionID, idempotencyKey: idempotencyKey)
+    public func chooseCardOption(_ id: String, optionID: String, cardVersion: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult {
+        try await client.chooseCardOption(id, optionID: optionID, cardVersion: cardVersion, idempotencyKey: idempotencyKey)
     }
-    public func instructCard(_ id: String, text: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult {
-        try await client.instructCard(id, text: text, idempotencyKey: idempotencyKey)
+    public func instructCard(_ id: String, text: String, cardVersion: String, idempotencyKey: IdempotencyKey) async throws -> CardActionResult {
+        try await client.instructCard(id, text: text, cardVersion: cardVersion, idempotencyKey: idempotencyKey)
     }
     public func snoozeCard(_ id: String, until: Date) async throws -> OmniCard { try await client.snoozeCard(id, until: until) }
     public func dismissCard(_ id: String, reason: CardDismissReason) async throws -> OmniCard { try await client.dismissCard(id, reason: reason) }
@@ -70,8 +70,10 @@ public final class CardsModel {
     public func notice(for id: String) -> String? { notices[id] }
     public func focus(_ id: String?) { focusedCardID = id }
 
-    /// The states the server accepts a choice or an instruction from (a woken snoozed card is still `snoozed`).
+    /// The states the server accepts a choice from (a woken snoozed card is still `snoozed`).
     static func isChoosable(_ card: OmniCard) -> Bool { card.state == .proposed || card.state == .snoozed }
+    /// …and an instruction ("Something else…"): also a draft-ready card, whose waiting draft it retires.
+    static func isInstructable(_ card: OmniCard) -> Bool { isChoosable(card) || card.state == .draftReady }
 
     static func ordered(_ cards: [OmniCard]) -> [OmniCard] {
         cards.sorted { a, b in
@@ -167,6 +169,14 @@ public final class CardsModel {
                 if !coalesced { rollBack(original, optimistic: optimistic) }
             }
             notices[cardID] = CardText.alreadyHandled
+        case "card_changed":
+            // New options or a new message since this copy was loaded: show the new version; he chooses again.
+            if let fresh = try? await service.card(cardID) { put(fresh) } else {
+                let coalesced = refreshing
+                await refresh()
+                if !coalesced { rollBack(original, optimistic: optimistic) }
+            }
+            notices[cardID] = CardText.cardChanged
         case "idempotency_conflict":
             rollBack(original, optimistic: optimistic)
             await refresh()
@@ -192,7 +202,7 @@ public final class CardsModel {
         let optimistic = option.draft != nil ? card.with(state: .draftReady, chosenOptionId: optionID, section: .approve) : card.with(state: .working, chosenOptionId: optionID, section: .motion)
         put(optimistic)
         do {
-            let result = try await service.chooseCardOption(cardID, optionID: optionID, idempotencyKey: key)
+            let result = try await service.chooseCardOption(cardID, optionID: optionID, cardVersion: card.version ?? "", idempotencyKey: key)
             keys[token] = nil
             put(result.card)
             if let approval = result.approval { approvalDidArrive?(approval) }
@@ -208,7 +218,7 @@ public final class CardsModel {
     public func instruct(_ cardID: String, text: String) async -> CardActionResult? {
         let words = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let card = known[cardID], !card.transitional, !words.isEmpty, !busy.contains(cardID) else { return nil }
-        guard Self.isChoosable(card) else { notices[cardID] = CardText.alreadyHandled; return nil }
+        guard Self.isInstructable(card) else { notices[cardID] = CardText.alreadyHandled; return nil }
         busy.insert(cardID)
         defer { busy.remove(cardID) }
         notices[cardID] = nil
@@ -218,7 +228,7 @@ public final class CardsModel {
         let optimistic = card.with(state: .working, chosenOptionId: nil, section: .motion)
         put(optimistic)
         do {
-            let result = try await service.instructCard(cardID, text: words, idempotencyKey: key)
+            let result = try await service.instructCard(cardID, text: words, cardVersion: card.version ?? "", idempotencyKey: key)
             keys[token] = nil
             put(result.card)
             return result
