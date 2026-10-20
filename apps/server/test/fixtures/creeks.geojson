@@ -1,0 +1,5 @@
+{ "type": "FeatureCollection", "features": [
+  { "type": "Feature", "properties": { "gnis_name": "Boulder Creek" }, "geometry": { "type": "LineString", "coordinates": [[-105.30,40.00],[-105.20,40.05],[-105.10,40.02]] } },
+  { "type": "Feature", "properties": { "name": "Dry Creek" }, "geometry": { "type": "LineString", "coordinates": [[-105.15,40.10],[-105.05,40.12]] } },
+  { "type": "Feature", "properties": { "name": "No Geometry" }, "geometry": null }
+] }

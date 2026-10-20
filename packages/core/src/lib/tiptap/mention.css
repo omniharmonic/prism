@@ -1,0 +1,348 @@
+/* @-mention chips, the @ menu, hover cards and the date editor (wave 2A).
+   Tokens only, so light/dark follow the theme. */
+
+.prism-mention-root,
+.prism-mention {
+  display: inline;
+}
+
+.prism-mention-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.2em;
+  max-width: 100%;
+  padding: 0 0.15em;
+  margin: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  background: transparent;
+  text-decoration: none;
+  cursor: pointer;
+  line-height: inherit;
+  white-space: nowrap;
+  vertical-align: baseline;
+  transition: background-color var(--transition-fast, 120ms);
+}
+.prism-mention-chip:hover,
+.prism-mention-chip:focus-visible {
+  background: var(--surface-hover);
+}
+.prism-mention-chip:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+.prism-mention[data-selected] .prism-mention-chip {
+  background: var(--surface-selected);
+  box-shadow: 0 0 0 1px var(--color-accent);
+}
+.prism-mention[data-kind="person"] .prism-mention-chip,
+.prism-mention[data-kind="date"] .prism-mention-chip {
+  color: var(--text-accent);
+}
+.prism-mention[data-kind="page"] .prism-mention-text {
+  border-bottom: 1px solid var(--glass-border-strong);
+  font-weight: 500;
+}
+.prism-mention-chip[data-state="missing"],
+.prism-mention-chip[data-state="deleted"],
+.prism-mention-chip[data-state="error"],
+.prism-mention-chip[data-state="loading"] {
+  color: var(--text-muted);
+  cursor: default;
+}
+.prism-mention-chip[data-state="missing"] .prism-mention-text,
+.prism-mention-chip[data-state="deleted"] .prism-mention-text {
+  border-bottom-style: dashed;
+  font-style: italic;
+  font-weight: 400;
+}
+.prism-mention-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 28ch;
+}
+.prism-mention-icon,
+.prism-mention-at {
+  display: inline-flex;
+  align-self: center;
+  color: var(--text-muted);
+  font-size: 0.95em;
+}
+.prism-mention[data-kind="person"] .prism-mention-at {
+  color: var(--text-accent);
+  opacity: 0.8;
+}
+
+/* The @ menu (same family as the [[ picker). */
+.prism-mention-menu {
+  position: fixed;
+  z-index: var(--z-popover, 70);
+  overflow: auto;
+  padding: 4px;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--glass-shadow-elevated);
+}
+.prism-mention-menu-heading {
+  padding: 8px 10px 4px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.prism-mention-option {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  text-align: left;
+  color: var(--text-primary);
+  background: transparent;
+}
+.prism-mention-option[aria-selected="true"] {
+  background: var(--surface-selected);
+}
+.prism-mention-option-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+.prism-mention-option-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+.prism-mention-option-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+.prism-mention-option-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+.prism-mention-menu-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+/* Hover cards + date editor. */
+.prism-mention-card {
+  position: fixed;
+  z-index: var(--z-popover, 70);
+  width: min(300px, calc(100vw - 16px));
+  padding: 12px;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--glass-shadow-elevated);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+}
+.prism-mention-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.prism-mention-avatar {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-full);
+  background: var(--color-accent-dim);
+  color: var(--text-accent);
+  font-weight: 650;
+}
+.prism-mention-card-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.prism-mention-card-detail {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.prism-mention-card-body {
+  margin: 8px 0 0;
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.prism-mention-identities {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+.prism-mention-identities li {
+  display: flex;
+  gap: 8px;
+  padding: 3px 0;
+  overflow-wrap: anywhere;
+}
+.prism-mention-identities li span {
+  min-width: 56px;
+  color: var(--text-muted);
+  text-transform: capitalize;
+}
+.prism-mention-card-action {
+  margin-top: 10px;
+  min-height: 36px;
+  padding: 0 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--glass-border);
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+}
+.prism-mention-card-action:hover {
+  background: var(--surface-hover);
+}
+
+.prism-mention-date-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.prism-mention-date-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+.prism-mention-date-form input[type="date"],
+.prism-mention-date-form input[type="time"] {
+  min-height: 40px;
+  padding: 0 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--glass-border);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  /* 16px so iOS doesn't zoom the viewport. */
+  font-size: 16px;
+  color-scheme: light dark;
+}
+.prism-mention-date-form .prism-mention-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+.prism-mention-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.prism-mention-actions button {
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+.prism-mention-actions button:hover {
+  background: var(--surface-hover);
+}
+.prism-mention-actions .prism-mention-primary {
+  background: var(--color-accent);
+  color: #fff;
+  font-weight: 600;
+}
+.prism-mention-actions .prism-mention-primary:hover {
+  background: var(--color-accent-hover);
+}
+.prism-mention-actions .prism-mention-primary:disabled {
+  opacity: 0.6;
+}
+.prism-mention-error {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--color-danger, #dc2626);
+}
+
+/* Comment mention chips (plain text tokens rendered). */
+.prism-comment-mention {
+  display: inline;
+  padding: 0 0.2em;
+  border-radius: var(--radius-sm);
+  color: var(--text-accent);
+  background: var(--color-accent-dim);
+  font-weight: 500;
+  cursor: pointer;
+}
+.prism-comment-mention:hover,
+.prism-comment-mention:focus-visible {
+  text-decoration: underline;
+}
+
+.prism-mention-toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  z-index: var(--z-toast, 90);
+  max-width: min(420px, calc(100vw - 32px));
+  transform: translateX(-50%);
+  padding: 10px 14px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow-elevated);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+}
+.prism-mention-toast[data-error="true"] {
+  border-color: var(--color-danger, #dc2626);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .prism-mention-chip {
+    transition: none;
+  }
+}
+
+/* The comment-field @ picker sits in flow under the field. */
+.prism-mention-menu-inline {
+  margin-top: 4px;
+  max-height: 240px;
+  overflow: auto;
+  padding: 4px;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--glass-shadow-elevated);
+}
+
+/* Phones: the date editor is a bottom sheet, never clipped by the keyboard bar. */
+@media (max-width: 520px) {
+  .prism-mention-card.prism-mention-date-editor {
+    top: auto !important;
+    left: 8px !important;
+    right: 8px;
+    bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+    width: auto;
+    max-height: calc(100dvh - 16px);
+    overflow: auto;
+    z-index: var(--z-modal, 80);
+  }
+}
+.prism-mention-card {
+  max-height: calc(100dvh - 16px);
+  overflow: auto;
+}

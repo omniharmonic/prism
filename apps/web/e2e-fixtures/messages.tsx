@@ -1,0 +1,223 @@
+import { AgentLifecycleFixture } from "./agent-lifecycle";
+import { AgentClientProvider } from "../../../packages/core/src/data/AgentClientContext";
+import { replyAgent, agentControls } from "./reply-agent";
+import React, { useMemo, useRef, useState } from "react";
+import { createRoot } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { LiveActionsProvider, PlatformProvider, VaultClientProvider, type VaultClient, type Note } from "@prism/core";
+import EmailRenderer from "../../../packages/core/src/components/renderers/EmailRenderer";
+import type { LiveActionsClient } from "../../../packages/core/src/lib/actions/client";
+import { MessageThread } from "../../../packages/core/src/components/comms/MessageThread";
+import { MessageComposer } from "../../../packages/core/src/components/comms/MessageComposer";
+import type { MatrixMessage } from "../../../packages/core/src/lib/matrix/types";
+import { createHttpLiveActionsClient, LiveActionError } from "../../../packages/core/src/lib/actions/client";
+const message = (id: number): MatrixMessage => ({
+  event_id: `event-${id}`,
+  sender: id % 2 ? "@morgan:example.test" : "@alex:example.test",
+  sender_name: id % 2 ? "Morgan" : "Alex",
+  timestamp: 1790870400000 + id * 60_000,
+  body: `Message ${id}\nA second line with context.`,
+  is_outgoing: false,
+  msg_type: "m.text",
+  media_url: null,
+  media_info: null,
+});
+const controls = { reject: true, attempts: 0, replyCalls: [] as Array<{ params: unknown; key?: string }> };
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: false } },
+});
+const emailNote: Note = {
+  id: "email-fixture",
+  path: "Email/A useful conversation",
+  content:
+    "# A useful conversation\n\n**From:** Morgan <morgan@example.test>\n**To:** Alex <alex@example.test>\n**Date:** 2026-10-01 10:00\n\n---\n\nFirst line\n# A heading inside the message\nKeep this---exactly.\n\n---\n\nFinal paragraph.",
+  metadata: {
+    type: "email",
+    subject: "A useful conversation",
+    from: "Morgan <morgan@example.test>",
+    account: "alex@example.test",
+    messageId: "fixture@example.test",
+    source: "proton-bridge",
+  },
+  tags: ["email"],
+  createdAt: "2026-10-01",
+  updatedAt: "2026-10-01",
+};
+if (location.search.includes("email-visual")) {
+  emailNote.content = "# Saturday workshop agenda\n\n**From:** Morgan <morgan@example.test>\n**To:** Alex <alex@example.test>\n**Date:** 2026-10-01 10:00\n**Attachments:** Agenda.pdf, workshop notes.txt\n\n---\n\nHi Alex,\n\nI’ve attached the updated agenda. Could you confirm which section you’ll facilitate?\n\nThanks,\nMorgan\n\nOn Tuesday, Alex wrote:\n> Let’s use the first half hour for introductions.\n> We can collect questions before the workshop.\n> I’ll share my notes once they’re ready.";
+  emailNote.metadata!.subject = "Saturday workshop agenda";
+}
+// `?conversation`: the open email is the second of three saved messages of one conversation; a
+// fourth note has a look-alike id and is not part of it.
+const conversation: Note[] = [];
+if (location.search.includes("conversation")) {
+  const part = (id: string, from: string, date: string, body: string, threadId = "<root@example.test>"): Note => ({
+    id, path: `Email/${id}`, tags: ["email"], createdAt: "2026-10-01", updatedAt: "2026-10-01",
+    content: `# A useful conversation\n\n**From:** ${from}\n**To:** Alex <alex@example.test>\n**Date:** ${date}\n\n---\n\n${body}`,
+    metadata: { type: "email", subject: "A useful conversation", from, date, source: "proton-bridge", threadId },
+  });
+  Object.assign(emailNote.metadata!, { threadId: "<root@example.test>", date: "2026-10-01 10:00" });
+  conversation.push(
+    part("email-later", "Riley <riley@example.test>", "2026-10-02 09:00", "The third message, sent the next day."),
+    part("email-first", "Alex <alex@example.test>", "2026-09-30 16:00", "The message that started it."),
+    part("email-other", "Sam <sam@example.test>", "2026-10-01 12:00", "Another conversation entirely.", "<ROOT@example.test>"),
+  );
+}
+if (emailNote.metadata) {
+  if (location.search.includes("noaccount")) delete emailNote.metadata.account;
+  if (location.search.includes("nomessageid")) delete emailNote.metadata.messageId;
+  if (location.search.includes("draft")) emailNote.metadata.status = "draft";
+}
+Object.assign(window, {
+  prismMessagesFixture: controls,
+  prismReplyAgent: agentControls,
+  prismActionsFactory: createHttpLiveActionsClient,
+});
+function Fixture() {
+  const [messages, setMessages] = useState(
+    Array.from({ length: 30 }, (_, i) => message(i + 10)),
+  );
+  const [room, setRoom] = useState("room-a");
+  const [actor, setActor] = useState("alex");
+  const scope = JSON.stringify([
+    "https://fixture.example.test/api",
+    "workspace",
+    "vault",
+    actor,
+  ]);
+  const currentScope = useRef(scope);
+  currentScope.current = scope;
+  Object.assign(controls, { switchActor: () => setActor("morgan") });
+  const vault = useMemo(() => ({
+    scope: () => scope,
+    ...(conversation.length ? {
+      queryNotes: async (spec: { filter?: { conditions: Array<{ key: string; value?: unknown }> } }) => {
+        const wanted = String(spec.filter?.conditions[0]?.value ?? "").toLowerCase();
+        // Lenient, as the real engine compares: the look-alike id comes back too.
+        const rows = [emailNote, ...conversation].filter((n) => String(n.metadata?.threadId ?? "").toLowerCase() === wanted)
+          .map((n) => ({ id: n.id, path: n.path ?? null, tags: n.tags ?? [], createdAt: n.createdAt, updatedAt: n.updatedAt ?? null, metadata: { threadId: n.metadata?.threadId, date: n.metadata?.date } }));
+        return { rows, next: null, total: rows.length, limited: false };
+      },
+      getNote: async (id: string) => [emailNote, ...conversation].find((n) => n.id === id)!,
+    } : {}),
+    changeTags: async (_id: string, change: { add: string[]; remove: string[] }) => {
+      emailNote.tags = [...(emailNote.tags ?? []).filter(tag => !change.remove.includes(tag)), ...change.add];
+    },
+  }) as VaultClient, [scope]);
+  const agent = useMemo(() => replyAgent(() => currentScope.current), [scope]);
+  const emailActions: Partial<LiveActionsClient> = {
+    scope: () => scope,
+    status: async () => {
+      // The server refuses the probe for anyone but its owner.
+      if (location.search.includes("notowner")) throw new LiveActionError(403, "forbidden");
+      return {
+      email: {
+        enabled: !location.search.includes("unavailable"),
+        configured: !location.search.includes("unconfigured"),
+      },
+      matrix: { enabled: false, configured: false, agentRooms: 0 },
+      calendar: { enabled: false, configured: false },
+    }; },
+    emailArchive: async () => { controls.attempts++; return { archived: true }; },
+    emailMarkRead: async (_target, read) => { controls.attempts++; return { read }; },
+    emailReply: async (_params, options) => {
+      controls.replyCalls.push({ params: _params, key: options?.idempotencyKey });
+      controls.attempts++;
+      const key = options?.idempotencyKey;
+      if (!key) throw new Error("Missing retry identifier");
+      const accepted: string[] = JSON.parse(
+        localStorage.getItem("fixture-email-accepted") ?? "[]",
+      );
+      if (!accepted.includes(key)) {
+        localStorage.setItem(
+          "fixture-email-accepted",
+          JSON.stringify([...accepted, key]),
+        );
+        throw new Error("Fixture lost email acknowledgement");
+      }
+      return { messageId: "accepted", inReplyTo: "fixture@example.test" };
+    },
+  };
+  const emailClient = emailActions as LiveActionsClient;
+  if (location.search.includes("lifecycle")) return <QueryClientProvider client={queryClient}><AgentLifecycleFixture /></QueryClientProvider>;
+  if (location.search.includes("email"))
+    return (
+      <QueryClientProvider client={queryClient}>
+        <PlatformProvider
+          value={location.search.includes("native") ? "desktop" : "web"}
+        >
+          <VaultClientProvider client={vault}>
+          <AgentClientProvider client={location.search.includes("agent") ? agent : null}>
+          <LiveActionsProvider client={emailClient}>
+            <div style={{ height: "100dvh" }}>
+              <EmailRenderer
+                note={emailNote}
+                readOnly={location.search.includes("readonly")}
+              />
+            </div>
+          </LiveActionsProvider>
+          </AgentClientProvider>
+          </VaultClientProvider>
+        </PlatformProvider>
+      </QueryClientProvider>
+    );
+  return (
+    <div
+      style={{ height: "100dvh", maxWidth: 720, margin: "auto" }}
+      className="flex flex-col"
+    >
+      <div className="p-2 flex gap-4">
+        <button
+          onClick={() => setMessages((old) => [message(1), message(2), ...old])}
+        >
+          Prepend history
+        </button>
+        <button
+          onClick={() =>
+            setMessages((old) => [...old, message(old.length + 40)])
+          }
+        >
+          Receive message
+        </button>
+      </div>
+      <div className="flex flex-wrap gap-3 px-2 text-xs">
+        <button onClick={() => setRoom("room-a")}>Room A</button>
+        <button onClick={() => setRoom("room-b")}>Room B</button>
+        <button onClick={() => setActor("alex")}>Alex account</button>
+        <button onClick={() => setActor("morgan")}>Morgan account</button>
+      </div>
+      <MessageThread messages={messages} />
+      <MessageComposer
+        draftScope={scope}
+        draftKey={room}
+        retrySafe
+        onSend={async (body, { requestId }) => {
+          controls.attempts++;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          if (new URLSearchParams(location.search).has("lost")) {
+            if (!requestId) throw new Error("Missing request identifier");
+            const ids: string[] = JSON.parse(
+              localStorage.getItem("fixture-message-accepted") ?? "[]",
+            );
+            if (!ids.includes(requestId)) {
+              localStorage.setItem(
+                "fixture-message-accepted",
+                JSON.stringify([...ids, requestId]),
+              );
+              throw new Error("Fixture lost response after acceptance");
+            }
+          } else if (controls.reject) throw new Error("fixture failure");
+          setMessages((old) => [
+            ...old,
+            { ...message(99), body, is_outgoing: true },
+          ]);
+        }}
+      />
+    </div>
+  );
+}
+createRoot(document.getElementById("root")!).render(
+  <React.StrictMode>
+    <Fixture />
+  </React.StrictMode>,
+);

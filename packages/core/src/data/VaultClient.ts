@@ -1,0 +1,332 @@
+import type {
+  Note,
+  NoteFilters,
+  NoteTreeEntry,
+  CreateNoteParams,
+  UpdateNoteParams,
+  TagCount,
+  VaultStats,
+  VaultInfo,
+} from "../lib/types";
+import type { MoveRequest, DuplicateRequest, DuplicateResult, MoveResult, TrashListing, PreferencesSnapshot, PagePreferences } from "../lib/pages/model";
+import type { QueryPage, QuerySpec, SchemaMap, SchemaPatch, TagSchema, PropertyBatchItem, PropertyBatchResult, CsvImportRequest, CsvImportResponse, RemoveValuesResult, ConvertPropertyResult } from "../lib/database";
+
+/** Transport status for recoverable UI states, without parsing diagnostic text. */
+export class VaultRequestError extends Error {
+  constructor(public readonly status: number, message: string) { super(message); this.name = "VaultRequestError"; }
+}
+export function isAccessUnavailable(error: unknown): boolean {
+  return error instanceof VaultRequestError && [401, 403, 404, 410].includes(error.status);
+}
+
+export interface PersonSummary {
+  id: string; updatedAt?: string | null; canManageIdentities?: boolean; name: string; path: string | null; role: string | null;
+  identities: Array<{ kind: string; value: string }>;
+}
+/** Messages → People: a person with conversations, resolved by the server from addresses and handles (never names). */
+export interface PersonConversationRow {
+  id: string; name: string; platforms: string[]; lastMessageAt: number; count: number; unread: number; hasIdentity: boolean;
+}
+export interface PeopleConversationsPage {
+  people: PersonConversationRow[]; total: number;
+  /** People with no conversation and no email / handle on file. */
+  withoutIdentity: number; truncated?: boolean; limited?: boolean;
+}
+export interface PersonConversationItem {
+  id: string; kind: "email" | "chat" | "meeting"; platform: string; title: string; at: number; unread?: boolean; members?: number;
+}
+export interface PersonConversationsPage {
+  person: { id: string; name: string; hasIdentity: boolean; identityKinds: string[]; count: number; platforms: string[] };
+  items: PersonConversationItem[]; next: number | null; limited?: boolean; mergedFrom?: string;
+}
+export interface PeoplePage { people: PersonSummary[]; next: string | null }
+export interface PersonPage {
+  person: PersonSummary;
+  related: Array<{ id: string; title: string; path: string | null; category: "conversations" | "meetings" | "tasks" | "notes"; relationships: string[] }>;
+  next: string | null;
+}
+
+export interface VaultLink {
+  sourceId: string;
+  targetId: string;
+  relationship: string;
+  metadata?: unknown;
+  createdAt: string;
+}
+
+export interface VaultNeighborhood {
+  edges: VaultGraph["edges"];
+  nodes: Array<{ id: string; path: string | null; title: string; tags: string[] }>;
+  truncated: boolean;
+}
+
+export interface VaultGraph {
+  nodes: Array<{ id: string; path?: string; tags?: string[] }>;
+  edges: Array<{ source: string; target: string; relationship: string }>;
+}
+
+/** A note returned by semantic search, carrying its fused relevance score and a
+ *  matching passage snippet (both populated by the server's RAG service). */
+export interface SemanticHit extends Note {
+  _score?: number;
+  _snippet?: string;
+}
+
+/**
+ * One captured prior state of a note (Parachute vault ≥ 0.7.9 note history).
+ *
+ * A version is what the note looked like just BEFORE a change: `supersededAt` is
+ * when that change happened and `op` is what it was (`update`, `delete`,
+ * `restore`, `tag-rename`, …). The list is newest-first and carries no content.
+ */
+export interface NoteVersionSummary {
+  versionIx: number;
+  op: string;
+  supersededAt: string;
+  path: string | null;
+  metadata: Record<string, unknown> | null;
+  /** Byte length of the captured content. */
+  contentLength: number;
+  /** Vault-side attribution — present for the owner only. */
+  actor?: string | null;
+  via?: string | null;
+  /** Server-derived writer of this state (non-owners; see lib/history/attribution). */
+  writer?: import("../lib/sharing/types").WriterInfo;
+}
+
+export interface NoteVersion extends NoteVersionSummary {
+  /** Full body; `null` only for an over-2 MB delete tombstone (unrecoverable). */
+  content: string | null;
+}
+
+export interface NoteVersionPage {
+  versions: NoteVersionSummary[];
+  total: number;
+}
+
+/**
+ * Thrown by the history methods when the connected vault predates note history
+ * (< 0.7.9) — the UI shows the plain timeline instead of an error.
+ */
+export class HistoryUnavailableError extends Error {
+  constructor() {
+    super("This vault does not support version history yet.");
+    this.name = "HistoryUnavailableError";
+  }
+}
+
+/**
+ * Thrown by `restoreNoteVersion` when the note changed after the caller last
+ * saw it (409) — the UI refreshes and asks again rather than overwriting.
+ */
+export class HistoryConflictError extends Error {
+  constructor() {
+    super("This note changed since you opened it. Review the latest version and try again.");
+    this.name = "HistoryConflictError";
+  }
+}
+
+/**
+ * Thrown by `updateProperties` when a property the caller changed was changed
+ * elsewhere since they read it. `current` holds the values now stored.
+ */
+export class PropertyConflictError extends Error {
+  constructor(public readonly fields: string[], public readonly current: Record<string, unknown>) {
+    super("This property was changed somewhere else. Review the current value and try again.");
+    this.name = "PropertyConflictError";
+  }
+}
+
+/** Result of a property write: the note's new revision + full metadata. */
+export interface PropertyWriteResult {
+  id: string;
+  updatedAt: string | null;
+  metadata: Record<string, unknown>;
+}
+
+/** Map one raw vault version row (snake_case) onto {@link NoteVersion}. */
+export function toNoteVersion(raw: Record<string, unknown>): NoteVersion {
+  return {
+    versionIx: raw.version_ix as number,
+    op: (raw.op as string) ?? "update",
+    supersededAt: raw.superseded_at as string,
+    path: (raw.path as string | null) ?? null,
+    metadata: (raw.metadata as Record<string, unknown> | null) ?? null,
+    contentLength: (raw.content_len as number) ?? 0,
+    actor: raw.actor as string | null | undefined,
+    via: raw.via as string | null | undefined,
+    ...(raw.writer && typeof raw.writer === "object" ? { writer: raw.writer as import("../lib/sharing/types").WriterInfo } : {}),
+    content: raw.content === undefined ? null : (raw.content as string | null),
+  };
+}
+
+/** What {@link VaultClient.uploadAttachment} returns: an embeddable, access-checked URL. */
+export interface UploadedAttachment {
+  id: string;
+  /** Same-origin (or server-proxied) URL the editor stores in `<img src>`. */
+  url: string;
+  name: string;
+  mimeType: string;
+  size: number;
+}
+
+/**
+ * The data-source seam between the shared UI (`@prism/core`) and a host shell.
+ *
+ * The desktop shell implements this over Tauri `invoke` (see
+ * `apps/desktop/src/data/TauriVaultClient.ts`); the planned web shell will
+ * implement the same interface over `fetch` against the Parachute REST API.
+ *
+ * Core components and hooks MUST reach the vault only through this interface,
+ * obtained via `useVaultClient()` — never by importing a concrete client.
+ * That single indirection is what lets one codebase serve both shells.
+ */
+export interface VaultClient {
+  /** Resolved audience identity for multi-request actions, never credentials. */
+  scope?(): string;
+  /** Fresh, permission-filtered exact/alias/title resolution. No document bodies. */
+  resolveWikilink?(target: string): Promise<{kind:"match"|"ambiguous"|"none";candidates:Array<{id:string;path:string|null;title:string}>}>;
+  getThreadMessages?(noteId: string, before?: string): Promise<import("../lib/matrix/types").MessageBatch>;
+  getProjectRelated?(id: string, kind: import("../lib/projects/related").ProjectSection, after?: string): Promise<import("../lib/projects/related").ProjectRelatedPage>;
+  listNotes(filters?: NoteFilters): Promise<Note[]>;
+  listTree(): Promise<NoteTreeEntry[]>;
+  /** fresh bypasses an offline read cache when current server access must be checked. */
+  /** `fresh`: never answered from a device cache (an access check). `latest`: ask the
+   *  server for its CURRENT state — no reuse window, no HTTP cache — while still keeping
+   *  the device's offline copy up to date (a re-read because the note was reported changed). */
+  getNote(id: string, options?: { fresh?: boolean; latest?: boolean }): Promise<Note>;
+  createNote(params: CreateNoteParams): Promise<Note>;
+  updateNote(id: string, params: UpdateNoteParams, options?: { expectedScope?: string }): Promise<Note>;
+  /** Preserve an unsent editor draft locally in its original audience; never send it. */
+  preserveDraft?(id: string, content: string, audience: string, reason?: "access" | "conflict"): Promise<void>;
+  /** True while this audience has deferred or uncertain writes awaiting sync/review. */
+  hasPendingWrites?(): Promise<boolean>;
+  /** Is anything for THIS note still unsent on this device? (Absent → callers fall back
+   *  to the audience-wide `hasPendingWrites`.) */
+  hasPendingWritesFor?(noteId: string): Promise<boolean>;
+  deleteNote(id: string): Promise<void>;
+  search(query: string, tags?: string[], limit?: number): Promise<Note[]>;
+  /** Filtered full-text search with `_matches` offsets (wave 2E). Optional;
+   *  `null` = this server can't, use {@link search} + client-side filters. */
+  searchNotes?(query: string, filters?: import("../lib/search/match").SearchFilters, limit?: number): Promise<Note[] | null>;
+  /**
+   * Which identity filters the search can answer for this viewer ("Created by me" → `author=me`,
+   * "Edited by me" → `editor=me`). Absent, or false: the control is not offered (a share-link
+   * viewer has no "me"; an older server ignores `editor=`).
+   */
+  searchFilterSupport?(): Promise<{ createdBy: boolean; editedBy: boolean }>;
+  /** Hybrid semantic search (dense vectors + full-text), when the host provides
+   *  it. Optional: shells without a RAG backend omit it, and callers fall back
+   *  to {@link search}. Results are relevance-ranked with score + snippet. */
+  semanticSearch?(query: string, limit?: number): Promise<SemanticHit[]>;
+  getTags(): Promise<TagCount[]>;
+  addTags(id: string, tags: string[]): Promise<void>;
+  removeTags(id: string, tags: string[]): Promise<void>;
+  /**
+   * Add AND remove tags in ONE write (a status change must never land half-applied). `member`:
+   * the note was read through the gateway with `_caps` (a non-owner) → the member dialect
+   * `add_tags`/`remove_tags`; otherwise the owner/vault `tags: {add, remove}`. Optional — callers
+   * fall back to {@link addTags} then {@link removeTags}.
+   */
+  changeTags?(id: string, change: { add: string[]; remove: string[] }, options?: { member?: boolean }): Promise<void>;
+  getStats(): Promise<VaultStats>;
+  getLinks(noteId?: string, relationship?: string): Promise<VaultLink[]>;
+  createLink(
+    sourceId: string,
+    targetId: string,
+    relationship: string,
+    metadata?: unknown,
+  ): Promise<VaultLink>;
+  deleteLink(sourceId: string, targetId: string, relationship: string): Promise<void>;
+  getGraph(depth?: number, centerId?: string): Promise<VaultGraph>;
+  reconcileCanvasRelations?(canvasId: string, fingerprint: string): Promise<{synced: number; retained: boolean}>;
+  changePersonIdentity?(id: string, change: { kind: "email" | "matrix"; value: string; action: "add" | "remove"; ifUpdatedAt: string }): Promise<{ person: PersonSummary }>;
+  listPeople?(query?: string, after?: string): Promise<PeoplePage>;
+  getPerson?(id: string, after?: string): Promise<PersonPage>;
+  /** People who have conversations, most recent first (absent on shells without a Prism Server). */
+  listPeopleConversations?(query?: string): Promise<PeopleConversationsPage>;
+  /** One person's merged cross-platform timeline, newest first. */
+  getPersonConversations?(id: string, before?: number): Promise<PersonConversationsPage>;
+  getNeighborhood?(centerId: string, depth: number, limit?: number): Promise<VaultNeighborhood>;
+  getVaultInfo(): Promise<VaultInfo>;
+  updateVaultDescription(description: string): Promise<VaultInfo>;
+  /** Note version history. Optional per shell; throws {@link HistoryUnavailableError}
+   *  when the vault predates history. Newest first, no content. */
+  listNoteVersions?(noteId: string, opts?: { limit?: number; offset?: number }): Promise<NoteVersionPage>;
+  /** One version with its full content. */
+  getNoteVersion?(noteId: string, versionIx: number): Promise<NoteVersion>;
+  /** Make `versionIx` the current content + metadata (tags and path are kept).
+   *  `ifUpdatedAt` is the note's `updatedAt` the user reviewed — the vault refuses
+   *  a blind restore; a stale value throws {@link HistoryConflictError}. The
+   *  replaced state is itself captured, so a restore is always undoable. */
+  restoreNoteVersion?(noteId: string, versionIx: number, ifUpdatedAt: string): Promise<Note>;
+  /** Pages (lib/pages/model.ts). Optional per shell; without them the UI falls back
+   *  to plain vault writes (lib/pages/ops.ts). Move a page and its sub-pages. */
+  movePage?(noteId: string, request: MoveRequest): Promise<MoveResult>;
+  /** Duplicate a page WITH its sub-pages, server-side (NP-PG-18): permissions, links
+   *  re-pointed at the copies, files, one retryable request. Optional: shells without
+   *  it copy the one page and say that sub-pages were not copied. */
+  duplicatePage?(noteId: string, request: DuplicateRequest): Promise<DuplicateResult>;
+  /** Soft-delete a page and its sub-pages (restorable from the Trash). */
+  trashPage?(noteId: string): Promise<{ rootId: string; trashed: string[] }>;
+  listTrash?(query?: string): Promise<TrashListing>;
+  restoreFromTrash?(noteId: string): Promise<{ restored: string[] }>;
+  /** Real delete of a page already in the Trash (and what was trashed with it). */
+  deleteFromTrash?(noteId: string): Promise<{ deleted: string[] }>;
+  /** Page lock / sidebar order: metadata-only, CAS, reconciled with a live editor. */
+  setPageMeta?(noteId: string, set: { prism_locked?: boolean; prism_order?: number; prism_page_style?: { small: boolean; full: boolean } }, ifUpdatedAt: string): Promise<{ updatedAt: string | null }>;
+  /** Favorites / recents / sidebar state, synced per user × vault. */
+  getPreferences?(): Promise<PreferencesSnapshot>;
+  savePreferences?(preferences: PagePreferences, ifRevision?: number): Promise<PreferencesSnapshot>;
+  /** Tag schemas (vault types + Prism presentation hints), filtered to tags the
+   *  caller may know. Optional: shells without it use the bundled schemas. */
+  getSchemas?(tags?: string[]): Promise<{ schemas: SchemaMap; canEdit?: boolean }>;
+  /** Owner-only additive schema edit (the server holds the admin credential). */
+  updateSchema?(tag: string, patch: SchemaPatch): Promise<TagSchema>;
+  /** Owner-only: clear a DELETED (hidden-everywhere) property's values on the pages of a
+   *  tag — dry-run unless `dryRun: false`, one CAS write per page. Optional. */
+  removePropertyValues?(tag: string, field: string, opts?: { dryRun?: boolean; limit?: number }): Promise<RemoveValuesResult>;
+  /** Owner-only: "change type" across stored types as a conversion into a NEW field (the old
+   *  one is then marked deleted) — dry-run unless `dryRun: false`, one CAS write per page. Optional. */
+  convertProperty?(tag: string, field: string, opts: { to: string; dryRun?: boolean; limit?: number; label?: string }): Promise<ConvertPropertyResult>;
+  /** Owner-only: may `tag` start a NEW database (unused, unshared, unpublished, not an integration's)? The server decides. */
+  checkNewTag?(tag: string): Promise<{ tag: string; available: boolean; reason?: string; detail?: string }>;
+  /** Lean, permission-filtered, paged rows for a database view. Optional: the
+   *  shared engine runs over `listNotes` when absent. */
+  queryNotes?(spec: QuerySpec): Promise<QueryPage>;
+  /** Metadata-only property write with per-field compare-and-set (`expect` = the
+   *  values the caller last saw). Throws {@link PropertyConflictError}. */
+  updateProperties?(id: string, set: Record<string, unknown>, expect?: Record<string, unknown>): Promise<PropertyWriteResult>;
+  /**
+   * Write ONE structured property value (a list of objects, or an object) back in its own
+   * shape — the structured-value editor's write (`POST /api/properties/:id/structured`).
+   * `expect` is the value the editor loaded; the write lands only if exactly that is still
+   * stored. Throws {@link PropertyConflictError} (with the value stored now) otherwise.
+   * Never queued offline. Optional: without it the client does the same compare-and-set
+   * over `getNote` + a metadata-only `updateNote` (`useStructuredWriter`).
+   */
+  updateStructuredProperty?(id: string, key: string, value: unknown, expect: unknown): Promise<PropertyWriteResult>;
+  /** Up to 100 property writes, each its own CAS write and result (bulk edit).
+   *  Optional: the client falls back to one `updateProperties` per row. */
+  updatePropertiesBatch?(items: PropertyBatchItem[]): Promise<PropertyBatchResult[]>;
+  /** Owner/admin CSV import into a tag (dry-run by default). Optional. */
+  importCsv?(request: CsvImportRequest): Promise<CsvImportResponse>;
+  /** Store an image/file as an attachment of `noteId` and return a URL to embed.
+   *  Optional: when absent, the editor hides upload (paste/drop/pick) and offers
+   *  only "Image from URL". Rejects on refusal; the editor inserts nothing. */
+  uploadAttachment?(noteId: string, file: File, opts?: { kind?: "image" | "file" }): Promise<UploadedAttachment>;
+  /** Give a freshly COPIED page its own attachments (wave 3): every file the copy's
+   *  body/metadata references that belongs to another page is re-uploaded under the
+   *  copy and the references are rewritten. Call right after creating the copy,
+   *  before opening it. Optional (older servers / desktop: the copy keeps the links). */
+  copyAttachments?(noteId: string): Promise<{ copied: number; failed: number; skipped: number; errors?: number; more: boolean }>;
+  /** Link preview for a bookmark block (title, description, site, image, favicon).
+   *  Optional: without it a bookmark shows its URL only. */
+  unfurl?(url: string): Promise<{ url: string; title?: string | null; description?: string | null; siteName?: string | null; image?: string | null; favicon?: string | null }>;
+  /** Sharing reads (wave 2D, server routes/sharing.ts). Optional per shell: without
+   *  them the sidebar has no "Shared with me", history has no Updates feed. */
+  listSharedWithMe?(): Promise<import("../lib/sharing/types").SharedWithMeListing>;
+  listComments?(opts?: { noteId?: string; unresolved?: boolean; mine?: boolean; limit?: number }): Promise<import("../lib/sharing/types").IndexedThread[]>;
+  getPageActivity?(noteId: string): Promise<import("../lib/sharing/types").PageActivity>;
+  getAccessPreview?(noteId: string, parentPath: string): Promise<import("../lib/sharing/types").AccessPreview>;
+}

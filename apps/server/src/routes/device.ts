@@ -1,0 +1,481 @@
+/**
+ * Native sign-in routes (WP2.1) — OAuth 2.0 for native apps (RFC 8252) with
+ * PKCE S256 (RFC 7636), mounted under /auth (so the PWA service worker's
+ * `/auth/` navigateFallbackDenylist entry already covers every page here).
+ *
+ *   GET  /auth/device/authorize   start: validate client + redirect_uri + PKCE,
+ *                                 park the request server-side, then consent
+ *                                 (signed in) or bounce through the web login
+ *   GET  /auth/device/continue    return point after login (reads the parked request); a
+ *                                 second visit after the decision says "you're signed in"
+ *   POST /auth/device/approve     consent form (session + CSRF bound) → redirect
+ *                                 to redirect_uri?code=&state= (or error=access_denied)
+ *   POST /auth/device/token       code + code_verifier → { access_token: pd_…, … }
+ *   POST /auth/device/revoke      revoke by token (RFC 7009 style) or by device_id
+ *   GET  /auth/devices            list your own live devices (owner: ?all=1)
+ *   DELETE /auth/devices/:id      revoke one of your devices (owner: any)
+ *
+ * Security properties (see docs/native-auth.md):
+ *  - redirect_uri is checked against an exact allowlist (+ RFC 8252 loopback IPs)
+ *    BEFORE anything else; a bad one gets an error page, never a redirect;
+ *  - the authorize params are parked in a server-side row referenced by an
+ *    httpOnly cookie, so the login bounce carries no client-controlled URL
+ *    (the SPA only ever returns to the fixed path /auth/device/continue);
+ *  - approval requires the session AND a CSRF token HMAC-bound to (request id,
+ *    session id) AND the parked-request cookie of the same browser;
+ *  - codes: ≤5 min, single use (atomic claim), bound to client_id + redirect_uri
+ *    + S256 challenge (plain is refused); a replayed code revokes the device
+ *    token it already produced (RFC 6749 §4.1.2);
+ *  - tokens are stored only as SHA-256; /token is rate-limited in app.ts.
+ */
+import { Hono, type Context } from "hono";
+import { getCookie, setCookie, deleteCookie } from "hono/cookie";
+import { config } from "../config";
+import { cookieSecure } from "../auth/origin";
+import { readSession } from "../auth/session";
+import {
+  AUTH_CODE_TTL_MS,
+  AUTH_REQUEST_TTL_MS,
+  DEVICE_TOKEN_PREFIX,
+  bearerFromHeader,
+  OMNI_CLIENT_ID,
+  consentCsrf,
+  defaultLabelFor,
+  isAllowedRedirectUri,
+  isKnownClientId,
+  redirectAllowedForClient,
+  isValidChallenge,
+  isValidVerifier,
+  issueDeviceTokenClaimed,
+  randomId,
+  revokeDevice,
+  s256,
+  safeEqual,
+  sanitizeLabel,
+  sha256hex,
+  verifyDeviceToken,
+  withParams,
+} from "../auth/device";
+import {
+  claimDeviceAuthCode,
+  deleteDeviceAuthRequest,
+  getDeviceAuthCode,
+  getDeviceAuthRequest,
+  getDeviceToken,
+  getDeviceTokenByHash,
+  insertDeviceAuthCode,
+  insertDeviceAuthRequest,
+  listLiveDeviceTokens,
+  claimDeviceAuthCodeFor,
+  type DeviceAuthRequestRow,
+} from "../db";
+import { clearConfirmation, confirmationAvailable, confirmationState, matchCodeFor, needsDeviceConfirmation, otherPendingSignIn, requestConfirmation, requestHints } from "../auth/device-confirm";
+
+export const deviceAuth = new Hono();
+
+const REQ_COOKIE = "prism_device_req";
+/** The ONLY place the web login screen will send a user back to after sign-in. */
+export const DEVICE_CONTINUE_PATH = "/auth/device/continue";
+
+// ---------------------------------------------------------------- helpers
+
+const esc = (s: string): string =>
+  s.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]!);
+
+function page(c: Context, status: 200 | 400 | 401 | 403, title: string, body: string) {
+  c.header("Cache-Control", "no-store");
+  return c.html(
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">` +
+      `<title>${esc(title)}</title><style>
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:system-ui,-apple-system,sans-serif;background:#0f1115;color:#e8e8ea;padding:16px;box-sizing:border-box}
+@media (prefers-color-scheme: light){body{background:#f5f5f7;color:#1c1c1e}.card{background:#fff!important;border-color:#ddd!important}.muted{color:#666!important}}
+.card{max-width:420px;width:100%;background:#1a1d23;border:1px solid #2a2d35;border-radius:14px;padding:28px}
+h1{font-size:20px;margin:0 0 10px}p{font-size:14px;line-height:1.5;margin:8px 0}.muted{color:#9a9aa2;font-size:12.5px}
+.row{display:flex;gap:10px;margin-top:20px}button{flex:1;padding:11px 14px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;border:1px solid #3a3d45;background:transparent;color:inherit}
+button.primary{background:#6366f1;border-color:#6366f1;color:#fff}code{word-break:break-all;font-size:12px}
+</style></head><body><main class="card">${body}</main></body></html>`,
+    status,
+  );
+}
+
+const errorPage = (c: Context, status: 400 | 401 | 403, msg: string) =>
+  page(c, status, "Prism sign-in", `<h1>Can't sign in this app</h1><p>${esc(msg)}</p><p class="muted">Close this window and start again from the Prism app.</p>`);
+
+function setReqCookie(c: Context, id: string) {
+  setCookie(c, REQ_COOKIE, id, {
+    httpOnly: true,
+    secure: cookieSecure(c),
+    // Lax: sent on the top-level GET back from a magic-link email, never on a
+    // cross-site POST.
+    sameSite: "Lax",
+    path: "/auth",
+    maxAge: Math.floor(AUTH_REQUEST_TTL_MS / 1000),
+  });
+}
+const clearReqCookie = (c: Context) => deleteCookie(c, REQ_COOKIE, { path: "/auth" });
+
+/**
+ * What this browser last DECIDED on a consent page ("approved" | "denied"), kept for a few
+ * minutes so a second visit to /continue — the other tab of a magic-link login, a reload,
+ * Back — can say so instead of "expired or already used". It is a note for a page of text
+ * only: it authorizes nothing, carries no id, code or token, and nothing reads it but
+ * `GET /auth/device/continue` when there is NO parked request. The parked request stays
+ * single-use and a code is still only ever minted by the consent form.
+ */
+const DONE_COOKIE = "prism_device_done";
+const DONE_TTL_S = 10 * 60;
+function setDoneCookie(c: Context, decision: "approved" | "denied") {
+  setCookie(c, DONE_COOKIE, decision, { httpOnly: true, secure: cookieSecure(c), sameSite: "Lax", path: "/auth", maxAge: DONE_TTL_S });
+}
+const clearDoneCookie = (c: Context) => deleteCookie(c, DONE_COOKIE, { path: "/auth" });
+
+/** The calm page for a second visit after a decision. Never a redirect, never a form. */
+function alreadyDecidedPage(c: Context, decision: "approved" | "denied") {
+  return decision === "approved"
+    ? page(c, 200, "Signed in", `<h1>You're signed in</h1><p>You already approved this sign-in. Return to the app — it is signed in.</p><p class="muted">You can close this window.</p>`)
+    : page(c, 200, "Sign-in declined", `<h1>Sign-in was declined</h1><p>You declined this sign-in, so the app was not signed in.</p><p class="muted">Close this window. To sign in after all, start again from the app.</p>`);
+}
+
+/** The pending authorize request parked for THIS browser, if any. */
+export function pendingDeviceRequest(c: Context): DeviceAuthRequestRow | null {
+  const id = getCookie(c, REQ_COOKIE);
+  return id ? getDeviceAuthRequest(id) : null;
+}
+
+function sessionIdOf(c: Context): string | null {
+  return getCookie(c, "prism_session") ?? null;
+}
+
+function consentPage(c: Context, req: DeviceAuthRequestRow, email: string, sessionId: string) {
+  const csrf = consentCsrf(req.id, sessionId);
+  // The label is CLIENT-CHOSEN — present it as a claim, never as fact. The
+  // redirect target is the server-validated part, so show it prominently.
+  let target = req.redirect_uri;
+  let targetNote = "";
+  try {
+    const u = new URL(req.redirect_uri);
+    if (u.protocol === "http:") {
+      target = `${u.host}${u.pathname}`;
+      targetNote = " — an app on this computer";
+    } else {
+      target = `${u.protocol}//${u.host}${u.pathname}`;
+      targetNote = " — an app on this device";
+    }
+  } catch {
+    /* keep raw */
+  }
+  return page(
+    c,
+    200,
+    "Sign in Prism",
+    `<h1>Allow an app to sign in as you?</h1>` +
+      `<p>An app calling itself “${esc(req.label ?? defaultLabelFor(req.client_id))}” wants to sign in to Prism as <strong>${esc(email)}</strong>. ` +
+      `If you approve, it will see and edit exactly what you can.</p>` +
+      `<p>The sign-in will be sent to:<br><code style="font-size:14px;font-weight:600">${esc(target)}</code>${esc(targetNote)}</p>` +
+      `<p class="muted">Only approve if you just started signing in from the ${req.client_id === OMNI_CLIENT_ID ? "Omni" : "Prism"} app yourself. ` +
+      `You can revoke this device anytime in Settings → Account.</p>` +
+      `<form method="post" action="/auth/device/approve">` +
+      `<input type="hidden" name="req" value="${esc(req.id)}"><input type="hidden" name="csrf" value="${esc(csrf)}">` +
+      `<div class="row"><button type="submit" name="decision" value="deny">Deny</button>` +
+      `<button class="primary" type="submit" name="decision" value="approve">Approve</button></div></form>`,
+  );
+}
+
+/** Send a signed-out browser through the existing web login, returning to /continue. */
+const toLogin = (c: Context) => c.redirect(`/?next=${encodeURIComponent(DEVICE_CONTINUE_PATH)}`);
+
+/** Who is calling a device-management endpoint: a browser session or a device token. */
+function identity(c: Context): { email: string; deviceId: string | null } | null {
+  const s = readSession(c);
+  if (s) return { email: s.email, deviceId: null };
+  const bearer = bearerFromHeader(c.req.header("authorization"));
+  const dev = bearer?.startsWith(DEVICE_TOKEN_PREFIX) ? verifyDeviceToken(bearer) : null;
+  return dev ? { email: dev.email, deviceId: dev.id } : null;
+}
+
+async function readBody(c: Context): Promise<Record<string, string>> {
+  const ct = c.req.header("content-type") ?? "";
+  try {
+    if (ct.includes("application/json")) {
+      const j = (await c.req.json()) as Record<string, unknown>;
+      return Object.fromEntries(Object.entries(j ?? {}).filter(([, v]) => typeof v === "string")) as Record<string, string>;
+    }
+    const f = await c.req.parseBody();
+    return Object.fromEntries(Object.entries(f).filter(([, v]) => typeof v === "string")) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+function oauthError(c: Context, status: 400 | 401, error: string, description?: string) {
+  c.header("Cache-Control", "no-store");
+  c.header("Pragma", "no-cache");
+  return c.json(description ? { error, error_description: description } : { error }, status);
+}
+
+// ---------------------------------------------------------------- authorize
+
+deviceAuth.get("/device/authorize", (c) => {
+  const q = c.req.query();
+  // 1. redirect_uri + client first — an invalid one is NEVER redirected to.
+  if (!isAllowedRedirectUri(q.redirect_uri)) return errorPage(c, 400, "This app asked to return to an address that isn't registered with this Prism server.");
+  if (!isKnownClientId(q.client_id)) return errorPage(c, 400, "Unknown client.");
+  // An app's own custom scheme is honoured only for that app (prism:// ↔ prism-native,
+  // omni:// ↔ omni-native) — same refusal, same page, still before any login.
+  if (!redirectAllowedForClient(q.client_id, q.redirect_uri)) return errorPage(c, 400, "This app asked to return to an address that isn't registered with this Prism server.");
+  const clientId = q.client_id;
+  const redirectUri = q.redirect_uri;
+  const state = q.state;
+  // Pre-consent errors are NEVER bounced back to the redirect URI (no error
+  // params appended to a URL the requester shaped) — they render a 400 page.
+  // Only a completed consent (approve/deny) redirects.
+  if (state !== undefined && state.length > 512) return errorPage(c, 400, "Invalid request (state too long).");
+  if (q.response_type !== undefined && q.response_type !== "code") return errorPage(c, 400, "Unsupported response_type (only 'code').");
+  // 2. PKCE: S256 only (plain is refused — it offers no protection if the
+  //    authorization request is observed).
+  if (q.code_challenge_method !== "S256") return errorPage(c, 400, "Invalid request (code_challenge_method must be S256).");
+  if (!isValidChallenge(q.code_challenge)) return errorPage(c, 400, "Invalid request (bad code_challenge).");
+
+  // 3. Park the request server-side; this browser holds only an opaque id.
+  const now = Date.now();
+  const req: DeviceAuthRequestRow = {
+    id: randomId(24),
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    code_challenge: q.code_challenge,
+    state: state ?? null,
+    label: sanitizeLabel(q.label, defaultLabelFor(clientId)),
+    created_at: now,
+    expires_at: now + AUTH_REQUEST_TTL_MS,
+  };
+  insertDeviceAuthRequest(req);
+  setReqCookie(c, req.id);
+  // A new attempt: an earlier decision in this browser says nothing about this one.
+  clearDoneCookie(c);
+
+  const s = readSession(c);
+  const sid = sessionIdOf(c);
+  if (s && sid) return consentPage(c, req, s.email, sid);
+  return toLogin(c);
+});
+
+deviceAuth.get("/device/continue", (c) => {
+  const req = pendingDeviceRequest(c);
+  if (!req) {
+    // Nothing is parked. If this browser just decided (the consent was answered in another
+    // tab, or this is a reload / Back after it), say what happened — it is not a failure.
+    const done = getCookie(c, DONE_COOKIE);
+    if (done === "approved" || done === "denied") return alreadyDecidedPage(c, done);
+    return errorPage(c, 400, "This sign-in request expired or was already used.");
+  }
+  const s = readSession(c);
+  const sid = sessionIdOf(c);
+  if (!s || !sid) return toLogin(c);
+  return consentPage(c, req, s.email, sid);
+});
+
+deviceAuth.post("/device/approve", async (c) => {
+  const s = readSession(c);
+  const sid = sessionIdOf(c);
+  if (!s || !sid) return errorPage(c, 401, "You're not signed in.");
+  const f = await readBody(c);
+  const cookieReq = getCookie(c, REQ_COOKIE);
+  // The form must name the SAME request this browser parked, carry a CSRF token
+  // bound to it + this session, and the request must still be live.
+  if (!f.req || !cookieReq || !safeEqual(f.req, cookieReq)) return errorPage(c, 403, "This sign-in request doesn't belong to this browser.");
+  if (!f.csrf || !safeEqual(f.csrf, consentCsrf(f.req, sid))) return errorPage(c, 403, "Invalid form token.");
+  const req = getDeviceAuthRequest(f.req);
+  if (!req) return errorPage(c, 400, "This sign-in request expired or was already used.");
+
+  if (f.decision !== "approve") {
+    deleteDeviceAuthRequest(req.id);
+    clearReqCookie(c);
+    setDoneCookie(c, "denied");
+    return c.redirect(withParams(req.redirect_uri, { error: "access_denied", state: req.state }));
+  }
+  // One door (review R2-1): with a live device on the account, a session's consent is not
+  // enough — an existing device must approve this exact sign-in in Omni. The request stays
+  // parked; this browser waits on /auth/device/wait.
+  if (needsDeviceConfirmation(s.email)) {
+    // The approval must fit inside the parked request's life (R4 M-a): too little left → start again.
+    if (req.expires_at - Date.now() < 60_000) {
+      deleteDeviceAuthRequest(req.id);
+      clearReqCookie(c);
+      return errorPage(c, 400, "This sign-in request is about to expire. Start again from the app.");
+    }
+    // With Omni off there is no device to approve from: refuse rather than fall back to a
+    // session's consent (review round 3, probe F). Bootstrap rules still apply.
+    if (!confirmationAvailable()) {
+      deleteDeviceAuthRequest(req.id);
+      clearReqCookie(c);
+      return page(c, 403, "Approve from a device",
+        `<h1>This sign-in needs approval from a device you already use</h1><p>New devices are approved in the Omni app, which is switched off on this server. ` +
+        `Sign in from a device you already use, or ask the server's operator.</p>`);
+    }
+    // One at a time (review I1): a second request would look just like the owner's own.
+    if (otherPendingSignIn(req.id)) {
+      c.header("Cache-Control", "no-store");
+      return page(c, 403, "Another sign-in is waiting",
+        `<h1>Another sign-in is already waiting for approval</h1>` +
+        `<p><strong>The waiting request is NOT this one.</strong> Deny it in Omni, then try again — unless you started a sign-in on another device a moment ago.</p>` +
+        `<p class="muted">Only one new device can wait for approval at a time; this sign-in was not started.</p>`);
+    }
+    requestConfirmation(req, s.email, req.label ?? defaultLabelFor(req.client_id), requestHints((k) => c.req.header(k)));
+    return waitingPage(c, req.id);
+  }
+  deleteDeviceAuthRequest(req.id);
+  clearReqCookie(c);
+  setDoneCookie(c, "approved");
+  return mintCodeAndRedirect(c, req, s.email);
+});
+
+function mintCodeAndRedirect(c: Context, req: DeviceAuthRequestRow, email: string) {
+  const code = randomId(32);
+  const now = Date.now();
+  insertDeviceAuthCode({
+    code_hash: sha256hex(code),
+    email,
+    client_id: req.client_id,
+    code_challenge: req.code_challenge,
+    redirect_uri: req.redirect_uri,
+    label: req.label,
+    created_at: now,
+    expires_at: now + AUTH_CODE_TTL_MS,
+  });
+  return c.redirect(withParams(req.redirect_uri, { code, state: req.state }));
+}
+
+function waitingPage(c: Context, reqId: string) {
+  c.header("Refresh", "3; url=/auth/device/wait");
+  return page(
+    c,
+    200,
+    "Approve on your device",
+    `<meta http-equiv="refresh" content="3; url=/auth/device/wait">` +
+      `<h1>Approve this sign-in on a device you already use</h1>` +
+      `<p>Your code:</p><p style="font:600 32px ui-monospace,Menlo,monospace;letter-spacing:4px;margin:6px 0 14px">${esc(matchCodeFor(reqId))}</p>` +
+      `<p>Open the Omni app on your phone, iPad or Mac: the request is waiting under <strong>Needs you</strong> as “Sign in a new device”. ` +
+      `Approve it only if it shows this same code. ` +
+      `This page continues by itself once you approve.</p>` +
+      `<p class="muted">Denying it there, or 10 minutes without an answer, cancels this sign-in.</p>`,
+  );
+}
+
+/** The parked request, once an existing device decided (polled by the waiting page). */
+deviceAuth.get("/device/wait", (c) => {
+  const req = pendingDeviceRequest(c);
+  if (!req) {
+    const done = getCookie(c, DONE_COOKIE);
+    if (done === "approved" || done === "denied") return alreadyDecidedPage(c, done);
+    return errorPage(c, 400, "This sign-in request expired or was already used.");
+  }
+  const s = readSession(c);
+  if (!s) return errorPage(c, 401, "You're not signed in.");
+  const st = confirmationState(req.id);
+  if (st.state === "pending") return waitingPage(c, req.id);
+  if (st.state === "none") return errorPage(c, 400, "This sign-in request was not approved here. Start again from the app.");
+  deleteDeviceAuthRequest(req.id);
+  clearConfirmation(req.id);
+  clearReqCookie(c);
+  if (st.state === "denied" || st.email !== s.email) {
+    setDoneCookie(c, "denied");
+    return c.redirect(withParams(req.redirect_uri, { error: "access_denied", state: req.state }));
+  }
+  setDoneCookie(c, "approved");
+  return mintCodeAndRedirect(c, req, st.email);
+});
+
+// ---------------------------------------------------------------- token
+
+deviceAuth.post("/device/token", async (c) => {
+  const f = await readBody(c);
+  if (f.grant_type !== "authorization_code") return oauthError(c, 400, "unsupported_grant_type");
+  if (!isKnownClientId(f.client_id)) return oauthError(c, 401, "invalid_client");
+  if (!f.code || !f.redirect_uri || !isValidVerifier(f.code_verifier)) return oauthError(c, 400, "invalid_request");
+
+  const hash = sha256hex(f.code);
+  const row = getDeviceAuthCode(hash);
+  if (!row) return oauthError(c, 400, "invalid_grant");
+  const replay = async (deviceId: string | null) => {
+    // Replay of a redeemed code: someone else may hold it — kill what it minted.
+    if (deviceId) await revokeDevice(deviceId, "replay");
+    return oauthError(c, 400, "invalid_grant", "code already used");
+  };
+  if (row.used_at !== null) return replay(row.device_id);
+  if (row.client_id !== f.client_id || row.redirect_uri !== f.redirect_uri || !safeEqual(s256(f.code_verifier), row.code_challenge)) {
+    // Any failed attempt burns the code (no retries).
+    if (!claimDeviceAuthCode(hash)) return oauthError(c, 400, "invalid_grant", "code expired");
+    return row.client_id !== f.client_id || row.redirect_uri !== f.redirect_uri ? oauthError(c, 400, "invalid_grant") : oauthError(c, 400, "invalid_grant", "PKCE verification failed");
+  }
+  // The single-use claim and the device it mints are ONE transaction (claimDeviceAuthCodeFor
+  // sets used_at and device_id in one statement): the code never reads "used" without naming
+  // its device, so a replay at any point revokes it.
+  const minted = issueDeviceTokenClaimed(row.email, row.label ?? defaultLabelFor(row.client_id), row.client_id, (deviceId) => claimDeviceAuthCodeFor(hash, deviceId));
+  if (!minted) {
+    const now = getDeviceAuthCode(hash);
+    return now && now.used_at !== null ? replay(now.device_id) : oauthError(c, 400, "invalid_grant", "code expired");
+  }
+  const { token, id, expiresIn } = minted;
+  c.header("Cache-Control", "no-store");
+  c.header("Pragma", "no-cache");
+  return c.json({ access_token: token, token_type: "Bearer", expires_in: expiresIn, device_id: id });
+});
+
+// ---------------------------------------------------------------- revocation
+
+deviceAuth.post("/device/revoke", async (c) => {
+  const f = await readBody(c);
+  // RFC 7009 style: possession of the token is authority to revoke it. Always
+  // 200, whether or not it existed (no token-validity oracle).
+  if (f.token) {
+    if (f.token.startsWith(DEVICE_TOKEN_PREFIX)) {
+      const row = getDeviceTokenByHash(sha256hex(f.token));
+      if (row) await revokeDevice(row.id, "token");
+    }
+    return c.json({ ok: true });
+  }
+  const who = identity(c);
+  if (!who) return c.json({ error: "unauthorized" }, 401);
+  // By id (your own, or any as the server owner); with no id, a device token
+  // revokes ITSELF (sign out).
+  const id = f.device_id ?? who.deviceId;
+  if (!id) return c.json({ error: "bad_request" }, 400);
+  // One door (R2-1): a browser session cannot revoke devices — emptying the account would
+  // reopen first-device bootstrap for whoever holds that session. Revoke from a device.
+  if (!who.deviceId) return c.json({ error: "device_required", detail: "revoke devices from the Omni or Prism app on a signed-in device" }, 403);
+  const row = getDeviceToken(id);
+  if (!row || (row.email !== who.email && who.email !== config.ownerEmail)) return c.json({ error: "not_found" }, 404);
+  await revokeDevice(row.id);
+  return c.json({ ok: true });
+});
+
+deviceAuth.get("/devices", (c) => {
+  const who = identity(c);
+  if (!who) return c.json({ error: "unauthorized" }, 401);
+  const all = c.req.query("all") === "1" && who.email === config.ownerEmail;
+  const rows = listLiveDeviceTokens(all ? null : who.email);
+  c.header("Cache-Control", "no-store");
+  return c.json({
+    devices: rows.map((r) => ({
+      id: r.id,
+      label: r.label,
+      clientId: r.client_id,
+      email: r.email,
+      createdAt: r.created_at,
+      lastSeenAt: r.last_seen_at,
+      expiresAt: r.expires_at,
+      current: r.id === who.deviceId,
+    })),
+  });
+});
+
+deviceAuth.delete("/devices/:id", async (c) => {
+  const who = identity(c);
+  if (!who) return c.json({ error: "unauthorized" }, 401);
+  if (!who.deviceId) return c.json({ error: "device_required", detail: "revoke devices from the Omni or Prism app on a signed-in device" }, 403);
+  const row = getDeviceToken(c.req.param("id"));
+  // 404 (not 403) for someone else's device: don't confirm it exists.
+  if (!row || (row.email !== who.email && who.email !== config.ownerEmail)) return c.json({ error: "not_found" }, 404);
+  await revokeDevice(row.id);
+  return c.json({ ok: true });
+});

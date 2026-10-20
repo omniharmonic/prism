@@ -1,0 +1,93 @@
+import { leafTitle } from "../../lib/pages/containerTitle";
+import { useState, useCallback, useRef } from "react";
+import { Eye, Code, Columns } from "lucide-react";
+import type { RendererProps } from "./RendererProps";
+import { useAutoSave } from "../../app/hooks/useAutoSave";
+
+import { formatTime as fmtTime } from "../../lib/datetime/format";
+export default function WebsiteRenderer({ note, readOnly }: RendererProps) {
+  const [view, setView] = useState<"split" | "code" | "preview">("split");
+  const [content, setContent] = useState(note.content || "");
+  const contentRef = useRef(note.content || "");
+
+  const getContent = useCallback(() => contentRef.current, []);
+  const { isSaving, lastSaved, saveError, saveNow, scheduleSave } = useAutoSave(note.id, getContent, undefined, undefined, { base: note.updatedAt, content: note.content });
+
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    if (readOnly) return;
+    setContent(e.target.value);
+    contentRef.current = e.target.value;
+    scheduleSave();
+  };
+
+  return (
+    <div className="flex flex-col h-full">
+      <div
+        className="flex flex-wrap gap-2 items-center justify-between px-4 py-1.5 flex-shrink-0"
+        style={{ borderBottom: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}
+      >
+        <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
+          {leafTitle(note.path, note.metadata) || "Website"}
+        </span>
+        <div className="flex items-center gap-2">
+          <div className="flex rounded-md overflow-hidden" style={{ border: "1px solid var(--glass-border)" }}>
+            {([["split", Columns], ["code", Code], ["preview", Eye]] as const).map(([v, Icon]) => (
+              <button
+                key={v}
+                aria-label={`${v === "split" ? "Split" : v === "code" ? "Source" : "Preview"} view`}
+                aria-pressed={view === v}
+                onClick={() => setView(v)}
+                className="p-1.5"
+                style={{ background: view === v ? "var(--glass-active)" : "transparent" }}
+              >
+                <Icon size={13} style={{ color: "var(--text-primary)" }} />
+              </button>
+            ))}
+          </div>
+          <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+            {isSaving ? "Saving..." : lastSaved ? `Saved ${fmtTime(lastSaved)}` : ""}
+          </span>
+        </div>
+      </div>
+
+      {saveError && <div role="alert" className="p-3 text-sm">{saveError} {!readOnly && <button onClick={saveNow}>Retry save</button>}</div>}
+      <div className="flex-1 flex min-h-0">
+        {(view === "split" || view === "code") && (
+          <div className={view === "split" ? "w-1/2" : "w-full"} style={{ borderRight: view === "split" ? "1px solid var(--glass-border)" : "none" }}>
+            <textarea
+              value={content}
+              aria-label="Website source"
+              readOnly={readOnly}
+              onChange={handleChange}
+              spellCheck={false}
+              className="w-full h-full resize-none outline-none p-4"
+              style={{
+                background: "transparent",
+                color: "var(--text-primary)",
+                fontFamily: "var(--font-mono)",
+                fontSize: 13,
+                lineHeight: "1.6",
+                tabSize: 2,
+                whiteSpace: "pre",
+              }}
+            />
+          </div>
+        )}
+        {(view === "split" || view === "preview") && (
+          <div className={view === "split" ? "w-1/2" : "w-full"} style={{ background: "white" }}>
+            <iframe
+              srcDoc={content}
+              title="Preview"
+              // Scripts run in a UNIQUE opaque origin. Dropping allow-same-origin
+              // is deliberate: with both flags a srcdoc frame can script the app
+              // origin and escape the sandbox. Previewed HTML stays isolated.
+              sandbox="allow-scripts"
+              className="w-full h-full border-none"
+              style={{ background: "white" }}
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

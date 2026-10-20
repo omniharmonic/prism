@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-push-take-opened"
+description = "Enables the push_take_opened command without any pre-configured scope."
+commands.allow = ["push_take_opened"]
+
+[[permission]]
+identifier = "deny-push-take-opened"
+description = "Denies the push_take_opened command without any pre-configured scope."
+commands.deny = ["push_take_opened"]

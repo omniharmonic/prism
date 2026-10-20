@@ -1,0 +1,59 @@
+{
+  "name": "@prism/server",
+  "private": true,
+  "version": "0.9.0",
+  "license": "PolyForm-Shield-1.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "description": "Prism Server — permission gateway + collab server in front of a Parachute vault.",
+  "scripts": {
+    "dev": "node --env-file=.env --watch --import tsx src/index.ts",
+    "start": "node --env-file=.env --import tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test --env-file=.env.test test/*.test.ts",
+    "test:watch": "node --import tsx --test --watch --env-file=.env.test test/*.test.ts",
+    "gen-vapid": "node --import tsx scripts/gen-vapid.ts",
+    "signin": "node --import tsx scripts/local-signin.ts",
+    "push-relay:register": "node --env-file-if-exists=.env --import tsx scripts/push-relay.ts register",
+    "push-relay:status": "node --env-file-if-exists=.env --import tsx scripts/push-relay.ts status",
+    "push-relay:revoke": "node --env-file-if-exists=.env --import tsx scripts/push-relay.ts revoke",
+    "setup": "node --env-file-if-exists=.env --import tsx scripts/prism-setup.ts",
+    "setup:full": "node --env-file-if-exists=.env --import tsx scripts/prism-setup.ts",
+    "seed": "node --env-file-if-exists=.env --import tsx scripts/seed.ts",
+    "render:mcp": "node --env-file-if-exists=.env --import tsx scripts/render-mcp.ts",
+    "verify:gateway": "node --env-file=.env --import tsx scripts/verify-gateway.ts",
+    "verify:collab": "node --env-file=.env --import tsx scripts/verify-collab-share.ts",
+    "verify:federation": "node --env-file=.env --import tsx scripts/verify-federation.ts",
+    "verify:invite": "node --env-file=.env --import tsx scripts/verify-invite-flow.ts",
+    "verify:folder-sync": "node --env-file-if-exists=.env --import tsx scripts/verify-folder-sync.ts",
+    "verify:live": "npm run verify:gateway && npm run verify:collab && npm run verify:federation && npm run verify:invite"
+  },
+  "dependencies": {
+    "@hocuspocus/server": "^4.1.0",
+    "@hono/node-server": "^1.19.17",
+    "@modelcontextprotocol/server": "^2.2.0",
+    "@types/web-push": "^3.6.4",
+    "better-sqlite3": "^11.8.1",
+    "entities": "^4.5.0",
+    "happy-dom": "^20.10.2",
+    "hono": "^4.13.13",
+    "imapflow": "^2.1.2",
+    "jose": "^6.2.3",
+    "marked": "^18.0.5",
+    "nodemailer": "^10.1.7",
+    "resend": "^4.0.1",
+    "tsx": "^4.19.2",
+    "turndown": "^7.2.0",
+    "web-push": "^3.6.7",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.2.0",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.5",
+    "@types/turndown": "^5.0.5",
+    "typescript": "~5.8.3"
+  }
+}

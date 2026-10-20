@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "parachute-vault": {
+      "type": "http",
+      "url": "${PARACHUTE_URL}/vault/${PARACHUTE_VAULT}/mcp",
+      "headers": {
+        "Authorization": "Bearer ${PARACHUTE_TOKEN}"
+      }
+    }
+  }
+}

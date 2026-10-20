@@ -1,0 +1,181 @@
+/**
+ * Wave 3 gaps #9 — Home "My tasks": `/api/query {assignedToMe: true}`.
+ * The server resolves who the caller is (owner setting for the server owner; the
+ * person note carrying the account's email for everyone else) and only ever
+ * narrows rows the caller may already view.
+ */
+import { threadCpuMs } from "./probe";
+import { test, beforeEach, afterEach } from "node:test";
+import assert from "node:assert/strict";
+import { api } from "../src/routes/api";
+import { resetTreeForTests } from "../src/tree";
+import { resetDatabaseCachesForTests } from "../src/routes/databases";
+import { saveOwnerSettings } from "../src/people-owner";
+import { buildTasksPage, buildToday, type Dispatch } from "../src/omni/today";
+import { assignedToMe } from "../src/my-tasks";
+import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, makeCapability, type FakeVault } from "./helpers";
+
+const OWNER = "owner@test.local";
+const MIRA = "mira@test.local";
+const SAM = "sam@test.local";
+const J = { "content-type": "application/json" };
+let fv: FakeVault;
+let innerFetch: typeof fetch;
+beforeEach(() => {
+  resetDb();
+  resetTreeForTests();
+  resetDatabaseCachesForTests();
+  fv = installFakeVault();
+  innerFetch = globalThis.fetch;
+  const tags = [{ name: "task", count: 6, description: null, fields: { status: { type: "string" }, assigned: { type: "string" }, due: { type: "string" } } }];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    if (/^\/vault\/default\/api\/tags$/.test(url.pathname) && (init?.method ?? "GET") === "GET") return Response.json(tags);
+    return innerFetch(input, init);
+  }) as typeof fetch;
+  fv.put({ id: "p-owner", path: "vault/people/Blake Lee", tags: ["person"], metadata: { name: "Blake Lee", email: "ben@elsewhere.test" } });
+  fv.put({ id: "p-mira", path: "vault/people/Mira Park", tags: ["person"], metadata: { name: "Mira Park", emails: [MIRA, "mira@old.test"] } });
+  fv.put({ id: "p-stub", path: "vault/people/Mira P", tags: ["person", "merged-stub"], metadata: { name: "Mira P", email: MIRA, merged_into: "p-mira" } });
+  fv.put({ id: "t1", path: "vault/tasks/Write notes", tags: ["task", "team"], metadata: { status: "todo", assigned: "Blake" } });
+  fv.put({ id: "t2", path: "vault/tasks/Review plan", tags: ["task", "team"], metadata: { status: "todo", assigned: "Mira Park, Blake" } });
+  fv.put({ id: "t3", path: "vault/tasks/Book room", tags: ["task", "team"], metadata: { status: "todo", assigned: "[[vault/people/Mira Park]]" } });
+  fv.put({ id: "t4", path: "vault/tasks/Call venue", tags: ["task", "team"], metadata: { status: "todo", assignee_email: MIRA } });
+  fv.put({ id: "t5", path: "vault/tasks/Private errand", tags: ["task", "hidden"], metadata: { status: "todo", assigned: "Mira Park" } });
+  fv.put({ id: "t6", path: "vault/tasks/Someone else", tags: ["task", "team"], metadata: { status: "todo", assigned: "Sam" } });
+  fv.put({ id: "t7", path: "vault/tasks/Unassigned", tags: ["task", "team"], metadata: { status: "todo" } });
+  fv.put({ id: "t8", path: "vault/tasks/Old", tags: ["task", "team", "prism-trashed"], metadata: { status: "todo", assigned: "Mira Park" } });
+});
+afterEach(() => { globalThis.fetch = innerFetch; fv.restore(); });
+
+const login = (email: string) => sessionCookie(makeSession(email));
+const query = (cookie: string | null, body: Record<string, unknown>, path = "/query") =>
+  api.request(path, { method: "POST", headers: { ...J, ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body) });
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const ids = async (r: Response) => { assert.equal(r.status, 200, await r.clone().text()); const b = (await r.json()) as any; return { ids: b.rows.map((x: { id: string }) => x.id).sort(), identity: b.identity, total: b.total }; };
+
+test("a member sees the tasks assigned to their person note — by name, wikilink or address — and only ones they can view", async () => {
+  grantUser(MIRA, "tag", "team", "view");
+  const mine = await ids(await query(login(MIRA), { tags: ["task"], assignedToMe: true }));
+  assert.deepEqual(mine.ids, ["t2", "t3", "t4"]);
+  assert.equal(mine.identity, "person");
+  assert.equal(mine.total, 3, "the hidden task (t5) is neither listed nor counted");
+  // Without the flag: every viewable task, as before.
+  assert.deepEqual((await ids(await query(login(MIRA), { tags: ["task"] }))).ids, ["t1", "t2", "t3", "t4", "t6", "t7"]);
+  // Filters still apply on top.
+  const filtered = await ids(await query(login(MIRA), { tags: ["task"], assignedToMe: true, search: "venue" }));
+  assert.deepEqual(filtered.ids, ["t4"]);
+});
+
+test("a member with no person note matches by address only; a display name is never used", async () => {
+  grantUser(SAM, "tag", "team", "view");
+  const mine = await ids(await query(login(SAM), { tags: ["task"], assignedToMe: true }));
+  assert.deepEqual(mine.ids, [], "“Sam” on a task is a name, and no person note says this account is that Sam");
+  assert.equal(mine.identity, "account");
+  fv.put({ id: "t9", path: "vault/tasks/By address", tags: ["task", "team"], metadata: { status: "todo", assigned: SAM } });
+  resetDatabaseCachesForTests();
+  assert.deepEqual((await ids(await query(login(SAM), { tags: ["task"], assignedToMe: true }))).ids, ["t9"]);
+});
+
+test("the server owner is the identity layer's owner setting: person note, aliases and extra addresses", async () => {
+  // Nothing configured (review low 6): never an empty list — every task, as before,
+  // and the answer says the owner identity is unset so the UI can hint at it.
+  const unset = await ids(await query(login(OWNER), { tags: ["task"], assignedToMe: true }));
+  assert.deepEqual(unset.ids, ["t1", "t2", "t3", "t4", "t5", "t6", "t7"]);
+  assert.equal(unset.identity, "unset");
+  saveOwnerSettings("primary", { person: "p-owner", emails: [], aliases: ["Blake"] });
+  resetDatabaseCachesForTests();
+  const mine = await ids(await query(login(OWNER), { tags: ["task"], assignedToMe: true }));
+  assert.deepEqual(mine.ids, ["t1", "t2"]);
+  assert.equal(mine.identity, "person");
+  // The owner setting may name the person by path too.
+  saveOwnerSettings("primary", { person: "vault/people/Blake Lee", emails: [], aliases: [] });
+  resetDatabaseCachesForTests();
+  fv.put({ id: "t10", path: "vault/tasks/Full name", tags: ["task"], metadata: { status: "todo", assigned: "Blake Lee" } });
+  assert.deepEqual((await ids(await query(login(OWNER), { tags: ["task"], assignedToMe: true }))).ids, ["t10"]);
+});
+
+test("a capability link has no account: no tasks; a bad value is a 400", async () => {
+  const link = makeCapability("tag", "team", "view");
+  const viaLink = await ids(await query(null, { tags: ["task"], assignedToMe: true }, `/query?t=${encodeURIComponent(link)}`));
+  assert.deepEqual(viaLink.ids, []);
+  assert.equal((await query(login(OWNER), { tags: ["task"], assignedToMe: "yes" })).status, 400);
+});
+
+test("assignedToMe: tombstones never stand for a person; long or odd values are handled linearly", () => {
+  const me = { emails: new Set(["a@x.test"]), names: new Set(["ada lovelace"]), refs: new Set(["p1", "vault/people/ada lovelace", "ada lovelace"]), person: true, ownerUnset: false };
+  assert.equal(assignedToMe({ assigned: "Bob and Ada Lovelace" }, me), true);
+  assert.equal(assignedToMe({ assigned: "[[Ada Lovelace|Ada]]" }, me), true);
+  assert.equal(assignedToMe({ assignee: ["x@y.test", "A@X.test"] }, me), true);
+  assert.equal(assignedToMe({ assigned: "Ada" }, me), false, "a first name alone is not the person");
+  assert.equal(assignedToMe({ assigned: "[[Ada Lovelace" }, me), false);
+  const started = threadCpuMs(); // CPU time of this thread (./probe), not the wall clock
+  assert.equal(assignedToMe({ assigned: "[[".repeat(900) + " and ".repeat(50) }, me), false);
+  assert.ok(threadCpuMs() - started < 200);
+});
+
+
+/** Omni inventories readable open tasks, unlike Home's assigned-only widget. */
+const omniDispatch = (email: string): Dispatch => async (_path, init) => query(login(email), init.body as Record<string, unknown>);
+
+test("Omni Today and expanded tasks include unassigned and other-assigned open tasks", async () => {
+  saveOwnerSettings("primary", { person: "p-owner", emails: [], aliases: ["Blake"] });
+  for (const status of ["done", "completed", "cancelled", "archived"]) {
+    fv.put({ id: `closed-${status}`, tags: ["task"], metadata: { status } });
+  }
+  fv.put({ id: "template-task", tags: ["task", "template"], metadata: { status: "todo" } });
+  const today = await buildToday(omniDispatch(OWNER), "2026-10-10", { retryDelayMs: 0 });
+  const page = await buildTasksPage(omniDispatch(OWNER));
+  const expected = ["t1", "t2", "t3", "t4", "t5", "t6", "t7"];
+  for (const tasks of [today.tasks, page.tasks]) {
+    assert.deepEqual((tasks as Array<{ noteId: string }>).map(t => t.noteId).sort(), expected);
+  }
+});
+
+test("Omni task pagination exhausts more than two pages without losing tasks or bypassing visibility", async () => {
+  grantUser(MIRA, "tag", "team", "view");
+  for (let i = 0; i < 121; i++) {
+    fv.put({ id: `extra-${String(i).padStart(3, "0")}`, tags: ["task", "team"], metadata: { status: "todo", due: "2026-11-01" } });
+  }
+  const found: string[] = [];
+  let cursor: string | undefined;
+  let pages = 0;
+  do {
+    const page = await buildTasksPage(omniDispatch(MIRA), cursor);
+    const rows = page.tasks as Array<{ noteId: string }>;
+    assert.ok(rows.length <= 50);
+    assert.equal(page.total, 127);
+    assert.equal(page.limited, true);
+    assert.equal(page.truncated, false);
+    found.push(...rows.map(t => t.noteId));
+    cursor = page.next as string | undefined;
+    assert.ok(++pages <= 3, "pagination must finish");
+  } while (cursor);
+  assert.equal(pages, 3);
+  assert.equal(found.length, 127);
+  assert.equal(new Set(found).size, 127);
+  assert.ok(found.includes("t7"), "unassigned task remains visible");
+  assert.ok(found.includes("t6"), "another person's assignment does not hide a readable task");
+  assert.ok(!found.includes("t5"), "hidden task never crosses the gateway");
+  assert.ok(!found.includes("t8"), "trash is excluded");
+});
+
+
+test("Omni inventories tagged OR typed tasks through the same permission filter", async () => {
+  fv.put({ id: "typed-legacy", tags: ["personal"], metadata: { type: "task", status: "todo" } });
+  fv.put({ id: "typed-prism", tags: ["personal"], metadata: { prism_type: "task", status: "todo" } });
+  fv.put({ id: "typed-both", tags: ["task", "personal"], metadata: { type: "task", prism_type: "task", status: "todo" } });
+  fv.put({ id: "typed-hidden", tags: ["hidden"], metadata: { prism_type: "task", status: "todo" } });
+  fv.put({ id: "not-a-task", tags: ["personal"], metadata: { type: "note", status: "todo" } });
+  fv.put({ id: "typed-closed", tags: ["personal"], metadata: { type: "task", status: "done" } });
+  fv.put({ id: "typed-template", tags: ["personal", "template"], metadata: { type: "task", status: "todo" } });
+  fv.put({ id: "typed-trash", tags: ["personal", "prism-trashed"], metadata: { type: "task", status: "todo" } });
+  grantUser(MIRA, "tag", "personal", "view");
+  const page = await buildTasksPage(omniDispatch(MIRA));
+  assert.deepEqual((page.tasks as Array<{ noteId: string }>).map(t => t.noteId).sort(), ["typed-both", "typed-legacy", "typed-prism"]);
+  assert.equal(page.total, 3);
+  // The ordinary database source still requires tags, and broadening cannot disguise another tag source.
+  const regular = await ids(await query(login(MIRA), { tags: ["task"] }));
+  assert.deepEqual(regular.ids, ["typed-both"]);
+  assert.equal((await query(login(MIRA), { tags: ["personal"], includeTypedTasks: true })).status, 400);
+  assert.equal((await query(login(MIRA), { tags: ["task"], includeTypedTasks: "yes" })).status, 400);
+});

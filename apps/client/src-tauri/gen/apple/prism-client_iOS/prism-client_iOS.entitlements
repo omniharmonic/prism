@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- APNs agent-turn notifications (WP5.3). TestFlight and App Store builds use the
+	     PRODUCTION environment; the app reports the environment of its token from the
+	     embedded provisioning profile (docs/push.md § Sandbox vs production). -->
+	<key>aps-environment</key>
+	<string>production</string>
+</dict>
+</plist>

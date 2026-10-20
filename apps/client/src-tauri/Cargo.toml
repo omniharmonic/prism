@@ -1,0 +1,82 @@
+[package]
+name = "prism-client"
+version = "0.9.0"
+license = "PolyForm-Shield-1.0.0"
+description = "Prism Client: a thin Tauri shell that talks only to a Prism Server"
+edition = "2021"
+publish = false
+
+[lib]
+# `_lib` keeps the lib name distinct from the bin (cargo#8519). staticlib/cdylib
+# are what the iOS (WP5) and Android targets link against.
+name = "prism_client_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+# build.rs checks the committed updater public key (fail closed: a malformed key fails the build).
+base64 = "0.22"
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Token exchange + revoke run in Rust, so the PKCE verifier and the auth code
+# never enter the webview.
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1", features = ["rt", "net", "time", "io-util", "sync", "macros"] }
+url = "2"
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+log = "0.4"
+dirs = "5"
+
+# Keychain: a thin Security.framework binding (SecItem* APIs), the same on macOS and iOS.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+security-framework = "3"
+
+# iOS (WP5): ASWebAuthenticationSession sign-in, UIAlertController confirmations,
+# APNs registration and the Face ID app lock, in a local Swift plugin. It
+# registers no webview-callable command (the app's own commands call it).
+[target.'cfg(target_os = "ios")'.dependencies]
+tauri-plugin-prism-ios = { path = "plugins/prism-ios" }
+
+# Native confirmation dialogs (NSAlert) for external links and server changes.
+# Already in the tree via tao/wry; only the AppKit features used are enabled.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAlert", "NSApplication", "NSButton", "NSControl", "NSView", "NSResponder"] }
+# In-app updates (docs/client-app.md § Release (CI)), driven from Rust ONLY: no capability grants
+# an `updater:*` permission, so none of the plugin's four commands is callable from a webview, and
+# its JS API script is not injected (withGlobalTauri is off). It is registered only when a public
+# key is committed AND the build names an update endpoint (src/updater.rs). Without the `zip`
+# feature (Windows / Tauri v1 bundles only).
+tauri-plugin-updater = { version = "2.14", default-features = false, features = ["rustls-tls", "system-proxy"] }
+
+# WP4.2 desktop extras. Deliberately NOT tauri-plugin-notification / -dialog:
+# those inject JS shims into every webview (window.Notification, alert,
+# confirm) and register webview-callable commands. We use their underlying
+# libraries from Rust only, so no new JS-reachable surface exists. The
+# global-shortcut plugin adds no init script; none of its commands is granted.
+[target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
+tauri-plugin-global-shortcut = "2"
+notify-rust = "4.11"
+rfd = { version = "0.16", default-features = false, features = ["common-controls-v6"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rfd = { version = "0.16", default-features = false, features = ["gtk3"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "io-util", "sync", "macros"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

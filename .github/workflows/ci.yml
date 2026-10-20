@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: typecheck · test · build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # The one pre-merge check, the same command people run locally: every workspace's type check
+      # (the server's includes test/** and scripts/**), the e2e specs' type check, and the static
+      # guards (no browser dialogs — once that script exists —, service-worker denylist, lazy editors).
+      - name: Check (typecheck all workspaces + e2e specs, static guards)
+        run: npm run check
+      - name: Server tests
+        run: npm run test -w @prism/server
+      - name: Push relay tests (fake APNs, in-memory shards; no network)
+        run: npm run test -w @prism/push-relay
+      - name: Build web PWA
+        run: npm run build -w @prism/web
+      - name: Service-worker denylist guard
+        run: npm run check:sw -w @prism/web
+      # Builds dist-native (the Prism Client's page) and asserts its transport rules: no service
+      # worker, bearer only to the configured server, credentials "omit", no bare fetch().
+      - name: Native build guard
+        run: npm run verify:native -w @prism/web
+      # The public repository is a snapshot of this one; this exports it to a temp dir and fails
+      # on the owner's personal data or on app identity outside the signing/config files.
+      - name: Public snapshot scan
+        run: scripts/public-snapshot/export.sh --check
+
+  e2e-shards:
+    # Every fixture test runs without production credentials or vault data.
+    # One browser worker per runner preserves the latency checks without CPU contention.
+    # Shards keep the full suite within a useful review cycle; no retries hide failures.
+    name: browser fixtures (${{ matrix.shard }}/16)
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Typecheck e2e specs
+        run: npm run typecheck:e2e -w @prism/web
+      - name: Install Playwright chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: apps/web
+      - name: Run non-live e2e specs
+        run: npm run test:e2e -w @prism/web -- --grep-invert @live --shard=${{ matrix.shard }}/16 --workers=1
+      - name: Preserve failure traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-failures-${{ matrix.shard }}
+          path: apps/web/test-results/
+          retention-days: 7
+
+  e2e:
+    name: e2e toolchain (no vault)
+    needs: e2e-shards
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every browser shard to pass
+        env:
+          RESULT: ${{ needs.e2e-shards.result }}
+        run: test "$RESULT" = success
+
+  rust:
+    name: cargo check · test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tauri Linux system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev librsvg2-dev patchelf
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - name: cargo check
+        working-directory: apps/desktop/src-tauri
+        run: cargo check --locked
+      - name: cargo test (logic units)
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --lib

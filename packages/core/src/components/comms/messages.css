@@ -1,0 +1,710 @@
+.prism-messages-workspace,
+.prism-conversation {
+  background: var(--bg-base);
+  color: var(--text-primary);
+}
+.prism-messages-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  padding: 24px 24px 18px;
+  border-bottom: 1px solid var(--glass-border);
+}
+.prism-messages-heading h1 {
+  font-size: 24px;
+  line-height: 1.25;
+  letter-spacing: -0.035em;
+}
+.prism-messages-heading .prism-message-search {
+  flex: 1 1 100%;
+  min-height: var(--control-h-md);
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+}
+/* The inbox views use the app's tab look (ui/Tabs: quiet row, the active one on --glass-active). */
+.prism-message-views {
+  display: flex;
+  gap: 2px;
+  max-width: 100%;
+}
+.prism-message-views button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: var(--control-h-md);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  transition: background var(--motion-fast, 120ms), color var(--motion-fast, 120ms);
+}
+.prism-message-views button:hover {
+  background: var(--glass-hover);
+  color: var(--text-primary);
+}
+.prism-message-views button[aria-pressed="true"] {
+  background: var(--glass-active);
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px var(--glass-border);
+}
+/* The pressed view keeps its hairline AND shows the focus ring: the rule above outranked
+   `.focus-ring:focus-visible`, so the selected toggle had no focus indicator (NP-AX-04 sweep). */
+.prism-message-views button[aria-pressed="true"]:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--glass-border), 0 0 0 2px var(--focus-ring);
+}
+/* ── Category: one row of filter chips (the Inbox chip pattern) + one chip per row ──
+   Tone comes from tokens only (color-mix over --color-*), so both themes and print follow. */
+.prism-triage-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 12px 16px 6px;
+  min-width: 0;
+}
+.prism-triage-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.prism-triage-chip:hover { background: var(--glass-hover); color: var(--text-primary); }
+.prism-triage-chip[aria-pressed="true"] {
+  background: var(--surface-selected, var(--glass-active));
+  color: var(--text-primary);
+  border-color: transparent;
+}
+.prism-triage-count { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.prism-triage-chip[aria-pressed="true"] .prism-triage-count { color: var(--text-secondary); }
+.prism-status-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--text-muted); }
+.prism-triage-chip[data-tone="danger"] .prism-status-dot { background: var(--color-danger); }
+.prism-triage-chip[data-tone="warning"] .prism-status-dot { background: var(--color-warning); }
+.prism-triage-chip[data-tone="failed"] .prism-status-dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--color-danger); }
+.prism-triage-chip[data-tone="pending"] .prism-status-dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--text-muted); }
+.prism-triage-chip[data-tone="done"] .prism-status-dot { background: var(--color-success); }
+.prism-triage-hint {
+  margin: 4px 24px 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.prism-triage-hint p { margin: 0; }
+/* The empty "Needs attention" (or any single category) offers the way out right under its sentence. */
+.prism-triage-show-all {
+  margin-top: 6px;
+  min-height: var(--control-h-sm, 28px);
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--glass-border);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 500;
+}
+.prism-triage-show-all:hover { background: var(--glass-hover); }
+@media (pointer: coarse) {
+  .prism-triage-show-all { min-height: 44px; }
+}
+.prism-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 18px;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  background: var(--glass);
+}
+.prism-status-chip[data-tone="danger"] {
+  color: color-mix(in srgb, var(--color-danger) 70%, var(--text-primary));
+  background: color-mix(in srgb, var(--color-danger) 14%, transparent);
+}
+.prism-status-chip[data-tone="warning"] {
+  color: color-mix(in srgb, var(--color-warning) 62%, var(--text-primary));
+  background: color-mix(in srgb, var(--color-warning) 16%, transparent);
+}
+.prism-status-chip[data-tone="failed"] {
+  color: color-mix(in srgb, var(--color-danger) 70%, var(--text-primary));
+  background: transparent;
+  border: 1px dashed color-mix(in srgb, var(--color-danger) 55%, transparent);
+}
+.prism-status-chip[data-tone="pending"] {
+  color: var(--text-muted);
+  background: transparent;
+  border-color: var(--glass-border);
+}
+.prism-status-chip[data-tone="done"] { color: var(--text-muted); background: transparent; border-color: var(--glass-border); }
+.prism-message-row {
+  width: calc(100% - 16px);
+  min-height: 44px;
+  margin: 1px 8px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  transition:
+    background 0.15s,
+    border-color 0.15s;
+}
+.prism-message-row:hover {
+  background: var(--glass-hover);
+}
+.prism-message-row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.prism-message-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  font-size: 13px;
+  font-weight: 600;
+  background: color-mix(
+    in srgb,
+    var(--avatar-tone, var(--color-accent)) 18%,
+    var(--bg-base)
+  );
+  color: var(--text-primary);
+}
+.prism-message-preview {
+  margin-top: 1px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+.prism-message-platform {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.prism-conversation-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  min-height: 60px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--glass-border);
+}
+.prism-conversation-title {
+  min-width: 120px;
+  flex: 1;
+}
+.prism-conversation-title h2 {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
+}
+.prism-conversation-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.prism-thread-view-toggle {
+  min-height: 32px;
+  padding: 2px 0;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.prism-thread-status {
+  min-height: var(--control-h-md);
+  max-width: 180px;
+  border-radius: 8px;
+  border: 1px solid var(--glass-border);
+  padding: 6px 10px;
+  background: var(--glass);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.prism-thread-content {
+  padding: 24px;
+}
+.prism-thread-content > article,
+.prism-thread-content > [role="separator"] {
+  max-width: 920px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.prism-message-group {
+  gap: 12px;
+}
+.prism-message-group + .prism-message-group {
+  margin-top: 24px;
+}
+.prism-message-group .prism-message-avatar {
+  width: 36px;
+  height: 36px;
+  margin-top: 1px;
+}
+.prism-message-byline {
+  font-size: 12px;
+  margin-bottom: 7px;
+}
+.prism-message-byline > .prism-sender {
+  font-size: 13px;
+}
+.prism-message-bubble {
+  padding: 12px 15px;
+  border-radius: 3px 15px 15px 15px;
+  background: var(--glass-hover);
+  color: var(--text-primary);
+  line-height: 1.55;
+  font-size: 16px;
+  max-width: min(640px, 100%);
+}
+.prism-message-outgoing {
+  margin-left: auto;
+  padding-left: 48px;
+}
+.prism-message-outgoing .prism-message-avatar {
+  display: none;
+}
+/* Yours: on the right, tinted with the action colour and outlined — not the grey of everyone else. */
+.prism-message-outgoing .prism-message-bubble {
+  border-radius: 15px 3px 15px 15px;
+  background: color-mix(in srgb, var(--action-bg) 20%, var(--bg-base));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--action-bg) 34%, transparent);
+}
+/* A stable colour per sender, pulled towards the text colour so it reads in both themes. */
+.prism-message-byline > .prism-sender {
+  color: color-mix(in srgb, var(--sender-tone, var(--text-primary)) 58%, var(--text-primary));
+}
+.prism-day-separator {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.prism-day-separator::before,
+.prism-day-separator::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--glass-border);
+}
+.prism-earlier-messages {
+  min-height: var(--control-h-md);
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  padding: 7px 14px;
+  color: var(--text-secondary);
+  background: var(--bg-base);
+  text-decoration: none;
+}
+.prism-message-composer {
+  padding: 14px 24px;
+  background: var(--bg-base);
+}
+.prism-compose-surface {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 10px;
+  border: 1px solid var(--glass-border-strong);
+  border-radius: 14px;
+  box-shadow: 0 2px 5px #00000004;
+  background: var(--bg-base);
+}
+/* The border IS the focus indicator here (the glow is decoration): full strength, ≥ 3 : 1 (NP-AX-04). */
+.prism-compose-surface:focus-within {
+  /* --focus-ring, not --action-bg: at rest the border is already the 3 : 1 control boundary, and focus must
+     stand out from THAT in both themes (dark: 8.5 : 1 against 4.8 : 1 at rest). */
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--action-bg) 7%, transparent);
+}
+.prism-compose-surface textarea {
+  border: 0;
+  outline: 0;
+  padding: 7px 9px;
+  background: transparent;
+  line-height: 1.5;
+}
+.prism-compose-surface .prism-send-message {
+  border-radius: 50%;
+  transition: opacity 0.15s;
+}
+.prism-send-message:disabled {
+  opacity: 0.35;
+}
+.prism-compose-hint {
+  max-width: 920px;
+  margin: 6px auto 0;
+  text-align: right;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+@media (max-width: 640px) {
+  .prism-messages-heading {
+    padding: 20px 16px 14px;
+    gap: 14px;
+  }
+  .prism-messages-heading h1 {
+    font-size: 24px;
+  }
+  .prism-message-views {
+    order: 3;
+    width: 100%;
+  }
+  .prism-message-views button {
+    flex: 1;
+    justify-content: center;
+    min-height: 44px;
+  }
+  .prism-message-row {
+    padding: 11px 8px;
+    border-radius: 9px;
+  }
+  .prism-message-row .prism-message-avatar {
+    width: 40px;
+    height: 40px;
+  }
+  .prism-conversation-heading {
+    padding: 6px 8px;
+    gap: 8px;
+  }
+  .prism-conversation-heading > .prism-message-avatar {
+    display: none;
+  }
+  /* A phone header is the title, where it lives and what you can do — the link beside it says the rest. */
+  .prism-conversation-state {
+    display: none;
+  }
+  .prism-conversation-title h2 {
+    font-size: 15px;
+  }
+  .prism-thread-status {
+    max-width: 135px;
+    min-height: 44px;
+    font-size: 11px;
+  }
+  .prism-thread-content {
+    padding: 16px 12px;
+  }
+  .prism-message-group {
+    gap: 9px;
+  }
+  .prism-message-group .prism-message-avatar {
+    width: 30px;
+    height: 30px;
+    font-size: 11px;
+  }
+  .prism-message-bubble {
+    padding: 10px 12px;
+    font-size: 16px;
+  }
+  .prism-message-outgoing {
+    padding-left: 39px;
+  }
+  .prism-message-composer {
+    padding: 10px 12px;
+  }
+  .prism-compose-surface {
+    padding: 6px;
+    border-radius: 13px;
+  }
+  .prism-compose-hint {
+    display: none;
+  }
+}
+@media (pointer: coarse) {
+  .prism-compose-hint {
+    display: none;
+  }
+}
+.prism-message-split {
+  display: grid;
+  grid-template-columns: minmax(280px, 350px) minmax(0, 1fr);
+}
+.prism-messages-list {
+  border-right: 1px solid var(--glass-border);
+}
+.prism-messages-list .prism-message-views {
+  width: 100%;
+  order: 3;
+}
+.prism-messages-list .prism-message-views button {
+  flex: 1;
+}
+.prism-message-row[aria-current="true"] {
+  background: var(--surface-selected);
+  border-color: color-mix(in srgb, var(--action-bg) 12%, transparent);
+}
+@media (max-width: 899px) {
+  .prism-message-split {
+    display: flex;
+    flex-direction: column;
+  }
+  .prism-messages-list {
+    flex: 1;
+    border-right: 0;
+  }
+  .prism-messages-detail {
+    display: none;
+  }
+  .prism-message-split.has-selection .prism-messages-list {
+    display: none;
+  }
+  .prism-message-split.has-selection .prism-messages-detail {
+    display: flex;
+    flex: 1;
+  }
+}
+
+@media (pointer: coarse) {
+  .prism-thread-view-toggle {
+    min-height: 44px;
+  }
+}
+
+/* ── List rows: name, unread, time, source ─────────────────────────────── */
+.prism-row-name {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+[data-unread] .prism-row-name {
+  font-weight: 700;
+}
+[data-unread] .prism-message-preview {
+  color: var(--text-primary);
+}
+.prism-unread-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  align-self: center;
+}
+.prism-row-time {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.prism-row-count {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.prism-person-sources {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin-top: 3px;
+}
+.prism-source-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.prism-source-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+
+/* ── One header per conversation: its actions live in it ───────────────── */
+.prism-conversation-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: var(--control-h-md);
+  height: var(--control-h-md);
+  border-radius: 8px;
+  color: var(--text-secondary);
+}
+.prism-conversation-action:hover {
+  background: var(--glass-hover);
+  color: var(--text-primary);
+}
+.prism-conversation-heading > .prism-message-avatar {
+  width: 36px;
+  height: 36px;
+}
+.prism-email-header .prism-conversation-action:first-child {
+  margin-left: -10px;
+}
+
+/* ── People: the list, the merged timeline, and the honest empty states ── */
+.prism-people-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px 0;
+}
+.prism-person-row {
+  min-height: 60px;
+}
+.prism-people-note {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: 420px;
+  margin: 0 auto;
+  padding: 40px 24px;
+  text-align: center;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.prism-people-note h2,
+.prism-people-note h3 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.prism-people-action {
+  min-height: var(--control-h-md);
+  padding: 8px 14px;
+  border: 1px solid var(--glass-border-strong);
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.prism-people-action:hover {
+  background: var(--glass-hover);
+}
+.prism-people-action.prism-people-primary {
+  border-color: transparent;
+  background: var(--action-bg);
+  color: var(--action-fg);
+}
+.prism-people-footnote {
+  padding: 12px 20px 20px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+.prism-person-timeline {
+  padding: 8px 16px 24px;
+}
+.prism-timeline {
+  max-width: 760px;
+  margin: 0 auto;
+}
+.prism-timeline-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 56px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  text-align: left;
+}
+.prism-timeline-item:hover {
+  background: var(--glass-hover);
+}
+.prism-timeline-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--glass);
+  color: var(--text-secondary);
+}
+@media (prefers-reduced-motion: reduce) {
+  .prism-message-row,
+  .prism-message-views button {
+    transition: none;
+  }
+}
+
+.prism-agent-draft-trigger { display: inline-flex; align-items: center; gap: 6px; margin: 4px 16px 0; padding: 7px 9px; border-radius: 7px; font-size: 12px; color: var(--text-secondary); }
+.prism-agent-draft-trigger:hover { background: var(--bg-hover); color: var(--text-primary); }
+.prism-agent-draft-dialog { margin: 0 0 0 auto; width: min(480px, 100%); max-width: 100%; height: 100dvh; max-height: 100dvh; border: 0; border-left: 1px solid var(--glass-border); padding: 22px; background: var(--bg-surface); color: var(--text-primary); overflow-y: auto; box-shadow: -12px 0 50px #0002; }
+.prism-agent-draft-dialog::backdrop { background: #0004; }
+.prism-agent-draft-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.prism-agent-draft-heading h2 { font-size: 20px; font-weight: 600; letter-spacing: -.02em; }
+.prism-agent-draft-heading p, .prism-agent-draft-caption { margin-top: 5px; color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
+.prism-agent-draft-heading button { min-width: var(--control-h-md); min-height: var(--control-h-md); display: grid; place-items: center; border-radius: 8px; }
+.prism-agent-draft-explainer { margin: 18px 0; font-size: 13px; line-height: 1.6; color: var(--text-secondary); }
+.prism-agent-draft-instructions { display: block; font-size: 13px; font-weight: 500; }
+.prism-agent-draft-instructions textarea { display: block; width: 100%; resize: vertical; margin-top: 8px; padding: 12px; min-height: 100px; max-height: 250px; font-size: 16px; font-weight: 400; line-height: 1.5; border: 1px solid var(--glass-border); border-radius: 10px; background: var(--bg-base); }
+.prism-agent-draft-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.prism-agent-draft-actions button, .prism-agent-draft-dialog [role=alert] button { min-height: var(--control-h-md); padding: 8px 12px; border: 1px solid var(--glass-border); border-radius: 8px; font-size: 13px; }
+.prism-agent-draft-actions button.prism-agent-draft-primary { background: var(--action-bg); color: var(--action-fg); border-color: transparent; }
+.prism-agent-draft-dialog button:disabled { opacity: .45; cursor: not-allowed; }
+.prism-agent-draft-dialog [role=alert], .prism-agent-draft-dialog [role=status] { margin-top: 12px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.prism-agent-draft-output, .prism-agent-draft-live { margin-bottom: 22px; padding-bottom: 20px; border-bottom: 1px solid var(--glass-border); }
+.prism-agent-draft-live > [role=status] { margin-top: 0; color: var(--text-secondary); }
+.prism-agent-draft-text[data-live] { color: var(--text-secondary); }
+.prism-agent-draft-text[data-live]::after { content: ""; display: inline-block; width: 7px; height: 1em; margin-left: 2px; vertical-align: text-bottom; background: currentColor; opacity: .55; animation: prism-fade-in .8s ease-in-out infinite alternate; }
+.prism-agent-draft-text[data-markdown] { white-space: normal; }
+@media (prefers-reduced-motion: reduce) { .prism-agent-draft-text[data-live]::after { animation: none; } }
+:root.reduce-motion .prism-agent-draft-text[data-live]::after { animation: none; }
+.prism-agent-draft-output h3 { font-size: 12px; font-weight: 600; color: var(--text-muted); }
+.prism-agent-draft-text { margin-top: 10px; padding: 12px 14px; border: 1px solid var(--glass-border); border-radius: 10px; background: var(--glass); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; font-size: 14px; }
+.prism-agent-draft-note { margin-top: 10px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-secondary); font-size: 12.5px; line-height: 1.5; }
+.prism-agent-draft-confirm { margin-top: 14px; padding: 12px; border: 1px solid var(--glass-border); border-radius: 10px; font-size: 13px; }
+@media (max-width: 480px) { .prism-agent-draft-dialog { padding: 16px; } }
+
+/* Phone: the view switch must never widen the page (200% zoom + WCAG text spacing). */
+@media (max-width: 480px) {
+  .prism-message-views { flex-wrap: wrap; min-width: 0; }
+  .prism-message-views button { white-space: normal; padding-inline: 8px; flex: 1 1 auto; min-width: 0; }
+}
+
+/* Phones: the category chips are one row that scrolls sideways; touch targets stay 44 px. */
+@media (max-width: 640px) {
+  .prism-triage-filters { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-inline: 12px; }
+  .prism-triage-filters::-webkit-scrollbar { display: none; }
+}
+@media (pointer: coarse) {
+  .prism-triage-chip { min-height: 44px; }
+}
+
+/* Touch targets (touch.css condition): the rules above draw these at the desktop control size
+   (tokens.css --control-h-md); a touch pointer or a narrow window gets --touch-target. */
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  .prism-messages-heading .prism-message-search { min-height: var(--touch-target); }
+  .prism-message-views button { min-height: var(--touch-target); }
+  .prism-thread-status { min-height: var(--touch-target); }
+  .prism-earlier-messages { min-height: var(--touch-target); }
+  .prism-conversation-action { width: var(--touch-target); height: var(--touch-target); }
+  .prism-people-action { min-height: var(--touch-target); }
+  .prism-agent-draft-heading button { min-width: var(--touch-target); min-height: var(--touch-target); }
+  .prism-agent-draft-actions button, .prism-agent-draft-dialog [role=alert] button { min-height: var(--touch-target); }
+}

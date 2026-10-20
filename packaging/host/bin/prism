@@ -1,0 +1,15 @@
+#!/bin/sh
+# prism — the Prism host CLI (docs/host-bundle.md). Runs on the Node bundled beside it;
+# nothing global is needed. The installed <prefix>/bin/prism is a symlink to
+# <prefix>/app/current/bin/prism, so symlinks are followed to find the bundle.
+set -eu
+self=$0
+while [ -L "$self" ]; do
+  target=$(readlink "$self")
+  case $target in
+    /*) self=$target ;;
+    *) self=$(dirname "$self")/$target ;;
+  esac
+done
+root=$(cd "$(dirname "$self")/.." && pwd -P)
+exec "$root/runtime/node/bin/node" "$root/libexec/prism.mjs" "$@"

@@ -1,0 +1,11 @@
+{
+  "name": "prism",
+  "manifestName": "Prism Server",
+  "port": 8787,
+  "health": "/health",
+  "paths": ["/auth", "/api", "/acl", "/collab"],
+  "websocket": true,
+  "stripPrefix": false,
+  "uiUrl": "/",
+  "managementUrl": "/"
+}

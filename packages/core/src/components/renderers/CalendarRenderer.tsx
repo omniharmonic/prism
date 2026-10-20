@@ -1,0 +1,251 @@
+import { useState, useMemo } from "react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
+import { format, startOfWeek, endOfWeek, addWeeks, subWeeks, eachDayOfInterval, isSameDay } from "date-fns";
+import type { RendererProps } from "./RendererProps";
+import { calendarDate, type CalendarEvent } from "../../lib/sync/client";
+import { meetingsBetween, useMeetingListing } from "../../lib/calendar/meetingListing";
+import { formatDate, formatTime, usesSystemDate, usesSystemTime, weekStartsOn } from "../../lib/datetime/format";
+import { useRegionPrefs } from "../../lib/datetime/useRegionPrefs";
+
+// "system" keeps the strings this view always showed (date-fns patterns).
+const clock = (d: Date): string => (usesSystemTime() ? format(d, "h:mm a") : formatTime(d, { hour: "numeric", minute: "2-digit" }));
+const monthDay = (d: Date, year = false): string =>
+  usesSystemDate() ? format(d, year ? "MMM d, yyyy" : "MMM d") : formatDate(d, { month: "short", day: "numeric", ...(year ? { year: "numeric" } : {}) });
+const longDay = (d: Date): string =>
+  usesSystemDate() ? format(d, "EEEE, MMMM d, yyyy") : formatDate(d, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+
+export default function CalendarRenderer({ note: _note }: RendererProps) {
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [view, setView] = useState<"week" | "day">("week");
+
+  // Settings → Start week on (NP-AX-09). "System locale" = the locale's own first day.
+  const first = weekStartsOn({ prefs: useRegionPrefs() });
+  const weekStart = startOfWeek(currentDate, { weekStartsOn: first });
+  const weekEnd = endOfWeek(currentDate, { weekStartsOn: first });
+
+  // The week on screen, out of THE shared meeting listing (no request per week).
+  const listing = useMeetingListing();
+  const events = useMemo(() => meetingsBetween(listing.events, weekStart, weekEnd), [listing.events, weekStart.getTime(), weekEnd.getTime()]);
+  // "Loading" / "unavailable" replace the page only while there is nothing at all to show.
+  const isLoading = listing.load === "loading" && listing.events.length === 0;
+  const isError = listing.load === "failed" && listing.events.length === 0;
+
+  const days = useMemo(() => eachDayOfInterval({ start: weekStart, end: weekEnd }), [weekStart, weekEnd]);
+
+  if (isError) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-3">
+        <p className="text-lg font-medium" style={{ color: "var(--text-secondary)" }}>
+          Calendar unavailable
+        </p>
+        <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+          Configure Google Calendar OAuth in Settings to connect.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Header */}
+      <div
+        className="flex items-center justify-between px-4 py-2 flex-shrink-0"
+        style={{ borderBottom: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}
+      >
+        <div className="flex items-center gap-2">
+          <button onClick={() => setCurrentDate(subWeeks(currentDate, 1))} className="p-1 rounded hover:bg-[var(--glass-hover)]">
+            <ChevronLeft size={16} style={{ color: "var(--text-secondary)" }} />
+          </button>
+          <h2 className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
+            {monthDay(weekStart)} – {monthDay(weekEnd, true)}
+          </h2>
+          <button onClick={() => setCurrentDate(addWeeks(currentDate, 1))} className="p-1 rounded hover:bg-[var(--glass-hover)]">
+            <ChevronRight size={16} style={{ color: "var(--text-secondary)" }} />
+          </button>
+          <button
+            onClick={() => setCurrentDate(new Date())}
+            className="text-xs px-2 py-0.5 rounded hover:bg-[var(--glass-hover)]"
+            style={{ color: "var(--text-secondary)" }}
+          >
+            Today
+          </button>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="flex rounded-md overflow-hidden" style={{ border: "1px solid var(--glass-border)" }}>
+            <button
+              onClick={() => setView("week")}
+              className="px-2 py-0.5 text-xs"
+              style={{
+                background: view === "week" ? "var(--glass-active)" : "transparent",
+                color: "var(--text-primary)",
+              }}
+            >
+              Week
+            </button>
+            <button
+              onClick={() => setView("day")}
+              className="px-2 py-0.5 text-xs"
+              style={{
+                background: view === "day" ? "var(--glass-active)" : "transparent",
+                color: "var(--text-primary)",
+              }}
+            >
+              Day
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Calendar grid */}
+      <div className="flex-1 overflow-auto">
+        {isLoading ? (
+          <div className="flex items-center justify-center h-full">
+            <span className="text-sm" style={{ color: "var(--text-muted)" }}>Loading events...</span>
+          </div>
+        ) : view === "week" ? (
+          <WeekView days={days} events={events || []} />
+        ) : (
+          <DayView date={currentDate} events={(events || []).filter((e) => {
+            const eventDate = e.start.dateTime || e.start.date || "";
+            return isSameDay(calendarDate(eventDate), currentDate);
+          })} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function WeekView({ days, events }: { days: Date[]; events: CalendarEvent[] }) {
+  const hours = Array.from({ length: 14 }, (_, i) => i + 7); // 7 AM to 8 PM
+
+  return (
+    <div className="flex flex-1 min-h-0">
+      {/* Time labels */}
+      <div className="w-14 flex-shrink-0 pt-8">
+        {hours.map((h) => (
+          <div key={h} className="h-12 text-xs text-right pr-2" style={{ color: "var(--text-muted)" }}>
+            {h > 12 ? `${h - 12}p` : h === 12 ? "12p" : `${h}a`}
+          </div>
+        ))}
+      </div>
+
+      {/* Day columns */}
+      {days.map((day) => {
+        const dayEvents = events.filter((e) => {
+          const eventDate = e.start.dateTime || e.start.date || "";
+          return isSameDay(calendarDate(eventDate), day);
+        });
+        const isToday = isSameDay(day, new Date());
+
+        return (
+          <div key={day.toISOString()} className="flex-1 min-w-0" style={{ borderLeft: "1px solid var(--glass-border)" }}>
+            {/* Day header */}
+            <div
+              className="text-center py-1.5 text-xs sticky top-0"
+              style={{
+                borderBottom: "1px solid var(--glass-border)",
+                background: "var(--bg-surface)",
+                color: isToday ? "var(--color-accent)" : "var(--text-secondary)",
+                fontWeight: isToday ? 600 : 400,
+              }}
+            >
+              {format(day, "EEE d")}
+            </div>
+
+            {/* Hour slots */}
+            <div className="relative">
+              {hours.map((h) => (
+                <div key={h} className="h-12" style={{ borderBottom: "1px solid var(--glass-border)" }} />
+              ))}
+
+              {/* Event blocks */}
+              {dayEvents.map((event) => {
+                const startTime = event.start.dateTime ? new Date(event.start.dateTime) : null;
+                const endTime = event.end.dateTime ? new Date(event.end.dateTime) : null;
+                if (!startTime || !endTime) return null;
+
+                const startHour = startTime.getHours() + startTime.getMinutes() / 60;
+                const endHour = endTime.getHours() + endTime.getMinutes() / 60;
+                const top = (startHour - 7) * 48; // 48px per hour
+                const height = Math.max((endHour - startHour) * 48, 20);
+
+                return (
+                  <div
+                    key={event.id}
+                    className="absolute left-0.5 right-0.5 rounded px-1.5 py-0.5 text-xs overflow-hidden cursor-pointer"
+                    style={{
+                      top: `${top}px`,
+                      height: `${height}px`,
+                      background: "var(--action-bg, var(--color-accent))",
+                      color: "var(--action-fg, #fff)",
+                      opacity: 0.9,
+                    }}
+                    title={`${event.summary}\n${clock(startTime)} – ${clock(endTime)}`}
+                  >
+                    <div className="font-medium truncate">{event.summary}</div>
+                    {height > 30 && (
+                      <div className="opacity-75">{clock(startTime)}</div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function DayView({ date, events }: { date: Date; events: CalendarEvent[] }) {
+  return (
+    <div className="p-4 space-y-2">
+      <h3 className="text-lg font-medium mb-4" style={{ color: "var(--text-primary)" }}>
+        {longDay(date)}
+      </h3>
+
+      {events.length === 0 ? (
+        <div className="text-sm" style={{ color: "var(--text-muted)" }}>No events scheduled.</div>
+      ) : (
+        events.map((event) => (
+          <div key={event.id} className="glass p-3 rounded-lg">
+            <div className="flex items-start justify-between">
+              <div>
+                <div className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
+                  {event.summary}
+                </div>
+                <div className="text-xs mt-0.5" style={{ color: "var(--text-secondary)" }}>
+                  {event.start.dateTime
+                    ? `${clock(new Date(event.start.dateTime))} – ${clock(new Date(event.end.dateTime!))}`
+                    : "All day"
+                  }
+                </div>
+                {event.location && (
+                  <div className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
+                    {event.location}
+                  </div>
+                )}
+              </div>
+              {event.meetUrl && (
+                <a
+                  href={event.meetUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs px-2 py-1 rounded"
+                  style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}
+                >
+                  Join Meet
+                </a>
+              )}
+            </div>
+            {event.attendees.length > 0 && (
+              <div className="text-xs mt-2" style={{ color: "var(--text-muted)" }}>
+                {event.attendees.map((a) => a.displayName || a.email).join(", ")}
+              </div>
+            )}
+          </div>
+        ))
+      )}
+    </div>
+  );
+}

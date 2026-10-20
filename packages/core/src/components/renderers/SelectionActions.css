@@ -1,0 +1,72 @@
+.document-selection-actions { display: flex; align-items: center; gap: 3px; padding: 4px; max-width: calc(100vw - 24px); flex-wrap: wrap; background: var(--bg-surface); border: 1px solid var(--glass-border); box-shadow: 0 4px 18px #0002; border-radius: 8px; }
+.document-selection-actions:empty, .cd-bubble:empty { display: none; }
+.document-selection-actions button { display: inline-flex; align-items: center; gap: 5px; min-width: 32px; min-height: 32px; padding: 0 7px; border-radius: 5px; font-size: 12px; color: var(--text-secondary); }
+.document-selection-actions button:hover { background: var(--glass-hover); }
+.document-selection-actions button[aria-pressed=true] { background: var(--glass-active); color: var(--text-primary); }
+.document-selection-actions button:disabled { opacity: .5; cursor: default; }
+@media (max-width:767px) { .document-selection-actions button, .cd-bubble button { min-height: 44px; min-width: 44px; } }
+
+.cd-bubble:has([aria-label="Ask agent about selection"]) { flex-wrap: wrap; max-width: calc(100vw - 24px); }
+.cd-bubble button[aria-pressed=true] { background: var(--glass-active); }
+
+/* Notion-like selection toolbar: groups separated by hairlines. */
+.document-selection-actions, .cd-bubble { flex-wrap: nowrap; }
+.document-selection-actions .selection-divider, .cd-bubble .selection-divider { align-self: stretch; width: 1px; margin: 4px 2px; background: var(--glass-border); flex-shrink: 0; }
+.document-selection-actions .selection-ask, .cd-bubble .selection-ask { color: var(--color-accent); font-weight: 500; }
+.selection-dropdown { position: relative; display: inline-flex; }
+.selection-dropdown > button { white-space: nowrap; }
+.selection-menu { position: absolute; top: calc(100% + 8px); left: 0; z-index: 75; }
+.selection-link-form { display: flex; align-items: center; gap: 6px; padding: 0 2px 0 6px; color: var(--text-secondary); flex-wrap: wrap; }
+.selection-link-form input {
+  width: min(260px, calc(100vw - 150px)); min-height: 30px; padding: 4px 8px; border-radius: 6px;
+  border: 1px solid var(--glass-border-strong); background: var(--bg-base); color: var(--text-primary); font-size: 13px;
+}
+.selection-link-form input[aria-invalid="true"] { border-color: var(--color-danger); }
+.selection-link-form .selection-link-apply { color: var(--color-accent); font-weight: 600; }
+.selection-link-error { flex-basis: 100%; padding: 0 0 4px; font-size: 12px; color: var(--color-danger); }
+@media (max-width: 767px) {
+  /* The live bubble had no max-width: on a phone it ran 170 px past the screen edge and "Comment" could not be reached. */
+  .document-selection-actions, .cd-bubble { flex-wrap: wrap; max-width: calc(100vw - 24px); }
+  .selection-link-form input { font-size: 16px; }
+}
+
+/* ── Phone (w14 visual, defect 11): ONE row that scrolls sideways ──
+   Wrapping left a second row holding two buttons and doubled how much of the page the bar covers.
+   The drop-downs become static so their menus hang from the bubble itself (outside the scroller,
+   never clipped by it). The end fades: a cue that the row continues. */
+@media (max-width: 767px) {
+  .document-selection-actions, .cd-bubble {
+    flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none;
+  }
+  /* The fade is a sticky last item (not a mask — a mask would clip the menus that hang from the bar). */
+  .document-selection-actions::after, .cd-bubble::after {
+    content: ""; position: sticky; right: 0; flex: none; align-self: stretch; width: 18px;
+    background: linear-gradient(to right, transparent, var(--bg-surface)); pointer-events: none;
+  }
+  .document-selection-actions::-webkit-scrollbar, .cd-bubble::-webkit-scrollbar { display: none; }
+  .document-selection-actions > *, .cd-bubble > * { flex: none; }
+  .document-selection-actions .selection-dropdown, .cd-bubble .selection-dropdown { position: static; }
+}
+
+/* ── Touch: the selection's actions are the start of the keyboard toolbar row (KeyboardToolbar
+   `selection`), not a bubble — the system's own callout sits above a selection there. Same row
+   rules as the toolbar: 44 px targets, one line that scrolls sideways. The drop-downs are static so
+   their menus hang from the toolbar (outside the scroller) and open UPWARD, away from the keyboard. */
+.keyboard-toolbar-selection > button:not(.keyboard-toolbar-button), .keyboard-toolbar-selection .selection-dropdown > button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px; flex: none; min-width: 44px; min-height: 44px;
+  padding: 0 10px; border-radius: 8px; font-size: 14px; color: var(--text-secondary); white-space: nowrap;
+}
+.keyboard-toolbar-selection > button > svg:only-child { width: 18px; height: 18px; }
+.keyboard-toolbar-selection button[aria-pressed=true] { background: var(--surface-active, var(--glass-active)); color: var(--text-primary); }
+.keyboard-toolbar-selection button:disabled { opacity: 0.35; }
+.keyboard-toolbar-selection button:active { background: var(--glass-hover); }
+.keyboard-toolbar-selection .selection-ask { color: var(--color-accent); font-weight: 500; }
+.keyboard-toolbar-selection .selection-divider { flex: none; align-self: stretch; width: 1px; margin: 8px 3px; background: var(--glass-border); }
+.keyboard-toolbar .selection-dropdown { position: static; flex: none; }
+.keyboard-toolbar .selection-menu { top: auto; bottom: calc(100% + 6px); left: 6px; max-width: calc(100vw - 12px); max-height: min(340px, calc(var(--visual-viewport-height, 100dvh) - 76px)) !important; }
+.keyboard-toolbar .selection-link-form { flex: 1; min-width: 0; min-height: 44px; flex-wrap: nowrap; }
+.keyboard-toolbar .selection-link-form input { flex: 1; width: auto; min-width: 0; min-height: 40px; font-size: 16px; }
+.keyboard-toolbar .selection-link-form button { flex: none; min-width: 44px; min-height: 44px; }
+.keyboard-toolbar .selection-link-error { flex: none; padding: 0; }
+/* The link field takes the whole row while it is open. */
+.keyboard-toolbar-selection:has(> .selection-link-form) > :not(.selection-link-form) { display: none; }

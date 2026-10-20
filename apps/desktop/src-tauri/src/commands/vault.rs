@@ -1,0 +1,402 @@
+use std::sync::OnceLock;
+use tauri::{AppHandle, Emitter, State};
+use crate::clients::parachute::ParachuteClient;
+use crate::error::PrismError;
+use crate::models::note::*;
+
+/// Canonical tag → Prism contentType mapping, DERIVED at load from the single
+/// source of truth (`packages/core/src/lib/schemas/tag-schemas.json`) shared with
+/// the TypeScript `TAG_TO_CONTENT_TYPE`. Entries are ordered by ascending
+/// `precedence` so first-match-wins matches the frontend exactly. We use each
+/// tag's `contentType` (NOT the legacy `rustContentType`), which reconciles the
+/// historical `dashboard → project` bug to `dashboard → dashboard`.
+fn tag_content_type_map() -> &'static [(String, String)] {
+    static MAP: OnceLock<Vec<(String, String)>> = OnceLock::new();
+    MAP.get_or_init(|| {
+        const RAW: &str =
+            include_str!("../../../../../packages/core/src/lib/schemas/tag-schemas.json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(RAW).expect("tag-schemas.json must be valid JSON");
+        let tags = parsed
+            .get("tags")
+            .and_then(|t| t.as_object())
+            .expect("tag-schemas.json must have a `tags` object");
+        let mut entries: Vec<(String, String, i64)> = tags
+            .iter()
+            .filter_map(|(tag, entry)| {
+                let content_type = entry.get("contentType")?.as_str()?.to_string();
+                let precedence = entry.get("precedence")?.as_i64()?;
+                Some((tag.clone(), content_type, precedence))
+            })
+            .collect();
+        entries.sort_by_key(|(_, _, precedence)| *precedence);
+        entries
+            .into_iter()
+            .map(|(tag, content_type, _)| (tag, content_type))
+            .collect()
+    })
+}
+
+/// Enrich a note's metadata with Prism-specific fields derived from tags and tag schema data.
+/// This implements the "backend enrichment" strategy from the alignment plan:
+/// - Infers `prism_type` from structural tags when `metadata.type` isn't a known Prism type
+/// - Normalizes tag schema fields (e.g. `due` → `deadline`)
+/// - Passes through all unknown fields for future renderers
+fn enrich_note(mut note: Note) -> Note {
+    let tags = note.tags.clone().unwrap_or_default();
+    // Content ground truth: a body that is an Excalidraw scene IS a canvas, even
+    // if it carries no `canvas` tag. Captured before the mutable metadata borrow.
+    let looks_canvas = {
+        let c = note.content.trim_start();
+        c.starts_with('{')
+            && c.contains("\"elements\"")
+            && (c.contains("\"appState\"") || c.contains("excalidraw"))
+    };
+    let meta = note.metadata.get_or_insert_with(|| serde_json::json!({}));
+
+    if let Some(obj) = meta.as_object_mut() {
+        // Infer prism_type from tags if metadata.type isn't a known Prism renderer type
+        let current_type = obj.get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let known_prism_types = [
+            "document", "note", "presentation", "code", "email",
+            "message-thread", "task-board", "task", "event",
+            "project", "spreadsheet", "website", "canvas", "briefing",
+            "dashboard", "bioregion-entity",
+        ];
+
+        if !known_prism_types.contains(&current_type.as_str()) {
+            // Tag → content-type mapping, derived from the canonical
+            // tag-schemas.json (shared with the TS frontend), ordered by
+            // precedence so first-match-wins is identical on both sides.
+            let tag_map = tag_content_type_map();
+
+            // Content (canvas) wins over tags. If nothing matches we leave
+            // prism_type UNSET so the frontend can infer from the file extension
+            // or content — stamping "document" here defeated that (e.g. .py/.csv
+            // notes lost their code/spreadsheet detection).
+            let inferred: Option<&str> = if looks_canvas {
+                Some("canvas")
+            } else {
+                tag_map
+                    .iter()
+                    .find(|(tag, _)| tags.contains(tag))
+                    .map(|(_, prism_type)| prism_type.as_str())
+            };
+
+            if let Some(prism_type) = inferred {
+                obj.insert("prism_type".to_string(), serde_json::json!(prism_type));
+                // Preserve original vault type for display
+                if !current_type.is_empty() {
+                    obj.insert("vault_type".to_string(), serde_json::json!(&current_type));
+                }
+            }
+        }
+
+        // Normalize task-specific fields
+        if tags.contains(&"task".to_string()) {
+            // Rename "due" → "deadline" for Prism compatibility
+            if let Some(due) = obj.remove("due") {
+                obj.entry("deadline").or_insert(due);
+            }
+        }
+
+        // Normalize meeting-specific fields
+        if tags.contains(&"meeting".to_string()) {
+            // Ensure attendees field exists (from tag schema "attendees")
+            if let Some(attendees) = obj.get("attendees").cloned() {
+                obj.entry("participants").or_insert(attendees);
+            }
+        }
+    }
+
+    note
+}
+
+#[tauri::command]
+pub async fn vault_list_notes(
+    client: State<'_, ParachuteClient>,
+    tag: Option<String>,
+    path: Option<String>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<Vec<Note>, PrismError> {
+    let params = ListNotesParams { tag, path, limit, offset, ..Default::default() };
+    let notes = match client.list_notes(&params).await {
+        Ok(n) => n,
+        Err(e) => {
+            log::error!("vault_list_notes failed: {}", e);
+            return Err(e);
+        }
+    };
+    log::info!("vault_list_notes: got {} notes", notes.len());
+    // Strip content from list response to reduce payload size.
+    // Full content is fetched on-demand via vault_get_note.
+    // 1,118 notes with content = 17.5MB; without = ~1MB.
+    Ok(notes.into_iter().map(|mut n| {
+        n.content = String::new();
+        enrich_note(n)
+    }).collect())
+}
+
+#[tauri::command]
+pub async fn vault_get_note(
+    client: State<'_, ParachuteClient>,
+    id: String,
+) -> Result<Note, PrismError> {
+    let note = client.get_note(&id).await?;
+    Ok(enrich_note(note))
+}
+
+#[tauri::command]
+pub async fn vault_create_note(
+    client: State<'_, ParachuteClient>,
+    content: String,
+    path: Option<String>,
+    metadata: Option<serde_json::Value>,
+    tags: Option<Vec<String>>,
+) -> Result<Note, PrismError> {
+    let params = CreateNoteParams { content, path, metadata, tags };
+    client.create_note(&params).await
+}
+
+#[tauri::command]
+pub async fn vault_update_note(
+    client: State<'_, ParachuteClient>,
+    id: String,
+    content: Option<String>,
+    path: Option<String>,
+    metadata: Option<serde_json::Value>,
+    // The `updatedAt` the frontend last read for this note. Forwarded as the
+    // optimistic-concurrency precondition so a stale editor write fails with a
+    // 409 rather than silently clobbering a newer revision. When absent the
+    // client falls back to `force:true` (see ParachuteClient::update_note).
+    if_updated_at: Option<String>,
+) -> Result<Note, PrismError> {
+    let params = UpdateNoteParams {
+        content,
+        path,
+        metadata,
+        if_updated_at,
+        force: None,
+    };
+    client.update_note(&id, &params).await
+}
+
+#[tauri::command]
+pub async fn vault_delete_note(
+    client: State<'_, ParachuteClient>,
+    id: String,
+) -> Result<(), PrismError> {
+    client.delete_note(&id).await
+}
+
+#[tauri::command]
+pub async fn vault_list_note_versions(
+    client: State<'_, ParachuteClient>,
+    id: String,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<serde_json::Value, PrismError> {
+    client.list_note_versions(&id, limit.unwrap_or(50), offset.unwrap_or(0)).await
+}
+
+#[tauri::command]
+pub async fn vault_get_note_version(
+    client: State<'_, ParachuteClient>,
+    id: String,
+    version_ix: u32,
+) -> Result<serde_json::Value, PrismError> {
+    client.get_note_version(&id, version_ix).await
+}
+
+#[tauri::command]
+pub async fn vault_restore_note_version(
+    client: State<'_, ParachuteClient>,
+    id: String,
+    version_ix: u32,
+    if_updated_at: String,
+) -> Result<Note, PrismError> {
+    let note = client.restore_note_version(&id, version_ix, &if_updated_at).await?;
+    Ok(enrich_note(note))
+}
+
+#[tauri::command]
+pub async fn vault_batch_delete(
+    app: AppHandle,
+    client: State<'_, ParachuteClient>,
+    ids: Vec<String>,
+) -> Result<serde_json::Value, PrismError> {
+    let total = ids.len();
+    let mut deleted = 0usize;
+    let mut failed = 0usize;
+
+    for chunk in ids.chunks(30) {
+        let futures: Vec<_> = chunk.iter()
+            .map(|id| client.delete_note(id))
+            .collect();
+
+        let results = futures::future::join_all(futures).await;
+        for r in results {
+            match r {
+                Ok(_) => deleted += 1,
+                Err(e) => {
+                    log::warn!("batch delete failed for a note: {}", e);
+                    failed += 1;
+                }
+            }
+        }
+
+        let _ = app.emit("vault:batch-delete-progress", serde_json::json!({
+            "deleted": deleted,
+            "failed": failed,
+            "total": total,
+        }));
+    }
+
+    Ok(serde_json::json!({ "deleted": deleted, "failed": failed, "total": total }))
+}
+
+#[tauri::command]
+pub async fn vault_search(
+    client: State<'_, ParachuteClient>,
+    query: String,
+    tags: Option<Vec<String>>,
+    limit: Option<u32>,
+) -> Result<Vec<Note>, PrismError> {
+    let notes = client.search(&query, &tags.unwrap_or_default(), limit.unwrap_or(20)).await?;
+    Ok(notes.into_iter().map(enrich_note).collect())
+}
+
+#[tauri::command]
+pub async fn vault_get_tags(
+    client: State<'_, ParachuteClient>,
+) -> Result<Vec<TagCount>, PrismError> {
+    client.get_tags().await
+}
+
+#[tauri::command]
+pub async fn vault_add_tags(
+    client: State<'_, ParachuteClient>,
+    id: String,
+    tags: Vec<String>,
+) -> Result<(), PrismError> {
+    client.add_tags(&id, &tags).await
+}
+
+#[tauri::command]
+pub async fn vault_remove_tags(
+    client: State<'_, ParachuteClient>,
+    id: String,
+    tags: Vec<String>,
+) -> Result<(), PrismError> {
+    client.remove_tags(&id, &tags).await
+}
+
+#[tauri::command]
+pub async fn vault_get_stats(
+    client: State<'_, ParachuteClient>,
+) -> Result<VaultStats, PrismError> {
+    client.get_stats().await
+}
+
+#[tauri::command]
+pub async fn vault_list_tree(
+    client: State<'_, ParachuteClient>,
+) -> Result<Vec<crate::models::note::NoteTreeEntry>, PrismError> {
+    client.list_tree().await
+}
+
+#[tauri::command]
+pub async fn vault_get_info(
+    client: State<'_, ParachuteClient>,
+) -> Result<crate::models::note::VaultInfo, PrismError> {
+    client.get_vault_info().await
+}
+
+#[tauri::command]
+pub async fn vault_update_description(
+    client: State<'_, ParachuteClient>,
+    description: String,
+) -> Result<crate::models::note::VaultInfo, PrismError> {
+    client.update_vault_description(&description).await
+}
+
+/// Get unique directory paths from the vault for path filter dropdowns
+#[tauri::command]
+pub async fn vault_get_paths(
+    client: State<'_, ParachuteClient>,
+) -> Result<Vec<String>, PrismError> {
+    let notes = client.list_notes(&ListNotesParams::default()).await?;
+    let mut paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for note in &notes {
+        if let Some(path) = &note.path {
+            // Normalize: strip vault/ prefix
+            let p = if path.starts_with("vault/") { &path[6..] } else { path.as_str() };
+            // Add each directory level
+            let parts: Vec<&str> = p.split('/').collect();
+            for i in 1..parts.len() {
+                paths.insert(parts[..i].join("/"));
+            }
+        }
+    }
+    Ok(paths.into_iter().collect())
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn vault_get_links(
+    client: State<'_, ParachuteClient>,
+    noteId: Option<String>,
+    relationship: Option<String>,
+) -> Result<Vec<crate::models::link::Link>, PrismError> {
+    let params = crate::models::link::GetLinksParams { note_id: noteId, relationship };
+    client.get_links(&params).await
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn vault_create_link(
+    client: State<'_, ParachuteClient>,
+    sourceId: String,
+    targetId: String,
+    relationship: String,
+    metadata: Option<serde_json::Value>,
+) -> Result<crate::models::link::Link, PrismError> {
+    let params = crate::models::link::CreateLinkParams {
+        source_id: sourceId,
+        target_id: targetId,
+        relationship,
+        metadata,
+    };
+    client.create_link(&params).await
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn vault_delete_link(
+    client: State<'_, ParachuteClient>,
+    sourceId: String,
+    targetId: String,
+    relationship: String,
+) -> Result<(), PrismError> {
+    let params = crate::models::link::DeleteLinkParams {
+        source_id: sourceId,
+        target_id: targetId,
+        relationship,
+    };
+    client.delete_link(&params).await
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn vault_get_graph(
+    client: State<'_, ParachuteClient>,
+    depth: Option<u32>,
+    centerId: Option<String>,
+) -> Result<crate::models::link::Graph, PrismError> {
+    let params = crate::models::link::GetGraphParams { depth, center_id: centerId };
+    client.get_graph(&params).await
+}

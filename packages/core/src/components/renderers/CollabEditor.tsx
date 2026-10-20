@@ -1,0 +1,616 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useEditor, EditorContent } from "@tiptap/react";
+import { BubbleMenu } from "@tiptap/react/menus";
+import { PrismPlaceholder } from "../../lib/tiptap/placeholder";
+import Collaboration from "@tiptap/extension-collaboration";
+import CollaborationCaret from "@tiptap/extension-collaboration-caret";
+import * as Y from "yjs";
+import type { Editor } from "@tiptap/react";
+import { Check, X } from "lucide-react";
+import { collabExtensions } from "../../editor/collabSchema";
+import { SuggestionMode, suggestionAt } from "../../editor/suggestions";
+import { CommentOnly, commentOnRange, CommentInteraction } from "../../editor/comments";
+import { WikilinkExtension } from "../../lib/tiptap/WikilinkMark";
+import { WikilinkAutocomplete, type WikilinkAutocompleteState } from "../../lib/tiptap/WikilinkAutocomplete";
+import { WikilinkDropdown } from "./WikilinkDropdown";
+import { SlashCommand, type SlashCommandState } from "../../lib/tiptap/SlashCommand";
+import { SlashMenu } from "./SlashMenu";
+import type { Note } from "../../lib/types";
+import { SelectionActions } from "./SelectionActions";
+import { DocumentOutline } from "./DocumentOutline";
+import { CollabToolbar } from "./CollabToolbar";
+import { KeyboardToolbar, useCoarsePointer } from "./KeyboardToolbar";
+import { FormattingBar } from "./FormattingBar";
+import { SuggestionReview, suggestionIdentity } from "./SuggestionReview";
+import "./editor-blocks.css";
+import { BlockKeymap } from "../../lib/tiptap/blockCommands";
+import { EditorKeys, editorPlaceholder, blockSelectionActive } from "../../lib/tiptap/EditorKeys";
+import { FIND_IN_PAGE_EVENT, isReplaceShortcut, editorIsOnScreen } from "../../lib/tiptap/findShortcuts";
+import { BlockHandles } from "./BlockHandles";
+import { TableControls } from "./TableControls";
+import { ImageUpload, type ImageUploader, type FileUploader } from "../../lib/tiptap/ImageUpload";
+import "../../lib/tiptap/mediaViews";
+import { SearchHighlight } from "../../lib/tiptap/SearchHighlight";
+import { UrlPaste, type UrlPasteState, type Unfurler } from "../../lib/tiptap/UrlPaste";
+import { EditorFindBar } from "./EditorFindBar";
+import { PasteUrlMenu } from "./PasteUrlMenu";
+import { EditorPrompt } from "./EditorPrompt";
+import { LinkCard } from "./LinkCard";
+import { DatabaseInsert, type DatabaseInsertRequest } from "../../lib/tiptap/databaseView";
+import { InsertDatabaseDialog } from "./InsertDatabaseDialog";
+import { HumanSuggestionComposer, type ComposerKind, type HumanCommandChannel } from "./HumanSuggestionComposer";
+import "../../lib/tiptap/MentionView";
+import { MentionSuggest, type MentionSuggestState } from "../../lib/tiptap/MentionSuggest";
+import { MentionContext, setMentionNoteId } from "../../lib/tiptap/MentionContext";
+import { MentionMenu } from "../../lib/tiptap/MentionMenu";
+import { useCommentMentionPicker } from "../../lib/tiptap/MentionText";
+import { ChildPages } from "../../lib/tiptap/childPage";
+import { createSubPage, describeSubPage, subPageTrash } from "../../lib/tiptap/subPages";
+import { useOptionalVaultClient } from "../../data/VaultClientContext";
+import { QueryClientContext } from "@tanstack/react-query";
+import { useContext } from "react";
+
+export interface CollabUser {
+  name: string;
+  color: string;
+}
+
+/** Minimal shape of a Yjs provider with awareness (e.g. HocuspocusProvider). */
+export interface AwarenessProvider {
+  awareness: unknown;
+}
+
+const STALE_SUGGESTION_NOTICE = "This change was edited after you opened it — Refresh it in the review queue before accepting.";
+
+/**
+ * Real-time collaborative editor bound to a shared Y.Doc (CRDT). History is
+ * delegated to Yjs (StarterKit undoRedo disabled). Remote carets/selections are
+ * shown via CollaborationCaret using the provider's awareness.
+ *
+ * Seeding: the document starts empty. After a short settle (to let a peer sync
+ * existing content), if the shared fragment is still empty, `seedContent()` is
+ * pulled in once and marked in a shared meta map so peers don't double-seed.
+ * `onChange` fires on every local/remote update for persistence by the caller.
+ */
+export function CollabEditor({
+  ydoc,
+  provider,
+  user,
+  seedContent,
+  onChange,
+  seedReady,
+  toolbar,
+  editable = true,
+  suggesting,
+  onSetSuggesting,
+  canReview,
+  commentOnly,
+  canComment,
+  onEditor,
+  onCommentActivate,
+  onWikilinkNavigate,
+  wikilinkNotes,
+  uploadImage,
+  uploadFile,
+  unfurl,
+  hostPath,
+  onUploadError,
+  humanCommands,
+  noteId,
+  chrome,
+}: {
+  /** The host's status and actions for the page's ONE chrome row (a phone; see `FormattingBar`).
+   *  Omitted → the host shows them itself (desktop: the header). Needs `toolbar`. */
+  chrome?: { status?: React.ReactNode; trailing?: React.ReactNode };
+  ydoc: Y.Doc;
+  provider: AwarenessProvider | null;
+  user: CollabUser;
+  seedContent?: () => Promise<string | null>;
+  onChange?: (html: string) => void;
+  /** Gate seeding until the doc is known-synced with the server (so a late
+   *  server sync can't be clobbered by a stale seed). When undefined, falls
+   *  back to a short delay (e.g. P2P with no sync signal). */
+  seedReady?: boolean;
+  /** Show the formatting toolbar (Google-Docs-style). */
+  toolbar?: boolean;
+  /** When false, the editor is read-only (view/comment grants). */
+  editable?: boolean;
+  /** Suggest-mode on: typing/deletes become tracked suggestions. */
+  suggesting?: boolean;
+  /** If provided, the toolbar shows an Editing/Suggesting toggle. Omit to lock
+   *  the mode (e.g. a suggest-level user can't switch to direct editing). */
+  onSetSuggesting?: (on: boolean) => void;
+  /** Show Accept all / Reject all (for edit/owner reviewers). */
+  canReview?: boolean;
+  /** Comment-only mode: selectable + commentable but content edits blocked. */
+  commentOnly?: boolean;
+  /** Can this user add comments? Enables the on-selection "Comment" bubble. */
+  canComment?: boolean;
+  /** Receives the editor instance (for an external comments sidebar). */
+  onEditor?: (editor: Editor | null) => void;
+  /** Clicking commented text fires this with the thread id, so the host can
+   *  open the sidebar and focus that thread. */
+  onCommentActivate?: (id: string) => void;
+  /** Navigate when a [[wikilink]] is clicked. In-app this opens the target note
+   *  in a tab; on a share link it routes to the target's page (or request-access).
+   *  Omitted → links are inert (e.g. a viewer with no navigation context). */
+  onWikilinkNavigate?: (target: string) => void;
+  /** Vault notes for the `[[` autocomplete dropdown. Omitted → no suggestions
+   *  (e.g. a recipient on a share link with no notes list). */
+  wikilinkNotes?: Note[];
+  /** Store a pasted/dropped/picked image and return its URL. Omitted → upload
+   *  is hidden and only "Image from URL" is offered. Read at mount. */
+  uploadImage?: ImageUploader;
+  /** Store a pasted/dropped/picked non-image file (PDF, audio, video, other). Omitted → no file blocks. Read at mount. */
+  uploadFile?: FileUploader;
+  /** Link previews for bookmark blocks. Read at mount. */
+  unfurl?: Unfurler;
+  /** This page's path: enables the inline-database slash items (a new database becomes its sub-page). Omitted → hidden. Read at mount. */
+  hostPath?: string | null;
+  /** User-facing upload failure message. */
+  onUploadError?: (message: string) => void;
+  /** Suggest-only (NP-CO-12): the socket is read-only, so suggestions and
+   *  comments go through server-authored commands. Implies `editable={false}`. */
+  humanCommands?: HumanCommandChannel;
+  /** The note this editor shows (date-chip reminders are created for it). */
+  noteId?: string;
+}) {
+  const suggestionBubble = useRef<HTMLDivElement>(null);
+  const staleSuggestion = useRef<string | null>(null);
+  const setStaleSuggestion = useCallback((key: string | null) => { staleSuggestion.current = key; }, []);
+  const touch = useCoarsePointer();
+  // Inline comment composer anchored to a captured selection range.
+  const [composer, setComposer] = useState<{ from: number; to: number; top: number; left: number } | null>(null);
+  const [draft, setDraft] = useState("");
+  // Suggest-only command composer (anchored at the selection) + its last outcome.
+  const [human, setHuman] = useState<{ kind: ComposerKind; empty: boolean; top: number; left: number } | null>(null);
+  const [humanNotice, setHumanNotice] = useState("");
+  // `[[` autocomplete state, surfaced by the WikilinkAutocomplete plugin.
+  const [autocomplete, setAutocomplete] = useState<WikilinkAutocompleteState | null>(null);
+  // `/` slash-command menu state.
+  const [slash, setSlash] = useState<SlashCommandState | null>(null);
+  // `@` mention menu state.
+  const [mention, setMention] = useState<MentionSuggestState | null>(null);
+  const draftRef = useRef<HTMLTextAreaElement>(null);
+  const draftMentions = useCommentMentionPicker(draftRef, draft, setDraft);
+  const handleUpdate = useCallback(
+    ({ editor }: { editor: { getHTML: () => string } }) => onChange?.(editor.getHTML()),
+    [onChange],
+  );
+
+  // The editor (and its wikilink plugin) is created once on mount, so route
+  // navigation through a ref that always points at the latest handler — this
+  // survives the notes list loading after the editor mounts.
+  const navRef = useRef(onWikilinkNavigate);
+  useEffect(() => { navRef.current = onWikilinkNavigate; }, [onWikilinkNavigate]);
+  const commentActivateRef = useRef(onCommentActivate);
+  useEffect(() => { commentActivateRef.current = onCommentActivate; }, [onCommentActivate]);
+
+  const uploadRef = useRef(uploadImage);
+  useEffect(() => { uploadRef.current = uploadImage; }, [uploadImage]);
+  const uploadFileRef = useRef(uploadFile);
+  useEffect(() => { uploadFileRef.current = uploadFile; }, [uploadFile]);
+  const unfurlRef = useRef(unfurl);
+  useEffect(() => { unfurlRef.current = unfurl; }, [unfurl]);
+  const [pasteState, setPasteState] = useState<UrlPasteState | null>(null);
+  const [find, setFind] = useState<null | { replace: boolean }>(null);
+  const [dbInsert, setDbInsert] = useState<DatabaseInsertRequest | null>(null);
+  const hostPathRef = useRef(hostPath);
+  useEffect(() => { hostPathRef.current = hostPath; }, [hostPath]);
+  // Sub-pages (NP-PG-15): where the host gave this page's path AND a vault client exists.
+  const vaultClient = useOptionalVaultClient();
+  const queryClient = useContext(QueryClientContext) ?? null;
+  const subPagesRef = useRef({ client: vaultClient, queryClient });
+  subPagesRef.current = { client: vaultClient, queryClient };
+  const noteIdRef = useRef(noteId);
+  noteIdRef.current = noteId;
+  const findRef = useRef<HTMLDivElement>(null);
+  const uploadErrorRef = useRef(onUploadError);
+  useEffect(() => { uploadErrorRef.current = onUploadError; }, [onUploadError]);
+
+  const editor = useEditor({
+    extensions: [
+      // Shared content schema (StarterKit + Link/Typography/Highlight/Tasks) —
+      // the SAME list the Prism Server uses to seed/persist the Yjs doc, so the
+      // HTML↔CRDT round-trip is loss-free. View-only plugins are added here.
+      ...collabExtensions(),
+      PrismPlaceholder.configure(editorPlaceholder("Start writing together…")),
+      WikilinkExtension.configure({ onNavigate: (t) => navRef.current?.(t) }),
+      WikilinkAutocomplete.configure({ onStateChange: setAutocomplete }),
+      SlashCommand.configure({ onStateChange: setSlash }),
+      MentionSuggest.configure({ onStateChange: setMention }),
+      MentionContext.configure({ noteId: noteId ?? null }),
+      BlockKeymap,
+      EditorKeys,
+      ImageUpload.configure({
+        upload: uploadImage ? (file) => uploadRef.current!(file) : undefined,
+        uploadFile: uploadFile ? (file) => uploadFileRef.current!(file) : undefined,
+        onError: (message) => uploadErrorRef.current?.(message),
+      }),
+      UrlPaste.configure({ onStateChange: setPasteState, unfurl: unfurl ? (url) => unfurlRef.current!(url) : undefined }),
+      SearchHighlight,
+      DatabaseInsert.configure({ onRequest: hostPath !== undefined ? setDbInsert : undefined }),
+      ChildPages.configure(hostPath !== undefined && vaultClient ? {
+        hostPath: () => hostPathRef.current,
+        create: () => (subPagesRef.current.client && hostPathRef.current ? createSubPage(subPagesRef.current.client, subPagesRef.current.queryClient, hostPathRef.current) : Promise.resolve(null)),
+        describe: describeSubPage(() => subPagesRef.current.client),
+        ...subPageTrash(() => subPagesRef.current.client ?? null, () => subPagesRef.current.queryClient),
+      } : {}),
+      SuggestionMode.configure({
+        user,
+        // A removal suggesting cannot record (an image, a mention…) was put back: say so.
+        onRefused: (message) => { setHumanNotice(message); window.setTimeout(() => setHumanNotice((now) => (now === message ? "" : now)), 6000); },
+      }),
+      CommentOnly.configure({ active: !!commentOnly }),
+      CommentInteraction.configure({ onActivate: (id) => commentActivateRef.current?.(id) }),
+      Collaboration.configure({ document: ydoc }),
+      ...(provider
+        ? [CollaborationCaret.configure({ provider: provider as never, user })]
+        : []),
+    ],
+    editable,
+    enablePasteRules: false, // one Markdown paste rule (EditorKeys); see DocumentRenderer
+    editorProps: { attributes: { class: "prose-editor outline-none min-h-[300px]" } },
+    onUpdate: handleUpdate,
+  });
+
+  // ⌘F find / ⌘⌥F find + replace, while focus is in this editor (or its find bar).
+  useEffect(() => {
+    if (!editor) return;
+    const onKey = (e: KeyboardEvent) => {
+      const isReplace = isReplaceShortcut(e);
+      const isFind = !isReplace && (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "f";
+      if (!isFind && !isReplace) return;
+      const active = document.activeElement;
+      let inside = false;
+      // Only THIS editor (or its own find bar): several live editors may share a page.
+      try {
+        inside = !!active && (editor.view.dom.contains(active) || !!findRef.current?.contains(active));
+        // A read-only / suggest-only body is not focusable, so focus never lands in it.
+        // It still owns ⌘F when the reader last clicked or selected inside it, or when
+        // nothing else has focus and no other editor claimed the key (find only — the
+        // bar hides Replace when edits are not allowed).
+        if (!inside && !editor.isEditable && !e.defaultPrevented) {
+          const anchor = window.getSelection()?.anchorNode ?? null;
+          const idle = !active || active === document.body;
+          const typing = !!active && active !== document.body && (active as HTMLElement).matches?.("input, textarea, select, [contenteditable=true]");
+          inside = !typing && (pointerInside || (!!anchor && editor.view.dom.contains(anchor)) || idle);
+        }
+      } catch { inside = false; }
+      if (!inside) return;
+      e.preventDefault();
+      setFind({ replace: isReplace && editor.isEditable });
+    };
+    let pointerInside = false;
+    const onPointer = (e: PointerEvent) => {
+      try { pointerInside = editor.view.dom.contains(e.target as Node) || !!findRef.current?.contains(e.target as Node); } catch { pointerInside = false; }
+    };
+    // Phone ⋯ → "Find in page" (NP-ED-22): the shell asks whichever editor is on screen.
+    const onFindRequest = () => { try { if (editorIsOnScreen(editor.view.dom)) setFind({ replace: false }); } catch { /* not mounted */ } };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener(FIND_IN_PAGE_EVENT, onFindRequest);
+    window.addEventListener("pointerdown", onPointer, true);
+    return () => { window.removeEventListener("keydown", onKey); window.removeEventListener(FIND_IN_PAGE_EVENT, onFindRequest); window.removeEventListener("pointerdown", onPointer, true); };
+  }, [editor]);
+
+  // Reflect editable changes (e.g. level resolved after connect) onto the editor.
+  useEffect(() => {
+    editor?.setEditable(editable);
+  }, [editor, editable]);
+
+  // Reflect suggest-mode onto the editor's suggestion plugin.
+  useEffect(() => {
+    editor?.commands.setSuggesting(!!suggesting);
+  }, [editor, suggesting]);
+
+  // Keep the comment-only guard in sync, and surface the editor to the parent.
+  useEffect(() => {
+    const store = editor?.storage as unknown as Record<string, { active: boolean }> | undefined;
+    if (store?.commentOnly) store.commentOnly.active = !!commentOnly;
+  }, [editor, commentOnly]);
+
+  useEffect(() => setMentionNoteId(editor, noteId ?? null), [editor, noteId]);
+
+  useEffect(() => {
+    onEditor?.(editor);
+    return () => onEditor?.(null);
+  }, [editor, onEditor]);
+
+  // One-time seed from the backing store, but only once the doc is synced with
+  // the server (seedReady) — so a late server sync can't be overwritten by a
+  // stale seed. When no readiness signal is given, fall back to a short delay.
+  useEffect(() => {
+    if (!editor || seedReady === false) return;
+    let cancelled = false;
+    const run = async () => {
+      if (cancelled) return;
+      // If a peer/server already populated the shared doc, never overwrite it.
+      if (ydoc.getXmlFragment("default").length > 0) return;
+      const content = seedContent ? await seedContent() : null;
+      // Re-check after the async fetch in case content synced in the meantime.
+      if (cancelled || !content || editor.isDestroyed) return;
+      if (ydoc.getXmlFragment("default").length > 0) return;
+      editor.commands.setContent(content);
+    };
+    const timer = seedReady === undefined ? setTimeout(run, 900) : undefined;
+    if (seedReady === true) void run();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [editor, ydoc, seedContent, seedReady]);
+
+  // Accept the change at the caret — the bubble's button (a mouse) and the keyboard toolbar row's (touch).
+  // "Needs refresh" withholds it in both: the change was edited after it was read.
+  const acceptSuggestionAtCaret = () => {
+    if (!editor) return;
+    const at = suggestionAt(editor.state, editor.state.selection.from);
+    if (staleSuggestion.current && suggestionIdentity(at?.mark) === staleSuggestion.current) {
+      setHumanNotice(STALE_SUGGESTION_NOTICE);
+      window.setTimeout(() => setHumanNotice((now) => (now === STALE_SUGGESTION_NOTICE ? "" : now)), 6000);
+      return;
+    }
+    editor.chain().focus().acceptSuggestion().run();
+  };
+
+  // The selection's actions: the bubble (a mouse), or the start of the keyboard toolbar row (touch).
+  const selectionActions = editor && (
+    <SelectionActions
+      editor={editor}
+      allowFormatting={editable && !commentOnly}
+      onSuggest={humanCommands ? () => openHuman("suggest") : undefined}
+      onComment={humanCommands ? (canComment ? () => openHuman("comment") : undefined) : canComment ? () => {
+        const sel = editor.state.selection;
+        const c = editor.view.coordsAtPos(sel.to);
+        setComposer({
+          from: sel.from,
+          to: sel.to,
+          top: c.bottom + 6,
+          left: Math.max(8, Math.min(c.left, window.innerWidth - 288)),
+        });
+        setDraft("");
+      } : undefined}
+    />
+  );
+
+  return (
+    <>
+      {/* Collab caret/suggestion/bubble CSS lives in @prism/core styles/collab.css
+          (bundled stylesheet) — a runtime React <style> here silently fails to
+          register in the desktop production webview. */}
+      {toolbar && editor && editable && !commentOnly && (
+        <CollabToolbar
+          editor={editor}
+          suggesting={!!suggesting}
+          onSetSuggesting={onSetSuggesting}
+          canReview={canReview}
+          status={chrome?.status}
+          trailing={chrome?.trailing}
+        />
+      )}
+      {toolbar && editor && (!editable || commentOnly) && (
+        <FormattingBar formatting={false} navigation={<DocumentOutline editor={editor} />} status={chrome?.status} trailing={chrome?.trailing} />
+      )}
+      {/* Touch: the ONE formatting surface. It carries the selection's actions (no bubble there);
+          while suggesting, and for a reader, it is ONLY those actions (untracked edits are not offered). */}
+      {toolbar && editor && <KeyboardToolbar editor={editor} formatting={editable && !commentOnly && !suggesting} selection={selectionActions}
+        review={canReview ? {
+          at: (current) => !!suggestionAt(current.state, current.state.selection.from),
+          accept: acceptSuggestionAtCaret,
+          reject: () => editor.chain().focus().rejectSuggestion().run(),
+        } : undefined} />}
+      {editor && <SuggestionReview editor={editor} canReview={!!canReview} onStale={setStaleSuggestion} />}
+      {/* On-selection "Comment" bubble (Google-Docs style). Not on a touch device: the system's own
+          selection callout sits there, and the actions are in the keyboard toolbar row instead. */}
+      {editor && !(touch && toolbar) && (
+        <BubbleMenu
+          editor={editor}
+          pluginKey="commentBubble"
+          shouldShow={({ state }) => {
+            const { from, to, empty } = state.selection;
+            if (empty || from === to || blockSelectionActive(state)) return false;
+            return !suggestionAt(state, from); // the suggestion bubble owns that case
+          }}
+        >
+          <div className="cd-bubble">{selectionActions}</div>
+        </BubbleMenu>
+      )}
+
+      {/* Per-suggestion Accept / Reject bubble (when the cursor is in a change). Touch: the same two
+          actions lead the keyboard toolbar row instead (`review`) — a bubble there floats over the
+          text and lands behind the keyboard. */}
+      {editor && canReview && !(touch && toolbar) && (
+        <BubbleMenu
+          editor={editor}
+          pluginKey="suggestionBubble"
+          shouldShow={({ editor: current, state }) => (current.isFocused || !!suggestionBubble.current?.contains(document.activeElement)) && !!suggestionAt(state, state.selection.from)}
+        >
+          <div ref={suggestionBubble} className="cd-bubble">
+            <button onMouseDown={(e) => e.preventDefault()} onClick={acceptSuggestionAtCaret}>
+              <Check size={14} color="#22c55e" /> Accept
+            </button>
+            <button onMouseDown={(e) => e.preventDefault()} onClick={() => editor.chain().focus().rejectSuggestion().run()}>
+              <X size={14} color="#ef4444" /> Reject
+            </button>
+          </div>
+        </BubbleMenu>
+      )}
+
+      {humanCommands && editor && (
+        <div className="prism-suggest-banner" role="note">
+          {/* A phone gets one quiet line (collab.css): the row above already says "Suggesting". */}
+          <span className="prism-suggest-banner-text">You can suggest changes. <span className="prism-suggest-banner-long">Select text, then choose <strong>Suggest edit</strong> or <strong>Comment</strong>. An editor reviews each suggestion.</span><span className="prism-suggest-banner-short">Select text to start.</span></span>
+          {editor.state.doc.childCount === 1 && editor.state.doc.firstChild?.isTextblock && editor.state.doc.firstChild.content.size === 0 && (
+            <button type="button" onClick={() => openHuman("suggest", true)} style={{ minHeight: 30, padding: "4px 10px", borderRadius: 7, border: "1px solid var(--glass-border)", background: "var(--bg-surface)", color: "var(--text-primary)", cursor: "pointer", fontSize: 12.5 }}>
+              Suggest text
+            </button>
+          )}
+        </div>
+      )}
+      {humanNotice && <p role="status" style={{ margin: "0 0 8px", fontSize: 12.5, color: "var(--text-secondary)" }}>{humanNotice}</p>}
+      <EditorContent editor={editor} />
+      {human && editor && humanCommands && (
+        <HumanSuggestionComposer
+          editor={editor}
+          ydoc={ydoc}
+          channel={humanCommands}
+          kind={human.kind}
+          initialAction={human.empty ? "empty" : "replace"}
+          anchorRect={{ top: human.top, left: human.left }}
+          docked={touch}
+          onClose={() => setHuman(null)}
+          onDone={(message) => {
+            setHuman(null);
+            setHumanNotice(message);
+            window.setTimeout(() => setHumanNotice(""), 4000);
+          }}
+        />
+      )}
+
+      {/* Block gutter. Structural moves are raw edits, so it is off while
+          suggesting (tracked changes) or comment-only. */}
+      {editor && (
+        <BlockHandles
+          editor={editor}
+          enabled={editable && !commentOnly && !suggesting}
+          notes={wikilinkNotes}
+          noteId={noteId}
+          onComment={canComment && !humanCommands ? (range) => {
+            const c = editor.view.coordsAtPos(range.to);
+            setComposer({ from: range.from, to: range.to, top: c.bottom + 6, left: Math.max(8, Math.min(c.left, window.innerWidth - 288)) });
+            setDraft("");
+          } : undefined}
+        />
+      )}
+      {editor && editable && !commentOnly && <TableControls editor={editor} />}
+
+      {/* `[[` wikilink autocomplete dropdown */}
+      {editor && autocomplete?.active && (
+        <WikilinkDropdown editor={editor} notes={wikilinkNotes || []} autocomplete={autocomplete} hostPath={editable && !commentOnly && !suggesting ? hostPath ?? undefined : undefined} />
+      )}
+
+      {/* `/` slash-command menu */}
+      {editor && slash?.active && (
+        <SlashMenu editor={editor} state={slash} onClose={() => setSlash(null)} />
+      )}
+
+      {/* Link card: address + Open / Edit / Remove for the link under the pointer or caret */}
+      {editor && <LinkCard editor={editor} />}
+      {/* The in-app address field: Embed, Web bookmark, Image from URL, toolbar Link / Image (never window.prompt) */}
+      {editor && <EditorPrompt editor={editor} />}
+      {/* "Paste as" menu after a bare URL paste */}
+      {editor && pasteState && editable && !commentOnly && !suggesting && (
+        <PasteUrlMenu editor={editor} state={pasteState} unfurl={unfurl ? (url) => unfurlRef.current!(url) : undefined} onClose={() => setPasteState(null)} />
+      )}
+
+      {editor && dbInsert && editable && !commentOnly && !suggesting && (
+        <InsertDatabaseDialog editor={editor} request={dbInsert} hostPath={hostPathRef.current} onClose={() => setDbInsert(null)} />
+      )}
+
+      {/* In-note find / replace (works on the live shared document: one transaction per replace) */}
+      {editor && find && (
+        <div ref={findRef}><EditorFindBar editor={editor} replaceOpen={find.replace} onClose={() => { setFind(null); editor.commands.focus(); }} /></div>
+      )}
+      {/* `@` mention menu: people, pages, dates, reminders */}
+      {editor && mention?.active && <MentionMenu editor={editor} state={mention} notes={wikilinkNotes || []} />}
+
+      {/* Comment composer, anchored to the captured selection. */}
+      {composer && editor && (
+        <div
+          role="dialog"
+          aria-label="Comment on selection"
+          className={touch ? "prism-comment-composer prism-docked-composer" : "prism-comment-composer"}
+          style={{
+            // Touch: docked on the keyboard (`.prism-docked-composer`), never under the selection.
+            ...(touch ? {} : { position: "fixed" as const, top: composer.top, left: composer.left, zIndex: 60, width: 272 }),
+            padding: 10,
+            borderRadius: 12,
+            border: "1px solid var(--glass-border)",
+            background: "var(--bg-surface, #1a1a1f)",
+            boxShadow: "0 10px 30px rgba(0,0,0,0.4)",
+          }}
+        >
+          <textarea
+            ref={draftRef}
+            autoFocus
+            aria-label="Comment"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onSelect={draftMentions.onSelect}
+            onInput={draftMentions.onInput}
+            {...draftMentions.fieldProps}
+            onKeyDown={(e) => {
+              if (draftMentions.onKeyDown(e)) return;
+              if (e.key === "Escape") setComposer(null);
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submitComment();
+            }}
+            placeholder="Add a comment… @ to mention  (⌘↵ to post)"
+            rows={3}
+            style={{
+              width: "100%",
+              resize: "vertical",
+              background: "var(--glass, rgba(255,255,255,0.04))",
+              border: "1px solid var(--glass-border)",
+              borderRadius: 8,
+              outline: "none",
+              color: "var(--text-primary)",
+              // 16px so iOS doesn't zoom the viewport when composing a comment
+              fontSize: 16,
+              padding: "8px 10px",
+              boxSizing: "border-box",
+            }}
+          />
+          {draftMentions.menu}
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginTop: 8 }}>
+            <button
+              onClick={() => setComposer(null)}
+              style={{ background: "none", border: "none", color: "var(--text-muted)", fontSize: 12.5, cursor: "pointer", padding: "6px 8px" }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={submitComment}
+              disabled={!draft.trim()}
+              style={{
+                background: "var(--action-bg, var(--color-accent))",
+                color: "var(--action-fg, #fff)",
+                border: "none",
+                borderRadius: 7,
+                fontSize: 12.5,
+                fontWeight: 600,
+                padding: "6px 12px",
+                cursor: "pointer",
+                opacity: draft.trim() ? 1 : 0.5,
+              }}
+            >
+              Comment
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+
+  /** Open the command composer at the current selection (captured inside it, synchronously). */
+  function openHuman(kind: ComposerKind, empty = false) {
+    if (!editor) return;
+    const sel = editor.state.selection;
+    let top = 120, left = 16;
+    try {
+      const c = editor.view.coordsAtPos(empty ? 1 : sel.to);
+      top = c.bottom + 8;
+      left = Math.max(8, Math.min(c.left, window.innerWidth - 348));
+    } catch { /* keep defaults */ }
+    setHumanNotice("");
+    setHuman({ kind, empty, top, left });
+  }
+
+  function submitComment() {
+    if (!editor || !composer || !draft.trim()) return;
+    commentOnRange(editor, ydoc, user, draft.trim(), composer.from, composer.to);
+    // Collapse the selection so the on-selection "Comment" bubble dismisses.
+    editor.chain().setTextSelection(composer.to).run();
+    setComposer(null);
+    setDraft("");
+  }
+}

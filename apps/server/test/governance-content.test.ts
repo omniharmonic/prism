@@ -1,0 +1,274 @@
+/**
+ * The content review pipeline (G2) — governed content changes through the real
+ * Hono `governance` app + a fake vault. Proves the headline commons flow: a
+ * member proposes an edit or a new entry, tag-scoped gardeners sign off, and the
+ * change goes live only once the per-tag policy threshold clears — with
+ * eligibility correctly scoped to the note's tags.
+ */
+import { test, beforeEach, afterEach } from "node:test";
+import assert from "node:assert/strict";
+import { governance } from "../src/routes/governance";
+import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, type FakeVault } from "./helpers";
+
+let fv: FakeVault;
+beforeEach(() => {
+  resetDb();
+  fv = installFakeVault();
+});
+afterEach(() => fv.restore());
+
+const OWNER = "owner@test.local";
+const cookieFor = (e: string) => sessionCookie(makeSession(e));
+
+function jreq(path: string, cookie: string | undefined, method = "GET", payload?: unknown) {
+  const headers = new Headers();
+  if (cookie) headers.set("cookie", cookie);
+  headers.set("content-type", "application/json");
+  return governance.request(path, { method, headers, body: payload !== undefined ? JSON.stringify(payload) : undefined });
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const body = (r: Response): Promise<any> => r.json();
+
+/** Bootstrap an enabled commons: gardeners scoped to #medicine (review +
+ *  publish powers), an auto-publish edit policy and a STAGED new-entry policy
+ *  on #medicine (2 distinct gardeners each), members g1/g2. */
+async function bootstrapContentCommons() {
+  const owner = cookieFor(OWNER);
+  await jreq("/roles", owner, "POST", { name: "gardener", powers: ["review", "publish"], scopeType: "tag", scope: "medicine" });
+  // edit_note auto-publishes at threshold; new_entry stages for an explicit publish.
+  await jreq("/policies", owner, "POST", { action: "edit_note", scopeType: "tag", scope: "medicine", thresholdN: 2, distinctRequired: true, eligibleRole: "gardener", autoPublish: true });
+  await jreq("/policies", owner, "POST", { action: "new_entry", scopeType: "tag", scope: "medicine", thresholdN: 2, distinctRequired: true, eligibleRole: "gardener", autoPublish: false });
+  for (const g of ["g1@test.local", "g2@test.local"]) {
+    await jreq("/memberships", owner, "POST", { subject: g, role: "gardener" });
+  }
+  const cfg = await jreq("/config", owner, "POST", { enabled: true, bootstrapOwner: OWNER, defaultEligibleRole: "gardener" });
+  assert.equal(cfg.status, 200);
+  // Proposing an edit needs VIEW on the target; the gardeners can read both folders.
+  for (const g of ["g1@test.local", "g2@test.local"]) for (const t of ["medicine", "food"]) grantUser(g, "tag", t, "view");
+}
+
+// ── edit_note ──────────────────────────────────────────────────────────────────
+
+test("an edit goes live only after the tag policy threshold is met", async () => {
+  fv.put({ id: "n_med", content: "old", tags: ["medicine"] });
+  await bootstrapContentCommons();
+  const owner = cookieFor(OWNER);
+
+  // any member (even a non-gardener) may PROPOSE — standing here comes from a
+  // plain view grant on #medicine, not from any governance role.
+  grantUser("stranger@test.local", "tag", "medicine", "view");
+  const open = await jreq("/content/propose", cookieFor("stranger@test.local"), "POST", { action: "edit_note", target: "n_med", content: "new" });
+  assert.equal(open.status, 201);
+  const { id } = await body(open);
+
+  // no sign-off yet → not applied, note unchanged
+  assert.equal((await jreq(`/proposals/${id}/apply`, owner, "POST")).status, 409);
+  assert.equal(fv.notes.get("n_med")!.content, "old");
+
+  // one gardener → still short of 2
+  assert.equal((await jreq(`/proposals/${id}/vote`, cookieFor("g1@test.local"), "POST", { vote: "approve" })).status, 200);
+  assert.equal((await jreq(`/proposals/${id}/apply`, owner, "POST")).status, 409);
+
+  // second distinct gardener → threshold cleared → the edit is written live
+  // (this policy auto-publishes) AND a published revision is snapshotted
+  assert.equal((await jreq(`/proposals/${id}/vote`, cookieFor("g2@test.local"), "POST", { vote: "approve" })).status, 200);
+  const applied = await jreq(`/proposals/${id}/apply`, owner, "POST");
+  assert.equal(applied.status, 200);
+  const res = await body(applied);
+  assert.equal(res.applied, "edit_note");
+  assert.equal(res.published, true);
+  assert.equal(fv.notes.get("n_med")!.content, "new");
+
+  const revs = await body(await jreq("/notes/n_med/revisions", owner));
+  assert.equal(revs.revisions.length, 1);
+  assert.equal(revs.revisions[0].published, true);
+});
+
+test("rollback restores a prior revision, non-destructively", async () => {
+  fv.put({ id: "n_med", content: "v1", tags: ["medicine"] });
+  await bootstrapContentCommons();
+  const owner = cookieFor(OWNER);
+  const g1 = cookieFor("g1@test.local");
+  const g2 = cookieFor("g2@test.local");
+
+  // two governed edits: v2 then v3
+  for (const v of ["v2", "v3"]) {
+    const open = await jreq("/content/propose", g1, "POST", { action: "edit_note", target: "n_med", content: v });
+    const { id } = await body(open);
+    await jreq(`/proposals/${id}/vote`, g1, "POST", { vote: "approve" });
+    await jreq(`/proposals/${id}/vote`, g2, "POST", { vote: "approve" });
+    assert.equal((await jreq(`/proposals/${id}/apply`, owner, "POST")).status, 200);
+  }
+  assert.equal(fv.notes.get("n_med")!.content, "v3");
+
+  // roll back to the v2 revision (a gardener has the publish power)
+  const revs = (await body(await jreq("/notes/n_med/revisions", owner))).revisions;
+  assert.equal(revs.length, 2);
+  const v2rev = revs[1]; // newest-first → [v3, v2]
+  const rb = await jreq("/notes/n_med/rollback", g1, "POST", { revision: v2rev.id });
+  assert.equal(rb.status, 200);
+  assert.equal(fv.notes.get("n_med")!.content, "v2");
+
+  // non-destructive: history GREW (v3, v2, + the rollback revision)
+  const after = (await body(await jreq("/notes/n_med/revisions", owner))).revisions;
+  assert.equal(after.length, 3);
+  assert.equal(after[0].origin, "rollback");
+
+  // a plain member without the publish power cannot roll back
+  const stranger = await jreq("/notes/n_med/rollback", cookieFor("stranger@test.local"), "POST", { revision: v2rev.id });
+  assert.equal(stranger.status, 403);
+});
+
+test("sign-off eligibility is scoped to the note's tags", async () => {
+  fv.put({ id: "n_food", content: "x", tags: ["food"] });
+  await bootstrapContentCommons();
+
+  const open = await jreq("/content/propose", cookieFor("g1@test.local"), "POST", { action: "edit_note", target: "n_food", content: "y" });
+  const { id } = await body(open);
+
+  // g1 is a gardener of #medicine, not #food → cannot sign off here
+  const vote = await jreq(`/proposals/${id}/vote`, cookieFor("g1@test.local"), "POST", { vote: "approve" });
+  assert.equal(vote.status, 403);
+  assert.equal((await body(vote)).error, "ineligible");
+});
+
+// ── new_entry ───────────────────────────────────────────────────────────────────
+
+test("a staged new entry goes live only at the explicit publish step (approval ≠ publishing)", async () => {
+  await bootstrapContentCommons();
+  const owner = cookieFor(OWNER);
+  const g1 = cookieFor("g1@test.local");
+
+  const open = await jreq("/content/propose", g1, "POST", {
+    action: "new_entry",
+    tags: ["medicine"],
+    path: "medicine/yarrow",
+    content: "# Yarrow\nStub for a gardener to fill in.",
+  });
+  assert.equal(open.status, 201);
+  const { id } = await body(open);
+
+  // publish before approval → refused
+  assert.equal((await jreq(`/proposals/${id}/publish`, g1, "POST")).status, 409);
+
+  assert.equal((await jreq(`/proposals/${id}/vote`, g1, "POST", { vote: "approve" })).status, 200);
+  assert.equal((await jreq(`/proposals/${id}/vote`, cookieFor("g2@test.local"), "POST", { vote: "approve" })).status, 200);
+  const applied = await jreq(`/proposals/${id}/apply`, owner, "POST");
+  assert.equal(applied.status, 200);
+  const res = await body(applied);
+  assert.equal(res.applied, "new_entry");
+  assert.equal(res.published, false); // APPROVED + STAGED — not live
+
+  // the LIVE note does not exist yet (the snapshot lives only in a
+  // governance-revision note, which is not tagged medicine)
+  const liveYarrow = () =>
+    [...fv.notes.values()].find((n) => (n.tags ?? []).includes("medicine") && n.content.startsWith("# Yarrow"));
+  assert.ok(!liveYarrow(), "staged entry must not be live");
+
+  // a member WITHOUT the publish power cannot publish
+  assert.equal((await jreq(`/proposals/${id}/publish`, cookieFor("stranger@test.local"), "POST")).status, 403);
+
+  // a gardener (publish power, in-scope via the proposed tags) publishes → live
+  const pub = await jreq(`/proposals/${id}/publish`, g1, "POST");
+  assert.equal(pub.status, 200);
+  const created = liveYarrow();
+  assert.ok(created, "the entry is live after publish");
+
+  // publishing twice → refused (proposal is applied now)
+  assert.equal((await jreq(`/proposals/${id}/publish`, g1, "POST")).status, 409);
+});
+
+test("edit_note requires a target note id", async () => {
+  await bootstrapContentCommons();
+  const r = await jreq("/content/propose", cookieFor("g1@test.local"), "POST", { action: "edit_note", content: "x" });
+  assert.equal(r.status, 400);
+});
+
+// ── payload allowlist (security hotfix: a member writes the payload, the vault token applies it) ──
+
+test("a new entry cannot carry a system tag or land on a protected / invalid path", async () => {
+  await bootstrapContentCommons();
+  const g1 = cookieFor("g1@test.local");
+  for (const extra of [
+    { tags: ["medicine", "agent-skill"] },
+    { tags: ["medicine", "governance-membership"] },
+    { tags: ["medicine", "person"] },
+    { tags: ["medicine", "prism-trashed"] },
+    { tags: ["medicine"], path: "vault/people/Mallory" },
+    { tags: ["medicine"], path: "vault/agent/skills/evil" },
+    { tags: ["medicine"], path: "medicine/../secret" },
+    { tags: ["medicine"], path: "medicine//x" },
+  ]) {
+    const r = await jreq("/content/propose", g1, "POST", { action: "new_entry", content: "x", ...extra });
+    assert.equal(r.status, 400, JSON.stringify(extra));
+  }
+  // The generic proposal route takes a raw payload — the same rules bite at apply.
+  const raw = await jreq("/proposals", g1, "POST", { action: "new_entry", target: "", payload: { content: "run me", tags: ["medicine", "agent-skill"], metadata: { skillName: "evil", enabled: true } } });
+  assert.equal(raw.status, 201);
+  const { id } = await body(raw);
+  await jreq(`/proposals/${id}/vote`, g1, "POST", { vote: "approve" });
+  await jreq(`/proposals/${id}/vote`, cookieFor("g2@test.local"), "POST", { vote: "approve" });
+  const applied = await jreq(`/proposals/${id}/apply`, cookieFor(OWNER), "POST");
+  assert.equal(applied.status, 400);
+  assert.ok(![...fv.notes.values()].some((n) => (n.tags ?? []).includes("agent-skill")));
+});
+
+test("reserved metadata (creator / visibility / lock / trash / writer stamp) never rides a governed change", async () => {
+  fv.put({ id: "n_med", content: "old", tags: ["medicine"], metadata: { prism_creator: "someone@test.local", prism_visibility: "private" } });
+  await bootstrapContentCommons();
+  const owner = cookieFor(OWNER);
+  const g1 = cookieFor("g1@test.local");
+  const g2 = cookieFor("g2@test.local");
+  const forged = { prism_creator: "g1@test.local", prism_visibility: "workspace", prism_locked: true, prism_trashed_at: "2020-01-01T00:00:00.000Z", prism_order: 1, prism_last_writer: "u_forged", note: "kept" };
+
+  // edit_note (auto-publishes): the vault PATCH carries only the ordinary key.
+  // (proposed by the private note's own creator — nobody else can view it, so nobody else may propose)
+  grantUser("someone@test.local", "tag", "medicine", "view");
+  const edit = await jreq("/content/propose", cookieFor("someone@test.local"), "POST", { action: "edit_note", target: "n_med", content: "new", metadata: forged });
+  assert.equal(edit.status, 201);
+  const editId = (await body(edit)).id;
+  await jreq(`/proposals/${editId}/vote`, g1, "POST", { vote: "approve" });
+  await jreq(`/proposals/${editId}/vote`, g2, "POST", { vote: "approve" });
+  assert.equal((await jreq(`/proposals/${editId}/apply`, owner, "POST")).status, 200);
+  const edited = fv.notes.get("n_med")!;
+  assert.equal(edited.content, "new");
+  assert.equal(edited.metadata!.prism_creator, "someone@test.local");
+  assert.equal(edited.metadata!.prism_visibility, "private", "a governed edit cannot un-private a note");
+  assert.ok(!("prism_locked" in edited.metadata!) && !("prism_trashed_at" in edited.metadata!) && !("prism_last_writer" in edited.metadata!));
+  assert.equal(edited.metadata!.note, "kept");
+
+  // new_entry (staged → publish): same.
+  const open = await jreq("/content/propose", g1, "POST", { action: "new_entry", tags: ["medicine"], path: "medicine/mint", content: "# Mint", metadata: forged });
+  const newId = (await body(open)).id;
+  await jreq(`/proposals/${newId}/vote`, g1, "POST", { vote: "approve" });
+  await jreq(`/proposals/${newId}/vote`, g2, "POST", { vote: "approve" });
+  assert.equal((await jreq(`/proposals/${newId}/apply`, owner, "POST")).status, 200);
+  assert.equal((await jreq(`/proposals/${newId}/publish`, g1, "POST")).status, 200);
+  const mint = [...fv.notes.values()].find((n) => n.path === "medicine/mint")!;
+  assert.ok(mint, "the entry is live");
+  for (const k of Object.keys(forged).filter((k) => k !== "note")) assert.ok(!(k in (mint.metadata ?? {})), k);
+  assert.equal(mint.metadata!.note, "kept");
+});
+
+test("edit_note: the proposer must be able to view the target (404 like a missing note); system notes are never a target", async () => {
+  fv.put({ id: "n_secret", content: "secret", tags: ["secret"], path: "secret/plan" });
+  fv.put({ id: "n_private", content: "private", tags: ["medicine"], metadata: { prism_creator: OWNER, prism_visibility: "private" } });
+  fv.put({ id: "n_med", content: "old", tags: ["medicine"], path: "medicine/yarrow" });
+  fv.put({ id: "n_skill", content: "prompt", tags: ["medicine", "agent-skill"] });
+  await bootstrapContentCommons();
+  const g1 = cookieFor("g1@test.local");
+  const missing = await jreq("/content/propose", g1, "POST", { action: "edit_note", target: "nope", content: "x" });
+  assert.equal(missing.status, 404);
+  const missingBody = await missing.text();
+  for (const target of ["n_secret", "n_private", "secret/plan", "medicine/yarrow"]) {
+    for (const route of ["/content/propose", "/proposals"]) {
+      const r = await jreq(route, g1, "POST", { action: "edit_note", target, content: "pwned", payload: { content: "pwned" } });
+      assert.equal(r.status, 404, `${route} ${target}`);
+      assert.equal(await r.text(), missingBody, `${route} ${target}`);
+    }
+  }
+  for (const route of ["/content/propose", "/proposals"]) {
+    assert.equal((await jreq(route, g1, "POST", { action: "edit_note", target: "n_skill", content: "x", payload: { content: "x" } })).status, 400, route);
+  }
+  assert.equal((await jreq("/content/propose", g1, "POST", { action: "edit_note", target: "n_med", content: "fine" })).status, 201);
+});

@@ -1,0 +1,333 @@
+/**
+ * Behavioral check for the agent chat client (Arch v2 WP3.2):
+ *   - the pure conversation reducer (packages/core/src/lib/agent/sessionReducer.ts):
+ *     text_delta coalescing, blockId replacement by the persisted `text`, seq
+ *     dedupe on replay, rebuild-after-reconnect, tool/touched/result folding;
+ *   - the HTTP stream wrapper (httpAgentClient.ts `streamSessionEvents`) against a
+ *     loopback SSE server: resume via ?after= and Last-Event-ID after a drop,
+ *     stopping after the turn ends, and a 403 being fatal.
+ *
+ * Run: npm run verify:agent -w @prism/web
+ *   (= node --import tsx scripts/verify-agent-reducer.ts; needs only loopback http)
+ */
+import http from "node:http";
+import assert from "node:assert/strict";
+import {
+  applyAgentMessage,
+  addPendingTurn,
+  emptyConversation,
+  seedConversation,
+  activeTurn,
+  shortToolName,
+  turnProblem,
+  type ConversationState,
+} from "../../../packages/core/src/lib/agent/sessionReducer.ts";
+import { streamSessionEvents } from "../../../packages/core/src/lib/agent/httpAgentClient.ts";
+import { formatAgentCost, formatAgentBudget, SUBSCRIPTION_COST_TOOLTIP, PROFILE_LABELS, isReadOnlyProfile } from "../../../packages/core/src/lib/agent/cost.ts";
+import { createHttpAgentClient } from "../../../packages/core/src/lib/agent/httpAgentClient.ts";
+import { agentErrorText } from "../../../packages/core/src/lib/agent/useAgentConversation.ts";
+import { AGENT_ERROR_CODES, agentFailure, failureOfError, queuedText } from "../../../packages/core/src/lib/agent/failure.ts";
+import { AgentApiError } from "../../../packages/core/src/lib/agent/sessions.ts";
+import { streamSSE } from "../../../packages/core/src/lib/transport/sse.ts";
+import type { AgentSessionDetail, AgentStreamMessage, AgentTurn } from "../../../packages/core/src/lib/agent/sessions.ts";
+
+let passed = 0;
+const ok = (m: string) => {
+  passed++;
+  console.log(`✓ ${m}`);
+};
+const run = (s: ConversationState, msgs: AgentStreamMessage[]) => msgs.reduce(applyAgentMessage, s);
+
+const T = "turn-1";
+// A full turn as the server emits it (persisted events carry seq; deltas don't).
+const turnEvents: AgentStreamMessage[] = [
+  { seq: 1, turnId: T, t: "status", status: "running" },
+  { seq: 2, turnId: T, t: "init", cliSessionId: "s", model: "m", tools: [], mcp: [] },
+  { turnId: T, t: "text_delta", blockId: "b1", text: "Let me " },
+  { turnId: T, t: "text_delta", blockId: "b1", text: "look." },
+  { seq: 3, turnId: T, t: "text", blockId: "b1", text: "Let me look." },
+  { seq: 4, turnId: T, t: "tool_use", id: "tu1", name: "mcp__parachute-vault__query-notes", input: {} },
+  { seq: 5, turnId: T, t: "tool_result", toolUseId: "tu1", ok: true, summary: "3 notes" },
+  { seq: 6, turnId: T, t: "tool_use", id: "tu2", name: "mcp__parachute-vault__create-note", input: {} },
+  { seq: 7, turnId: T, t: "tool_result", toolUseId: "tu2", ok: false, summary: "denied" },
+  { seq: 8, turnId: T, t: "note_touched", noteId: "n-1", op: "update" },
+  { turnId: T, t: "text_delta", blockId: "b2", text: "Done: " },
+  { turnId: T, t: "text_delta", blockId: "b2", text: "**ok**" },
+  { seq: 9, turnId: T, t: "text", blockId: "b2", text: "Done: **ok** [redacted]" },
+  { seq: 10, turnId: T, t: "result", ok: true, costUsd: 0.0123, durationMs: 4200 },
+  { seq: 11, turnId: T, t: "status", status: "done" },
+];
+
+// ── 1. text_delta coalescing + blockId replacement ──
+{
+  let s = addPendingTurn(emptyConversation, { id: T, prompt: "hi" });
+  s = run(s, turnEvents.slice(0, 4)); // up to the two b1 deltas
+  const t = s.turns[0]!;
+  assert.deepEqual(t.blocks, [{ blockId: "b1", text: "Let me look.", streaming: true }]);
+  ok("text_delta chunks with the same blockId concatenate into one streaming block");
+  s = applyAgentMessage(s, turnEvents[4]!);
+  assert.deepEqual(s.turns[0]!.blocks, [{ blockId: "b1", text: "Let me look.", streaming: false }]);
+  const late = applyAgentMessage(s, { turnId: T, t: "text_delta", blockId: "b1", text: "DUP" });
+  assert.equal(late, s, "a delta for a final block is ignored (same object)");
+  ok("persisted text replaces the block by blockId; later deltas for it are ignored");
+  s = run(s, turnEvents.slice(5));
+  const d = s.turns[0]!;
+  assert.equal(d.blocks[1]!.text, "Done: **ok** [redacted]", "server's scrubbed final text wins over the deltas");
+  assert.equal(d.status, "done");
+  assert.deepEqual(
+    d.tools.map((x) => [x.name, x.ok]),
+    [
+      ["query-notes", true],
+      ["create-note", false],
+    ],
+  );
+  assert.deepEqual(d.touched, [{ noteId: "n-1", op: "update" }]);
+  assert.equal(d.costUsd, 0.0123);
+  assert.equal(d.durationMs, 4200);
+  assert.equal(s.lastSeq, 11);
+  assert.equal(activeTurn(s), undefined);
+  ok("tools (ok/error), touched notes, cost/duration and terminal status fold in");
+}
+
+// ── 2. replay dedupe: re-applying everything changes nothing ──
+{
+  const once = run(addPendingTurn(emptyConversation, { id: T, prompt: "hi" }), turnEvents);
+  const twice = run(once, turnEvents.filter((e) => e.seq !== undefined));
+  assert.deepEqual(twice, once);
+  ok("a replay of already-applied seqs is a no-op");
+}
+
+// ── 3. drop mid-turn → reconnect with Last-Event-ID → identical final state ──
+{
+  const base = addPendingTurn(emptyConversation, { id: T, prompt: "hi" });
+  const straight = run(base, turnEvents);
+  // Connection 1 dies after seq 5 (deltas for b2 were never seen).
+  let s = run(base, turnEvents.slice(0, 7));
+  assert.equal(s.lastSeq, 5);
+  // Connection 2: server replays seq > 5 (persisted only — deltas are live-only) + an overlap.
+  const replay = turnEvents.filter((e) => e.seq !== undefined && e.seq > 4);
+  s = run(s, replay);
+  assert.deepEqual(s, straight);
+  ok("reconnect from the last persisted seq (with overlap) converges to the uninterrupted state");
+}
+
+// ── 4. seedConversation: finished turns from the summary, in-flight turn rebuilt ──
+{
+  const done: AgentTurn = {
+    id: "turn-0",
+    session_id: "sid",
+    prompt: "first",
+    note_id: null,
+    status: "done",
+    pid: 1,
+    exit_code: 0,
+    error: null,
+    cost_usd: 0.5,
+    started_at: 1000,
+    ended_at: 4000,
+    finalText: "earlier answer",
+    tools: ["query-notes"],
+    touched: [],
+    firstSeq: 1,
+    lastSeq: 6,
+  };
+  const running: AgentTurn = { ...done, id: T, prompt: "hi", status: "running", finalText: "partial", tools: ["query-notes"], cost_usd: null, ended_at: null, firstSeq: 7, lastSeq: 9 };
+  const detail: AgentSessionDetail = {
+    session: { id: "sid" } as AgentSessionDetail["session"],
+    turns: [done, running],
+    lastSeq: 9,
+  };
+  const { state, streamAfter } = seedConversation(detail);
+  assert.equal(streamAfter, 6, "resume just before the in-flight turn's first event");
+  assert.equal(state.lastSeq, 6);
+  assert.equal(state.turns[0]!.blocks[0]!.text, "earlier answer");
+  assert.equal(state.turns[0]!.durationMs, 3000);
+  assert.deepEqual(state.turns[1]!.blocks, [], "in-flight turn is reset, then rebuilt by the replay");
+  const shifted = turnEvents.map((e) => (e.seq !== undefined ? { ...e, seq: e.seq + 6 } : e));
+  const rebuilt = run(state, shifted.filter((e) => e.seq !== undefined));
+  assert.deepEqual(
+    rebuilt.turns[1]!.blocks.map((b) => b.text),
+    ["Let me look.", "Done: **ok** [redacted]"],
+  );
+  assert.equal(rebuilt.turns[1]!.tools.length, 2, "no duplicate tool chips after the rebuild");
+  ok("seedConversation resumes at firstSeq-1 and the replay rebuilds the running turn exactly");
+
+  const idle = seedConversation({ ...detail, turns: [done], lastSeq: 6 });
+  assert.equal(idle.streamAfter, null, "nothing in flight → no stream");
+  assert.equal(idle.state.lastSeq, 6);
+  const fresh = seedConversation({ ...detail, turns: [done, { ...running, firstSeq: null, lastSeq: null }], lastSeq: 6 });
+  assert.equal(fresh.streamAfter, 6, "a queued turn with no events resumes after everything persisted");
+  ok("idle sessions open no stream; a queued turn resumes after the session's last seq");
+}
+
+// ── 5. copy + helpers ──
+{
+  assert.equal(shortToolName("mcp__parachute-vault__update-note"), "update-note");
+  const base = { id: "x", prompt: "", noteId: null, blocks: [], tools: [], touched: [], startedAt: null };
+  assert.match(turnProblem({ ...base, status: "interrupted" })!.text, /Interrupted/);
+  assert.match(turnProblem({ ...base, status: "error", error: "session budget exceeded" })!.text, /spending cap/);
+  assert.equal(turnProblem({ ...base, status: "done" }), null);
+
+  // w16: ONE helper maps a failure to a sentence + whether "Try again" can help.
+  const AUTH = "The agent couldn’t sign in on the server. Try again; if it keeps happening, sign in to Claude on the server (run `claude` there and log in).";
+  assert.deepEqual(agentFailure("auth"), { code: "auth", text: AUTH, retry: true, tone: "error" });
+  assert.equal(agentFailure("usage_limit").text, "Claude’s usage limit was reached. Try again later.");
+  assert.equal(agentFailure("memory").text, "The server is short on memory right now — it will run when there is room.");
+  for (const code of AGENT_ERROR_CODES) {
+    const f = agentFailure(code);
+    assert.ok(f.text.length > 8 && /[.!]$/.test(f.text), `${code}: a sentence`);
+    assert.doesNotMatch(f.text, /^(error|failed|unknown|status)$/i, `${code}: never a bare status word`);
+  }
+  assert.deepEqual(AGENT_ERROR_CODES.filter((c) => !agentFailure(c).retry), ["budget", "cancelled", "locked", "tool_denied", "cli_missing"], "where retrying cannot help, none is offered");
+  // The server's code wins; text is the fallback (older server, stored failures).
+  assert.equal(turnProblem({ ...base, status: "error", errorCode: "auth", error: "whatever" })!.text, AUTH);
+  assert.equal(turnProblem({ ...base, status: "error", error: "Claude sign-in failed on the server (claude exited 1). — Failed to authenticate: OAuth token revoked." })!.code, "auth");
+  assert.equal(turnProblem({ ...base, status: "error", error: "claude exited 1 — success" })!.text, "The agent hit an error: claude exited 1 — success. Try again.");
+  assert.equal(turnProblem({ ...base, status: "error" })!.text, "The agent hit an error on the server. Try again.");
+  assert.equal(turnProblem({ ...base, status: "cancelled" })!.tone, "muted");
+  assert.equal(failureOfError(new TypeError("Failed to fetch")).code, "offline");
+  assert.equal(failureOfError(new AgentApiError(423, "locked", "This page is locked — unlock it or use a read-only session.")).text, "This page is locked — unlock it or use a read-only session.");
+  assert.equal(failureOfError({ status: 502, code: "agent_failed", detail: "x", errorCode: "usage_limit" }).code, "usage_limit");
+  assert.equal(failureOfError({ status: 504, code: "agent_timeout", errorCode: "memory" }).code, "memory");
+  assert.equal(queuedText({ errorCode: "memory", reason: "memory pressure: 12% free (< 15%)" }), agentFailure("memory").text);
+  assert.equal(queuedText({ reason: "waiting for your other agent turn to finish" }), "Queued — waiting for your other agent turn to finish");
+  ok("failures: one helper — code → sentence + Try again; text fallback; queued-for-memory");
+
+  // The CLI's own error line is never a reply; a retry clears the failed attempt.
+  let s16 = addPendingTurn(emptyConversation, { id: "t9", prompt: "Summarize" });
+  s16 = applyAgentMessage(s16, { turnId: "t9", t: "text_delta", blockId: "m:0", text: "Failed to auth" });
+  s16 = applyAgentMessage(s16, { seq: 1, turnId: "t9", t: "error", code: "auth", text: "Failed to authenticate: OAuth token revoked." });
+  assert.equal(s16.turns[0]!.blocks.length, 0, "the error line is not assistant text");
+  assert.equal(s16.turns[0]!.errorCode, "auth");
+  s16 = applyAgentMessage(s16, { seq: 2, turnId: "t9", t: "status", status: "running", reason: "trying once more", errorCode: "auth", retry: true });
+  assert.equal(s16.turns[0]!.errorCode, undefined);
+  assert.equal(s16.turns[0]!.retrying, true);
+  assert.equal(turnProblem(s16.turns[0]!), null, "no problem is shown while the one retry runs");
+  const failed = applyAgentMessage(applyAgentMessage(s16, { seq: 3, turnId: "t9", t: "error", code: "auth", text: "Failed to authenticate." }), { seq: 4, turnId: "t9", t: "status", status: "error", reason: "Claude sign-in failed on the server (claude exited 1).", errorCode: "auth" });
+  assert.equal(turnProblem(failed.turns[0]!)!.text, AUTH);
+  const recovered = applyAgentMessage(applyAgentMessage(s16, { seq: 3, turnId: "t9", t: "text", blockId: "m2:0", text: "The summary." }), { seq: 4, turnId: "t9", t: "status", status: "done" });
+  assert.equal(turnProblem(recovered.turns[0]!), null);
+  assert.equal(recovered.turns[0]!.blocks[0]!.text, "The summary.");
+  const failedTurn: AgentTurn = { id: "turn-f", session_id: "sid", prompt: "p", note_id: null, status: "error", pid: 1, exit_code: 1, error: "x", errorCode: "usage_limit", cost_usd: null, started_at: 1, ended_at: 2, finalText: "", tools: [], touched: [], firstSeq: 1, lastSeq: 6 };
+  const seeded = seedConversation({ session: { id: "sid" } as AgentSessionDetail["session"], turns: [failedTurn], lastSeq: 6 });
+  assert.equal(turnProblem(seeded.state.turns[0]!)!.code, "usage_limit", "the REST detail's errorCode seeds a finished turn");
+  ok("reducer: error line ≠ reply; a retry clears the failed attempt; errorCode from stream and detail");
+  const unknown = applyAgentMessage(emptyConversation, { seq: 3, turnId: "other", t: "status", status: "running" });
+  assert.equal(unknown.turns[0]!.id, "other", "an event for an unseen turn (another device) adds a placeholder");
+  ok("turn problem copy, tool-name shortening, unknown-turn placeholder");
+}
+
+// ── 6. streamSessionEvents over a loopback SSE server ──
+const reqs: Array<{ url: string; lastEventId?: string }> = [];
+let conn = 0;
+const server = http.createServer((req, res) => {
+  reqs.push({ url: req.url ?? "", lastEventId: req.headers["last-event-id"] as string | undefined });
+  if (req.url?.startsWith("/denied")) {
+    res.writeHead(403, { "content-type": "application/json" }).end('{"error":"forbidden"}');
+    return;
+  }
+  conn++;
+  res.writeHead(200, { "content-type": "text/event-stream" });
+  const ev = (seq: number | null, t: string, data: object) =>
+    res.write(`${seq !== null ? `id: ${seq}\n` : ""}event: ${t}\ndata: ${JSON.stringify({ ...(seq !== null ? { seq } : {}), turnId: T, ...data })}\n\n`);
+  if (conn === 1) {
+    res.write("retry: 20\n\n");
+    ev(4, "status", { t: "status", status: "running" });
+    ev(null, "text_delta", { t: "text_delta", blockId: "b", text: "hel" });
+    ev(5, "text", { t: "text", blockId: "b", text: "hello" });
+    setTimeout(() => res.destroy(), 20); // network drop mid-turn
+  } else if (conn === 2) {
+    ev(6, "result", { t: "result", ok: true, durationMs: 10 });
+    ev(7, "status", { t: "status", status: "done" });
+    setTimeout(() => res.end(), 20); // server closes: nothing in flight
+  } else {
+    setTimeout(() => res.end(), 5); // replay empty, nothing in flight
+  }
+});
+await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+const { port } = server.address() as { port: number };
+const origin = `http://127.0.0.1:${port}`;
+const sse = (path: string, o: Parameters<typeof streamSSE>[1]) => streamSSE(`${origin}${path}`, { ...o, retryMs: 20 });
+
+{
+  let st = addPendingTurn(emptyConversation, { id: T, prompt: "hi" });
+  st = { ...st, lastSeq: 3 };
+  const errors: string[] = [];
+  await new Promise<void>((resolve) => {
+    streamSessionEvents(sse, "/stream", 3, { "X-Prism-Vault": "v1" }, {
+      onEvent: (m) => {
+        st = applyAgentMessage(st, m);
+      },
+      onError: (e) => errors.push(e.message),
+      onClose: resolve,
+    });
+  });
+  assert.equal(reqs[0]!.url, "/stream?after=3", "first request resumes with ?after=");
+  assert.equal(reqs[1]!.lastEventId, "5", "reconnect after the drop sends Last-Event-ID = last persisted seq (deltas carry no id)");
+  assert.equal(st.turns[0]!.blocks[0]!.text, "hello");
+  assert.equal(st.turns[0]!.status, "done");
+  assert.equal(st.lastSeq, 7);
+  assert.ok(errors.length >= 1, "the drop was reported as retryable");
+  assert.equal(reqs.length, 3, "one probe after the clean close, then the stream stops (no polling loop)");
+  ok("stream: ?after resume, Last-Event-ID reconnect after a drop, stops after the turn ends");
+}
+{
+  let fatal: { willRetry: boolean } | null = null;
+  await new Promise<void>((resolve) => {
+    streamSessionEvents(sse, "/denied", 0, {}, {
+      onEvent: () => {},
+      onError: (_e, info) => (fatal = info),
+      onClose: resolve,
+    });
+  });
+  assert.deepEqual(fatal, { willRetry: false });
+  ok("stream: 403 is fatal (no retry) and closes");
+}
+{
+  // Unsubscribe mid-stream closes exactly once.
+  let closes = 0;
+  const unsub = streamSessionEvents(sse, "/stream", 0, {}, { onEvent: () => {}, onClose: () => closes++ });
+  unsub();
+  unsub();
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(closes, 1);
+  ok("stream: unsubscribe is idempotent");
+}
+
+{
+  // WP3.4: cost labelling. A subscription's figure is an API-equivalent ESTIMATE.
+  assert.deepEqual(formatAgentCost(0.0077, "subscription"), { text: "≈$0.0077 API-equiv.", title: SUBSCRIPTION_COST_TOOLTIP });
+  assert.deepEqual(formatAgentCost(0.02, "subscription"), { text: "≈$0.02 API-equiv.", title: SUBSCRIPTION_COST_TOOLTIP });
+  assert.deepEqual(formatAgentCost(0.02, "api"), { text: "$0.02" }, "api key: a real charge, plain");
+  assert.equal(formatAgentCost(0.02, "unknown")!.text, "≈$0.02 API-equiv.", "unknown is labelled like a subscription");
+  assert.equal(formatAgentCost(0.02, undefined)!.text, "≈$0.02 API-equiv.", "older server (no limits): labelled as an estimate");
+  assert.equal(formatAgentCost(undefined, "api"), null);
+  assert.equal(formatAgentCost(NaN, "api"), null);
+  assert.match(SUBSCRIPTION_COST_TOOLTIP, /Claude subscription.*API prices.*not billed/);
+  assert.equal(formatAgentBudget(25, "subscription").text, "≈$25.00 API-equiv.");
+  assert.equal(formatAgentBudget(25, "api").text, "$25.00");
+  ok("cost: subscription = '≈$X API-equiv.' + tooltip; api = plain $X");
+
+  assert.equal(PROFILE_LABELS["prism-ro"].label, "Prism read-only");
+  assert.ok(isReadOnlyProfile("vault-ro") && isReadOnlyProfile("prism-ro") && !isReadOnlyProfile("prism-rw") && !isReadOnlyProfile("vault-rw"));
+  ok("profiles: labels + read-only classification");
+
+  assert.match(agentErrorText(new AgentApiError(409, "daily_budget_exceeded", "x")), /today's agent budget/);
+  assert.match(agentErrorText(new AgentApiError(409, "profile_unavailable", "x")), /turned off/);
+  ok("errors: daily_budget_exceeded / profile_unavailable copy");
+
+  const seen: string[] = [];
+  const limits = { billing: "subscription", session: { limitUsd: 10 }, daily: { limitUsd: 25, spentUsd: 1, remainingUsd: 24, resetsAt: 1 }, profiles: ["vault-ro", "vault-rw"], defaultProfile: "vault-ro" };
+  const client = createHttpAgentClient({
+    fetch: async (path) => {
+      seen.push(path);
+      return new Response(JSON.stringify(limits), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+  assert.deepEqual(await client.getLimits!(), limits);
+  assert.deepEqual(seen, ["/api/agent/limits"]);
+  ok("client: getLimits → GET /api/agent/limits");
+}
+
+server.close();
+console.log(`\nverify-agent-reducer: ${passed} checks passed`);

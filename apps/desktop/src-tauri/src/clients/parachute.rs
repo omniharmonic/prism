@@ -1,0 +1,514 @@
+use std::sync::RwLock;
+use reqwest::{Client, RequestBuilder};
+use crate::error::PrismError;
+use crate::models::note::*;
+use crate::models::link::*;
+
+/// HTTP client for Parachute Vault 0.5.x API.
+///
+/// Every per-vault resource lives under a vault-scoped root:
+/// `GET/POST/PATCH/DELETE {server_root}/vault/{vault}/api/...`. The unscoped
+/// `/api/...` surface was removed in vault 0.4.x — there is no fallback.
+/// All mutations (tags, links) flow through `PATCH .../notes/:id`.
+/// Search is absorbed into `GET .../notes?search=...`.
+/// Stats come from `GET .../vault?include_stats=true`.
+///
+/// `server_root` is kept separately from the api base so the cross-vault,
+/// unauthenticated `GET /health` liveness probe hits the server root rather
+/// than the vault-scoped path.
+///
+/// The `api_key` AND the connection target (`server_root` / `base_url`) are wrapped
+/// in `RwLock` so they can be updated at runtime — both when the user changes the
+/// key in Settings (`set_api_key`) and when the active vault is switched in the
+/// multi-vault registry (`set_vault`) — without restarting the app. Every request
+/// reads the current values through the lock.
+struct VaultConn {
+    /// e.g. `http://localhost:1940` — used for the root `/health` probe.
+    server_root: String,
+    /// e.g. `http://localhost:1940/vault/default/api` — the REST base.
+    base_url: String,
+}
+
+pub struct ParachuteClient {
+    conn: RwLock<VaultConn>,
+    api_key: RwLock<Option<String>>,
+    client: Client,
+}
+
+impl ParachuteClient {
+    pub fn new(base_url: &str, vault: &str, api_key: Option<String>) -> Self {
+        let (server_root, api_url) = Self::compute_urls(base_url, vault);
+        Self {
+            conn: RwLock::new(VaultConn { server_root, base_url: api_url }),
+            api_key: RwLock::new(api_key),
+            client: Client::new(),
+        }
+    }
+
+    /// Derive `(server_root, base_url)` from a configured URL + vault name.
+    /// Normalizes to the bare server root, tolerating a configured URL that still
+    /// carries a legacy `/api` suffix or a trailing slash.
+    fn compute_urls(base_url: &str, vault: &str) -> (String, String) {
+        let root = base_url.trim_end_matches('/');
+        let root = root.strip_suffix("/api").unwrap_or(root);
+        let server_root = root.to_string();
+        let api_url = format!("{}/vault/{}/api", server_root, vault);
+        (server_root, api_url)
+    }
+
+    /// Current vault-scoped REST base, read through the lock.
+    fn base_url(&self) -> String {
+        self.conn.read().map(|c| c.base_url.clone()).unwrap_or_default()
+    }
+
+    /// Current server root (for the `/health` probe), read through the lock.
+    fn server_root(&self) -> String {
+        self.conn.read().map(|c| c.server_root.clone()).unwrap_or_default()
+    }
+
+    /// Update the API key at runtime (called when user changes config).
+    pub fn set_api_key(&self, key: Option<String>) {
+        if let Ok(mut guard) = self.api_key.write() {
+            *guard = key;
+        }
+    }
+
+    /// Repoint the live client at a different vault with NO app restart. Recomputes
+    /// `server_root`/`base_url` from `url` + `vault` and swaps in `token`. Used by
+    /// the multi-vault switcher (`vault_set_active`) and by Settings edits.
+    pub fn set_vault(&self, url: &str, vault: &str, token: Option<String>) {
+        let (server_root, api_url) = Self::compute_urls(url, vault);
+        if let Ok(mut c) = self.conn.write() {
+            c.server_root = server_root;
+            c.base_url = api_url;
+        }
+        if let Ok(mut g) = self.api_key.write() {
+            *g = token;
+        }
+    }
+
+    fn authed(&self, req: RequestBuilder) -> RequestBuilder {
+        let key = self.api_key.read().ok().and_then(|g| g.clone());
+        if let Some(key) = key {
+            req.header("Authorization", format!("Bearer {}", key))
+        } else {
+            log::warn!("ParachuteClient: making request WITHOUT api_key");
+            req
+        }
+    }
+
+    pub async fn health(&self) -> Result<serde_json::Value, PrismError> {
+        // /health is a cross-vault, unauthenticated liveness probe at the
+        // server root — never under the vault-scoped /vault/{name}/api path.
+        let url = format!("{}/health", self.server_root());
+        let resp = self.client.get(&url).send().await?.json().await?;
+        Ok(resp)
+    }
+
+    /// List or query notes. v2: `GET /api/notes` with query params.
+    ///
+    /// Defaults to `sort=desc` so the newest notes are always returned first —
+    /// without this, parachute defaults to ascending and any cap on `limit`
+    /// silently hides the most recent content as the vault grows.
+    pub async fn list_notes(&self, params: &ListNotesParams) -> Result<Vec<Note>, PrismError> {
+        let url = format!("{}/notes", self.base_url());
+        let limit = params.limit.unwrap_or(50000);
+        let mut qp: Vec<(&str, String)> = vec![
+            ("limit", limit.to_string()),
+            ("sort", "desc".into()),
+        ];
+        if params.include_content {
+            qp.push(("include_content", "true".into()));
+        }
+        if let Some(ref tag) = params.tag {
+            qp.push(("tag", tag.clone()));
+        }
+        if let Some(ref path) = params.path {
+            qp.push(("path", path.clone()));
+        }
+        if let Some(offset) = params.offset {
+            qp.push(("offset", offset.to_string()));
+        }
+
+        let resp = self.authed(self.client.get(&url)).query(&qp).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            log::error!("list_notes {} — body: {} — api_key_present: {}", status, body, self.api_key.read().ok().map(|g| g.is_some()).unwrap_or(false));
+            return Err(PrismError::Parachute(format!("list_notes failed: {}", status)));
+        }
+        let text = resp.text().await?;
+        let notes: Vec<Note> = serde_json::from_str(&text)
+            .map_err(|e| PrismError::Parachute(format!("JSON parse error: {} (response size: {} bytes)", e, text.len())))?;
+        Ok(notes)
+    }
+
+    /// Fetch EVERY note carrying a tag, paginating until the tag is exhausted.
+    ///
+    /// The meeting↔transcript linker and the calendar-event dedup lookup must see
+    /// all candidates: a fixed `limit` silently drops notes once a tag grows past
+    /// it (the `meeting` tag already exceeds 500, `email` exceeds 1000), and the
+    /// list is server-sorted `desc`, so a capped fetch keeps only the newest and
+    /// can never link an older meeting. Metadata is included; content is not.
+    pub async fn list_all_by_tag(&self, tag: &str) -> Result<Vec<Note>, PrismError> {
+        const PAGE: u32 = 500;
+        let mut out: Vec<Note> = Vec::new();
+        let mut offset: u32 = 0;
+        loop {
+            let page = self.list_notes(&ListNotesParams {
+                tag: Some(tag.to_string()),
+                limit: Some(PAGE),
+                offset: Some(offset),
+                include_content: false,
+                ..Default::default()
+            }).await?;
+            let got = page.len() as u32;
+            out.extend(page);
+            if got < PAGE {
+                break;
+            }
+            offset += PAGE;
+            // Backstop against an unbounded loop if the server ignores offset.
+            if offset >= 50_000 {
+                log::warn!("list_all_by_tag('{}') hit pagination backstop at {}", tag, offset);
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Lean variant of `list_notes` for tree/index views. Same endpoint, but
+    /// deserializes into `NoteTreeEntry` (id/path/tags/metadata only) so the
+    /// Rust→JS payload skips content/timestamps/preview/byteSize. Used by
+    /// ProjectTree, which renders ~13k+ entries on app start.
+    pub async fn list_tree(&self) -> Result<Vec<NoteTreeEntry>, PrismError> {
+        let url = format!("{}/notes", self.base_url());
+        let qp: Vec<(&str, String)> = vec![
+            ("limit", "50000".into()),
+            ("sort", "desc".into()),
+        ];
+        let resp = self.authed(self.client.get(&url)).query(&qp).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            log::error!("list_tree {} — body: {}", status, body);
+            return Err(PrismError::Parachute(format!("list_tree failed: {}", status)));
+        }
+        let text = resp.text().await?;
+        let entries: Vec<NoteTreeEntry> = serde_json::from_str(&text)
+            .map_err(|e| PrismError::Parachute(format!("JSON parse error: {} (response size: {} bytes)", e, text.len())))?;
+        Ok(entries)
+    }
+
+    /// Get a single note by ID or path. v2: `GET /api/notes/:id`.
+    pub async fn get_note(&self, id: &str) -> Result<Note, PrismError> {
+        let resp = self.authed(self.client.get(format!("{}/notes/{}", self.base_url(), id)))
+            .send().await?;
+        if !resp.status().is_success() {
+            return Err(PrismError::Parachute(format!("get_note failed: {}", resp.status())));
+        }
+        Ok(resp.json().await?)
+    }
+
+    pub async fn create_note(&self, params: &CreateNoteParams) -> Result<Note, PrismError> {
+        // Refuse empty pathless creates. A note with no content AND no path is
+        // never legitimate — it shows up as an "Unsorted" empty entry in the
+        // tree and fattens list_tree responses with garbage. We had a leak
+        // (parachute-vault#213) where ~7k of these accumulated overnight from
+        // a buggy MCP caller; this guard makes Prism unable to contribute.
+        let has_content = !params.content.trim().is_empty();
+        let has_path = params.path.as_deref().map(|p| !p.trim().is_empty()).unwrap_or(false);
+        if !has_content && !has_path {
+            return Err(PrismError::Parachute(
+                "create_note refused: empty content and missing path".into()
+            ));
+        }
+        log::debug!(
+            "create_note: path={:?} content_len={} tags={:?}",
+            params.path,
+            params.content.len(),
+            params.tags,
+        );
+        let resp = self.authed(self.client.post(format!("{}/notes", self.base_url())).json(params))
+            .send().await?;
+        if !resp.status().is_success() {
+            return Err(PrismError::Parachute(format!("create_note failed: {}", resp.status())));
+        }
+        Ok(resp.json().await?)
+    }
+
+    pub async fn update_note(&self, id: &str, params: &UpdateNoteParams) -> Result<Note, PrismError> {
+        // Mandatory optimistic-concurrency guard (vault 0.4.0+): a PATCH that
+        // touches content/metadata/path/tags/links must carry `if_updated_at`
+        // or `force:true`, else 428. The editor path passes `if_updated_at`
+        // (real lost-update protection on the contended note). Any caller that
+        // supplies neither — background sync, which is the sole writer of its
+        // own notes — gets `force:true` injected here so it never 428s.
+        let mut body = serde_json::to_value(params)
+            .map_err(|e| PrismError::Parachute(format!("update_note serialize error: {}", e)))?;
+        if params.if_updated_at.is_none() && params.force.is_none() {
+            if let Some(obj) = body.as_object_mut() {
+                obj.insert("force".into(), serde_json::Value::Bool(true));
+            }
+        }
+        let resp = self.authed(self.client.patch(format!("{}/notes/{}", self.base_url(), id)).json(&body))
+            .send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            // 428 = missing if_updated_at/force; 409 = stale if_updated_at.
+            log::error!("update_note {} {} — body: {}", id, status, body);
+            return Err(PrismError::Parachute(format!("update_note failed: {} — {}", status, body)));
+        }
+        Ok(resp.json().await?)
+    }
+
+    pub async fn delete_note(&self, id: &str) -> Result<(), PrismError> {
+        let resp = self.authed(self.client.delete(format!("{}/notes/{}", self.base_url(), id)))
+            .send().await?;
+        if !resp.status().is_success() {
+            return Err(PrismError::Parachute(format!("delete_note failed: {}", resp.status())));
+        }
+        Ok(())
+    }
+
+    // ---- version history (vault ≥ 0.7.9) ----------------------------------
+    // Rows pass through as raw JSON; the TS client normalizes them. Errors carry
+    // a stable marker the TS side maps to typed errors: `history_unavailable`
+    // (a 0.6.x vault 404s /versions even for a note that exists) and
+    // `history_conflict` (409/428 — the note changed since it was reviewed).
+
+    async fn history_response(resp: reqwest::Response, what: &str) -> Result<serde_json::Value, PrismError> {
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(resp.json().await?);
+        }
+        let body = resp.text().await.unwrap_or_default();
+        if status.as_u16() == 404 && what == "list" {
+            return Err(PrismError::Parachute("history_unavailable".into()));
+        }
+        if status.as_u16() == 409 || status.as_u16() == 428 {
+            return Err(PrismError::Parachute(format!("history_conflict: {}", body)));
+        }
+        Err(PrismError::Parachute(format!("note history {} failed: {} — {}", what, status, body)))
+    }
+
+    pub async fn list_note_versions(&self, id: &str, limit: u32, offset: u32) -> Result<serde_json::Value, PrismError> {
+        let resp = self
+            .authed(self.client.get(format!("{}/notes/{}/versions", self.base_url(), id)))
+            .query(&[("limit", limit.to_string()), ("offset", offset.to_string())])
+            .send()
+            .await?;
+        Self::history_response(resp, "list").await
+    }
+
+    pub async fn get_note_version(&self, id: &str, version_ix: u32) -> Result<serde_json::Value, PrismError> {
+        let resp = self
+            .authed(self.client.get(format!("{}/notes/{}/versions/{}", self.base_url(), id, version_ix)))
+            .send()
+            .await?;
+        Self::history_response(resp, "get").await
+    }
+
+    /// The vault refuses a restore without the reviewed `if_updated_at` (even with `force`).
+    pub async fn restore_note_version(&self, id: &str, version_ix: u32, if_updated_at: &str) -> Result<Note, PrismError> {
+        let body = serde_json::json!({ "version_ix": version_ix, "if_updated_at": if_updated_at });
+        let resp = self
+            .authed(self.client.post(format!("{}/notes/{}/restore", self.base_url(), id)).json(&body))
+            .send()
+            .await?;
+        let value = Self::history_response(resp, "restore").await?;
+        serde_json::from_value(value).map_err(|e| PrismError::Parachute(format!("restore response: {}", e)))
+    }
+
+    /// Search notes. v2: absorbed into `GET /api/notes?search=...`.
+    pub async fn search(&self, query: &str, tags: &[String], limit: u32) -> Result<Vec<Note>, PrismError> {
+        let url = format!("{}/notes", self.base_url());
+        let mut qp: Vec<(&str, String)> = vec![
+            ("search", query.into()),
+            ("limit", limit.to_string()),
+            ("include_content", "true".into()),
+        ];
+        for tag in tags {
+            qp.push(("tag", tag.clone()));
+        }
+        let resp = self.authed(self.client.get(&url)).query(&qp).send().await?;
+        if !resp.status().is_success() {
+            return Err(PrismError::Parachute(format!("search failed: {}", resp.status())));
+        }
+        Ok(resp.json().await?)
+    }
+
+    /// List all tags. v2: `GET /api/tags` (unchanged).
+    pub async fn get_tags(&self) -> Result<Vec<TagCount>, PrismError> {
+        let resp = self.authed(self.client.get(format!("{}/tags", self.base_url())))
+            .send().await?;
+        if !resp.status().is_success() {
+            return Err(PrismError::Parachute(format!("get_tags failed: {}", resp.status())));
+        }
+        Ok(resp.json().await?)
+    }
+
+    /// Add tags to a note. `PATCH .../notes/:id` with `tags.add`.
+    /// `force: true` — tag set-ops are sole-writer/idempotent and carry no
+    /// contended `updatedAt`; without it the mandatory concurrency check 428s.
+    pub async fn add_tags(&self, id: &str, tags: &[String]) -> Result<(), PrismError> {
+        let body = serde_json::json!({ "tags": { "add": tags }, "force": true });
+        let resp = self.authed(self.client.patch(format!("{}/notes/{}", self.base_url(), id)).json(&body))
+            .send().await?;
+        if !resp.status().is_success() {
+            return Err(PrismError::Parachute(format!("add_tags failed: {}", resp.status())));
+        }
+        Ok(())
+    }
+
+    /// Remove tags from a note. `PATCH .../notes/:id` with `tags.remove`.
+    pub async fn remove_tags(&self, id: &str, tags: &[String]) -> Result<(), PrismError> {
+        let body = serde_json::json!({ "tags": { "remove": tags }, "force": true });
+        let resp = self.authed(self.client.patch(format!("{}/notes/{}", self.base_url(), id)).json(&body))
+            .send().await?;
+        if !resp.status().is_success() {
+            return Err(PrismError::Parachute(format!("remove_tags failed: {}", resp.status())));
+        }
+        Ok(())
+    }
+
+    /// Get links for a note. v2: `GET /api/notes/:id?include_links=true`.
+    /// The response includes inbound and outbound links on the note object.
+    pub async fn get_links(&self, params: &GetLinksParams) -> Result<Vec<Link>, PrismError> {
+        let note_id = params.note_id.as_ref()
+            .ok_or_else(|| PrismError::Parachute("get_links requires note_id".into()))?;
+        let url = format!("{}/notes/{}", self.base_url(), note_id);
+        let resp = self.authed(self.client.get(&url))
+            .query(&[("include_links", "true")])
+            .send().await?;
+        if !resp.status().is_success() {
+            return Err(PrismError::Parachute(format!("get_links failed: {}", resp.status())));
+        }
+        // Parse response and extract links array
+        let note: serde_json::Value = resp.json().await?;
+        let links_json = note.get("links").cloned().unwrap_or(serde_json::json!([]));
+        let links: Vec<Link> = serde_json::from_value(links_json)
+            .map_err(|e| PrismError::Parachute(format!("links parse error: {}", e)))?;
+        // Filter by relationship if requested
+        let filtered = if let Some(ref rel) = params.relationship {
+            links.into_iter().filter(|l| l.relationship == *rel).collect()
+        } else {
+            links
+        };
+        Ok(filtered)
+    }
+
+    /// Create a link. v2: `PATCH /api/notes/:source_id` with `links.add`.
+    pub async fn create_link(&self, params: &CreateLinkParams) -> Result<Link, PrismError> {
+        let body = serde_json::json!({
+            "links": {
+                "add": [{
+                    "target": params.target_id,
+                    "relationship": params.relationship,
+                }]
+            },
+            "force": true
+        });
+        let resp = self.authed(self.client.patch(format!("{}/notes/{}", self.base_url(), params.source_id)).json(&body))
+            .send().await?;
+        if !resp.status().is_success() {
+            let err = resp.text().await.unwrap_or_default();
+            return Err(PrismError::Parachute(format!("create_link failed: {}", err)));
+        }
+        // Response is the updated note; synthesize a Link for return shape compatibility.
+        Ok(Link {
+            source_id: params.source_id.clone(),
+            target_id: params.target_id.clone(),
+            relationship: params.relationship.clone(),
+            metadata: params.metadata.clone(),
+            created_at: None,
+        })
+    }
+
+    /// Delete a link. v2: `PATCH /api/notes/:source_id` with `links.remove`.
+    pub async fn delete_link(&self, params: &DeleteLinkParams) -> Result<(), PrismError> {
+        let body = serde_json::json!({
+            "links": {
+                "remove": [{
+                    "target": params.target_id,
+                    "relationship": params.relationship,
+                }]
+            },
+            "force": true
+        });
+        let resp = self.authed(self.client.patch(format!("{}/notes/{}", self.base_url(), params.source_id)).json(&body))
+            .send().await?;
+        if !resp.status().is_success() {
+            return Err(PrismError::Parachute(format!("delete_link failed: {}", resp.status())));
+        }
+        Ok(())
+    }
+
+    /// Get the full graph. v2: `GET /api/notes?format=graph&include_links=true`.
+    /// Response shape: `{ nodes: [...], edges: [...] }`.
+    ///
+    /// Semantic note: the API only honors a neighborhood scope via the
+    /// bracket-style `near[note_id]` / `near[depth]` params (depth default 2,
+    /// capped at 5). Without `center_id`, the response is the full graph.
+    pub async fn get_graph(&self, params: &GetGraphParams) -> Result<Graph, PrismError> {
+        let url = format!("{}/notes", self.base_url());
+        let mut qp: Vec<(&str, String)> = vec![
+            ("format", "graph".into()),
+            ("include_links", "true".into()),
+            ("limit", "10000".into()),
+        ];
+        if let Some(ref center_id) = params.center_id {
+            qp.push(("near[note_id]", center_id.clone()));
+            if let Some(depth) = params.depth {
+                qp.push(("near[depth]", depth.to_string()));
+            }
+        }
+        // If the caller passed `depth` without `center_id`, it's silently
+        // dropped — a depth bound is only meaningful with a neighborhood anchor.
+        let resp = self.authed(self.client.get(&url)).query(&qp).send().await?;
+        if !resp.status().is_success() {
+            return Err(PrismError::Parachute(format!("get_graph failed: {}", resp.status())));
+        }
+        Ok(resp.json().await?)
+    }
+
+    /// Get vault stats. v2: `GET /api/vault?include_stats=true`.
+    pub async fn get_stats(&self) -> Result<VaultStats, PrismError> {
+        let url = format!("{}/vault", self.base_url());
+        let resp = self.authed(self.client.get(&url))
+            .query(&[("include_stats", "true")])
+            .send().await?;
+        if !resp.status().is_success() {
+            return Err(PrismError::Parachute(format!("get_stats failed: {}", resp.status())));
+        }
+        let full: serde_json::Value = resp.json().await?;
+        let stats_obj = full.get("stats").cloned().unwrap_or(serde_json::json!({}));
+        let stats: VaultStats = serde_json::from_value(stats_obj)
+            .map_err(|e| PrismError::Parachute(format!("stats parse error: {}", e)))?;
+        Ok(stats)
+    }
+
+    /// Get vault info including description. v2: `GET /api/vault`.
+    pub async fn get_vault_info(&self) -> Result<VaultInfo, PrismError> {
+        let url = format!("{}/vault", self.base_url());
+        let resp = self.authed(self.client.get(&url))
+            .send().await?;
+        if !resp.status().is_success() {
+            return Err(PrismError::Parachute(format!("get_vault_info failed: {}", resp.status())));
+        }
+        Ok(resp.json().await?)
+    }
+
+    /// Update vault description. v2: `PATCH /api/vault`.
+    pub async fn update_vault_description(&self, description: &str) -> Result<VaultInfo, PrismError> {
+        let url = format!("{}/vault", self.base_url());
+        let body = serde_json::json!({ "description": description });
+        let resp = self.authed(self.client.patch(&url).json(&body))
+            .send().await?;
+        if !resp.status().is_success() {
+            return Err(PrismError::Parachute(format!("update_vault_description failed: {}", resp.status())));
+        }
+        Ok(resp.json().await?)
+    }
+}

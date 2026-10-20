@@ -1,0 +1,80 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+dist-native
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.png
+.playwright-mcp/
+.mcp.json
+
+# Playwright e2e artifacts (apps/web)
+test-results/
+playwright-report/
+.playwright/
+
+# Private / sensitive — never commit
+# .claude/ holds local working notes and (historically) a personal contacts
+# export. Ignore the whole dir so nothing under it can be accidentally staged.
+# Already-tracked planning docs under .claude/ remain tracked; new files do not.
+.claude/
+# Belt-and-suspenders: contact exports are never allowed anywhere in the tree.
+*.abbu
+*.abbu/
+
+# Server runtime secrets / local SQLite
+apps/server/.env
+apps/server/*.sqlite
+apps/server/*.sqlite-journal
+apps/server/data/
+# Private runtime media/map cache, generated beside the server database.
+/apps/server/media-cache/
+# Private environment snapshots from the named voice rollout helper.
+/apps/server/omni-tts-config-backups/
+
+# Never commit env files or their backups (only *.example templates) — secrets.
+apps/server/.env*
+!apps/server/.env*.example
+!apps/server/.env.test
+*.bak
+*.bak.*
+# Hub B federation sandbox (test stack)
+apps/server/prism-b.db
+apps/server/prism-b.log
+apps/server/.incident-*/
+
+# Parachute upgrade research + probe scripts: local-only (they quote private vault contents)
+docs/roadmap/parachute-upgrade/research/
+docs/roadmap/parachute-upgrade/rehearsal-tools/
+
+# Durable isolated implementation checkouts
+/.worktrees/
+
+# Acceptance screenshots (generated: PRISM_SHOTS=1 … acceptance-shots.spec.ts) and the gallery built from them
+apps/web/acceptance-shots/
+apps/web/acceptance-gallery*.html
+
+# Host bundle build output (packaging/host/build.ts)
+packaging/host/out/
+
+# Native web build module list (apps/web/scripts/bundled-modules.ts; read by apps/client/scripts/licenses/)
+apps/web/dist-native.modules.json

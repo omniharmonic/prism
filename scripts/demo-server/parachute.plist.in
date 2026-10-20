@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The App Review demo's OWN Parachute (stock `parachute serve`: the hub and, as its child, the
+  vault), in the demo macOS user's gui/<uid> domain. Written by scripts/demo-server/install.sh
+  from parachute.plist.in. Not Prism's stock mode on purpose: that mode runs the hub only on the
+  default ports (1939/1940), which production uses. Here the hub listens on {{HUB_PORT}} and the
+  vault on {{VAULT_PORT}} (PARACHUTE_HOME/vault/config.yaml), loopback only. No secret is written
+  here.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{{LABEL}}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{PARACHUTE_BIN}}</string>
+    <string>serve</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PARACHUTE_HOME</key>
+    <string>{{PARACHUTE_HOME}}</string>
+    <key>PORT</key>
+    <string>{{HUB_PORT}}</string>
+    <key>PARACHUTE_BIND_HOST</key>
+    <string>127.0.0.1</string>
+    <key>PARACHUTE_HUB_ORIGIN</key>
+    <string>http://127.0.0.1:{{HUB_PORT}}</string>
+    <key>PARACHUTE_HUB_JWKS_ORIGIN</key>
+    <string>http://127.0.0.1:{{HUB_PORT}}</string>
+    <key>PARACHUTE_HUB_PORT</key>
+    <string>{{HUB_PORT}}</string>
+    <key>HOME</key>
+    <string>{{HOME}}</string>
+    <key>BUN_INSTALL</key>
+    <string>{{HOME}}/.bun</string>
+    <key>PATH</key>
+    <string>{{HOME}}/.bun/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>{{PARACHUTE_HOME}}</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>ExitTimeOut</key>
+  <integer>20</integer>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>StandardOutPath</key>
+  <string>{{LOG_DIR}}/demo-parachute.log</string>
+  <key>StandardErrorPath</key>
+  <string>{{LOG_DIR}}/demo-parachute.log</string>
+</dict>
+</plist>

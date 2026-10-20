@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "note": "The field-shape CONTRACT: the one place the vault's metadata shape rules are written down. Everything else is loaded or generated from this file and pinned to it by tests — Prism's write guard and lint (apps/server/src/vault-shapes.ts, worker/vault-lint.ts), the agent repo's guard (scripts/vault_shapes.py, which carries a byte-identical vendored copy at config/vault-shapes.json), and the 'Field shapes' block in every routine / agent prompt (docs/vault-field-shapes.md, rendered by renderFieldShapesBlock). It must agree with tag-schemas.json and scripts/vault-hygiene/schema-fixes.json (apps/server/test/schema-drift.test.ts fails otherwise). To change a shape: docs/vault-schema-change.md.",
+  "listFields": {
+    "person": ["organizations", "projects", "aliases"],
+    "organization": ["people", "projects", "aliases"],
+    "project": ["collaborators", "aliases", "keywords"],
+    "concept": ["aliases", "related", "sectors", "scales"],
+    "briefing": ["projects", "people"],
+    "meeting": ["projects", "attendees", "concepts", "organizations"],
+    "transcript": ["projects", "attendees"],
+    "research": ["projects"],
+    "decision-record": ["participants"],
+    "grant-application": ["collaborators"],
+    "message-thread": ["participants", "participantIds"]
+  },
+  "undeclaredListFields": {
+    "_note": "List fields the writers produce that no tag schema declares yet (so the vault does not validate them; the guard and lint still do). Declaring one = a schema change.",
+    "concept": ["sectors", "scales"],
+    "meeting": ["concepts", "organizations"],
+    "transcript": ["projects", "attendees"],
+    "message-thread": ["participantIds"]
+  },
+  "exemptArrayFields": {
+    "_note": "Declared array fields the guard deliberately leaves alone.",
+    "email": { "labels": "ingest-owned: worker/proton.ts and worker/gmail.ts always write an array; no other writer may touch it" }
+  },
+  "exemptTags": {
+    "_note": "Schema'd tags outside the personal-vault contract. Prefix match when the name ends with '*'.",
+    "governance-*": "metadata is HMAC-signed (governance-integrity.ts); never rewritten by a guard",
+    "entity": "bioregional commons schema (not seeded in the personal vault)",
+    "ecological-entity": "bioregional commons schema",
+    "species": "bioregional commons schema",
+    "place": "bioregional commons schema",
+    "watershed": "bioregional commons schema",
+    "event": "bioregional commons schema",
+    "resource": "bioregional commons schema",
+    "signal": "bioregional commons schema",
+    "recipe": "bioregional commons schema",
+    "flow": "bioregional commons schema",
+    "herbal-use": "bioregional commons schema"
+  },
+  "confidence": {
+    "tags": ["person", "project", "organization", "concept"],
+    "labels": ["high", "medium", "low"]
+  },
+  "taskStatus": {
+    "values": ["pending", "in-progress", "blocked", "waiting", "completed", "cancelled", "archived", "todo", "done"],
+    "mirrorOnly": ["todo", "done"],
+    "synonyms": {
+      "tracked": "pending",
+      "not started": "pending",
+      "open": "pending",
+      "active": "in-progress",
+      "doing": "in-progress",
+      "in_progress": "in-progress",
+      "in progress": "in-progress",
+      "review": "in-progress",
+      "in review": "in-progress",
+      "resolved": "completed",
+      "complete": "completed",
+      "closed": "completed",
+      "duplicate": "cancelled",
+      "discarded": "cancelled",
+      "dropped": "cancelled",
+      "canceled": "cancelled",
+      "waiting-on": "waiting",
+      "waiting_on": "waiting"
+    }
+  },
+  "threadPlatforms": ["whatsapp", "telegram", "signal", "discord", "email", "matrix", "twitter", "instagram", "messenger"],
+  "source": {
+    "tags": ["meeting", "transcript"],
+    "known": ["fathom", "meetily", "fireflies", "voice", "calendar", "manual"]
+  },
+  "textFields": {
+    "*": ["recording_id"],
+    "spec": ["version"]
+  },
+  "integerFields": {
+    "message-thread": ["lastMessageAt"]
+  },
+  "lowercaseStatusTags": ["organization", "writing"],
+  "projectLink": {
+    "fields": ["projects", "project"],
+    "folder": "vault/projects",
+    "noteName": "PROJECT"
+  },
+  "lintTags": [
+    "person", "organization", "project", "concept", "meeting", "transcript", "task", "message-thread",
+    "briefing", "spec", "report", "writing", "research", "decision-record", "grant-application", "email",
+    "proposal", "script", "slides", "dashboard", "index", "page", "project-page", "project-update",
+    "agent-insight", "agent-skill"
+  ],
+  "lintAlertTags": [
+    "person", "organization", "project", "concept", "meeting", "transcript", "task", "message-thread",
+    "briefing", "spec", "report", "writing"
+  ],
+  "prompt": {
+    "heading": "## Field shapes (bind hard — every note you create or update)",
+    "intro": "The vault validates these shapes; a wrong one is a warning on that note forever and breaks Prism's database views. This block is generated from the approved schema (Prism `packages/core/src/lib/schemas/vault-shapes.json`); the write guards and the daily vault lint enforce the same rules.",
+    "rules": [
+      "LIST fields are lists, and an empty list is ABSENT: never write `\"\"` (or `\" \"`, or `[\"\"]`) to a list field. Nothing to say → leave the key out; to clear a list, write `[]`. One value is still a list: `[\"[[…]]\"]`. The list fields — {listFieldsByTag}.",
+      "No empty scalars either: omit a field you have no value for (`source`, `role`, `contact`, `confidence`, `due`, …) instead of writing `\"\"`.",
+      "Project links point at the project NOTE, never the folder: `[[{projectFolder}/<slug>/{projectNote}]]`. `[[{projectFolder}/<slug>]]` resolves to nothing. Only link a project slug that already has that note (query-notes { id: \"{projectFolder}/<slug>/{projectNote}\" }); otherwise mention it in prose.",
+      "People links point at an EXISTING person note path you looked up; never invent `[[vault/people/<Title Name>]]`.",
+      "Keep what you write linked: a meeting, transcript, briefing or research note names its people and projects in the list fields above (`attendees` / `people` / `projects`) as links to those existing notes — that is what keeps the vault connected.",
+      "`confidence` on {confidenceTags} is a label: {confidenceLabels} (never a number).",
+      "Task `status` (only when you touch an existing task): {agentTaskStatuses} ({mirrorTaskStatuses} only on ClickUp mirrors). Status lives in metadata, never as a tag.",
+      "{sourceTags} `source`: one lower-case word — {sources}; leave an existing `source` exactly as it is.",
+      "`recording_id` is text (`\"12345\"`, quoted), never a number. Spec `version` is text too (`\"1.2\"`). `lastMessageAt` on message threads is epoch milliseconds (an integer) — and is owned by the ingester: do not write it."
+    ]
+  }
+}

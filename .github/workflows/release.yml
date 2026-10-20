@@ -1,0 +1,211 @@
+name: Release (host bundle)
+
+# Builds prism-host-<version>-darwin-arm64.tar.gz on Apple silicon, signs + notarizes it when the
+# signing secrets exist, smoke-tests the result, and uploads it to a DRAFT GitHub Release (a person
+# publishes it). docs/host-bundle.md § Release lists the secrets and what each step proves.
+on:
+  push:
+    tags: ["prism-host-v*"]
+  workflow_dispatch:
+    inputs:
+      draft_release:
+        description: "Also create a draft GitHub Release (else: workflow artifact only)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  host-bundle:
+    name: host bundle (darwin-arm64)
+    runs-on: macos-14
+    timeout-minutes: 90
+    permissions:
+      contents: write # the draft release
+    env:
+      # `secrets` cannot be read in a step's `if:`; these flags can.
+      HAS_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID_P12 != '' && secrets.APPLE_DEVELOPER_ID_P12_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
+      HAS_NOTARY: ${{ secrets.APPLE_NOTARY_API_KEY != '' && secrets.APPLE_NOTARY_API_KEY_ID != '' && secrets.APPLE_NOTARY_API_ISSUER_ID != '' }}
+      HAS_MINISIGN: ${{ secrets.MINISIGN_SECRET_KEY != '' }}
+      # The Node runtime's SHASUMS256.txt signature is required here (packaging/host/build/node-signature.ts).
+      PRISM_REQUIRE_NODE_SIGNATURE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Version and tag agree
+        id: version
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=prism-host-v$version" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "prism-host-v$version" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the root package.json version $version (expected prism-host-v$version)"
+            exit 1
+          fi
+
+      - name: Tools (gnupg for the Node signature, minisign for SHA256SUMS)
+        run: |
+          command -v gpg >/dev/null || brew install gnupg
+          if [[ "$HAS_MINISIGN" == "true" ]]; then command -v minisign >/dev/null || brew install minisign; fi
+          gpg --version | head -1
+
+      - run: npm ci
+
+      - name: Check (typecheck all workspaces + e2e specs, static guards)
+        run: npm run check
+
+      - name: Server tests
+        run: npm run test -w @prism/server
+
+      - name: Build the host bundle
+        run: npm run build:host
+
+      # ── Developer ID signing (only when the secrets exist) ─────────────────────────────────
+      - name: Import the Developer ID identity into a temporary keychain
+        id: keychain
+        if: env.HAS_DEVELOPER_ID == 'true'
+        env:
+          P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          kc="$RUNNER_TEMP/prism-signing.keychain-db"
+          kc_pass="$(openssl rand -hex 24)"
+          p12="$RUNNER_TEMP/developer-id.p12"
+          umask 077
+          printf '%s' "$P12_BASE64" | base64 --decode > "$p12"
+          security create-keychain -p "$kc_pass" "$kc"
+          security set-keychain-settings -lut 3600 "$kc"
+          security unlock-keychain -p "$kc_pass" "$kc"
+          security import "$p12" -k "$kc" -P "$P12_PASSWORD" -T /usr/bin/codesign -f pkcs12
+          rm -f "$p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_pass" "$kc" >/dev/null
+          existing=()
+          while IFS= read -r k; do k="${k//\"/}"; existing+=("${k// /}"); done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$kc" "${existing[@]}"
+          identity="$(security find-identity -v -p codesigning "$kc" | awk -v t="($APPLE_TEAM_ID)" '/Developer ID Application/ && index($0, t) { print $2; exit }')"
+          if [[ -z "$identity" ]]; then echo "::error::no 'Developer ID Application' identity for team $APPLE_TEAM_ID in the imported p12"; exit 1; fi
+          echo "keychain=$kc" >> "$GITHUB_OUTPUT"
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+
+      - name: Sign every Mach-O (hardened runtime) and self-test the signed runtime
+        if: env.HAS_DEVELOPER_ID == 'true'
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: >-
+          packaging/host/release/sign-bundle.sh
+          "packaging/host/out/prism-host-${{ steps.version.outputs.version }}-darwin-arm64.tar.gz"
+          "${{ steps.keychain.outputs.identity }}"
+          --keychain "${{ steps.keychain.outputs.keychain }}"
+
+      - name: Unsigned build
+        if: env.HAS_DEVELOPER_ID != 'true'
+        run: |
+          echo "::warning::APPLE_DEVELOPER_ID_P12 / _PASSWORD / APPLE_TEAM_ID not set: the bundle is NOT signed or notarized"
+          packaging/host/release/sign-bundle.sh "packaging/host/out/prism-host-${{ steps.version.outputs.version }}-darwin-arm64.tar.gz" --list
+
+      # The smoke test runs on the tarball that will be published (signed when signing ran).
+      - name: Smoke test (install, run, backup, update, rollback rules, uninstall — no launchd)
+        run: node --import tsx packaging/host/smoke.ts "packaging/host/out/prism-host-${{ steps.version.outputs.version }}-darwin-arm64.tar.gz"
+
+      - name: Notarize
+        if: env.HAS_DEVELOPER_ID == 'true' && env.HAS_NOTARY == 'true'
+        env:
+          NOTARY_KEY: ${{ secrets.APPLE_NOTARY_API_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_API_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_API_ISSUER_ID }}
+        run: |
+          key="$RUNNER_TEMP/notary-key.p8"
+          umask 077
+          # The secret may hold the .p8 text itself or its base64.
+          if printf '%s' "$NOTARY_KEY" | grep -q "BEGIN PRIVATE KEY"; then printf '%s\n' "$NOTARY_KEY" > "$key"; else printf '%s' "$NOTARY_KEY" | base64 --decode > "$key"; fi
+          packaging/host/release/notarize.sh "packaging/host/out/prism-host-${{ steps.version.outputs.version }}-darwin-arm64.tar.gz" "$key" "$NOTARY_KEY_ID" "$NOTARY_ISSUER"
+          rm -f "$key"
+
+      - name: Collect the release files
+        id: files
+        run: |
+          out=packaging/host/out
+          name="prism-host-${{ steps.version.outputs.version }}-darwin-arm64"
+          /usr/bin/tar -xzf "$out/$name.tar.gz" -C "$RUNNER_TEMP" "$name/THIRD-PARTY-LICENSES.md"
+          cp "$RUNNER_TEMP/$name/THIRD-PARTY-LICENSES.md" "$out/THIRD-PARTY-LICENSES.md"
+          (cd "$out" && /usr/bin/shasum -a 256 -c SHA256SUMS)
+          echo "dir=$out" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Sign SHA256SUMS (minisign)
+        if: env.HAS_MINISIGN == 'true'
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          key="$RUNNER_TEMP/minisign.key"
+          umask 077
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
+          packaging/host/release/sign-sums.sh "${{ steps.files.outputs.dir }}" "$key" "prism-host ${{ steps.version.outputs.version }} ${{ github.sha }}"
+          rm -f "$key"
+
+      - name: Upload the workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.files.outputs.name }}
+          path: |
+            ${{ steps.files.outputs.dir }}/${{ steps.files.outputs.name }}.tar.gz
+            ${{ steps.files.outputs.dir }}/SHA256SUMS
+            ${{ steps.files.outputs.dir }}/SHA256SUMS.minisig
+            ${{ steps.files.outputs.dir }}/THIRD-PARTY-LICENSES.md
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Draft GitHub Release
+        if: github.ref_type == 'tag' || inputs.draft_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          DIR: ${{ steps.files.outputs.dir }}
+          NAME: ${{ steps.files.outputs.name }}
+        run: |
+          signed="NOT signed or notarized (no Developer ID secrets in this run)"
+          if [[ "$HAS_DEVELOPER_ID" == "true" ]]; then signed="Developer ID signed (hardened runtime)"; fi
+          if [[ "$HAS_DEVELOPER_ID" == "true" && "$HAS_NOTARY" == "true" ]]; then signed="Developer ID signed (hardened runtime) and notarized"; fi
+          files=("$DIR/$NAME.tar.gz" "$DIR/SHA256SUMS" "$DIR/THIRD-PARTY-LICENSES.md")
+          sumsig="SHA256SUMS is NOT signed in this run."
+          if [[ -f "$DIR/SHA256SUMS.minisig" ]]; then
+            files+=("$DIR/SHA256SUMS.minisig")
+            sumsig="Verify SHA256SUMS: \`minisign -Vm SHA256SUMS -p minisign.pub\` (public key: packaging/host/release/minisign.pub at this commit)."
+          fi
+          notes="$RUNNER_TEMP/release-notes.md"
+          cat > "$notes" <<EOF
+          Prism host bundle ${{ steps.version.outputs.version }} (darwin-arm64), commit $GITHUB_SHA.
+
+          - $signed
+          - $sumsig
+          - Then: \`shasum -a 256 -c SHA256SUMS\`.
+          EOF
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            gh release create "$TAG" "${files[@]}" --draft --target "$GITHUB_SHA" --title "Prism host $TAG" --notes-file "$notes"
+          fi
+
+      - name: Remove the temporary keychain
+        if: always() && steps.keychain.outputs.keychain != ''
+        run: security delete-keychain "${{ steps.keychain.outputs.keychain }}" || true
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### prism-host ${{ steps.version.outputs.version }}"
+            echo "- Developer ID signing: ${HAS_DEVELOPER_ID}"
+            echo "- Notarization: $([[ "$HAS_DEVELOPER_ID" == true && "$HAS_NOTARY" == true ]] && echo true || echo false)"
+            echo "- SHA256SUMS signature (minisign): ${HAS_MINISIGN}"
+          } >> "$GITHUB_STEP_SUMMARY"

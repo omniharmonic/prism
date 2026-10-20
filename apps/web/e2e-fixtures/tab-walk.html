@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>walkTab fixture</title>
+  </head>
+  <body>
+    <input id="before" aria-label="Before" />
+    <div id="widget" role="group" aria-label="Widget">
+      <button id="a" type="button">A</button>
+      <fieldset disabled><button id="b" type="button">B (in a disabled fieldset)</button></fieldset>
+      <button id="hidden" type="button" style="display: none">Hidden</button>
+      <button id="c" type="button">C</button>
+      <input id="d" aria-label="D" />
+    </div>
+    <input id="after" aria-label="After" />
+    <script type="module" src="./tab-walk.ts"></script>
+  </body>
+</html>

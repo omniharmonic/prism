@@ -1,0 +1,180 @@
+import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useSurfaceDismiss } from "./useSurfaceDismiss";
+import { X } from "lucide-react";
+import "./mobile-workspace.css";
+
+export interface SheetItem {
+  icon?: ReactNode;
+  label: string;
+  detail?: string;
+  onClick: () => void;
+  startsGroup?: boolean;
+  danger?: boolean;
+  active?: boolean;
+  /** A labelled section ("Go to", "This page"): consecutive items with the same group share one. */
+  group?: string;
+}
+
+/** Consecutive items with the same `group` form one section. */
+function sections(items: SheetItem[]): Array<{ label?: string; items: SheetItem[] }> {
+  const out: Array<{ label?: string; items: SheetItem[] }> = [];
+  for (const item of items) {
+    const last = out[out.length - 1];
+    if (last && last.label === item.group) last.items.push(item);
+    else out.push({ label: item.group, items: [item] });
+  }
+  return out;
+}
+
+/** A modal mobile action surface. The handle and heading can dismiss by dragging;
+ * scrolling a long document list never turns into an accidental dismissal. */
+export function BottomSheet({
+  open,
+  onClose,
+  title = "Page actions",
+  header,
+  items,
+  children,
+  returnFocusRef,
+}: {
+  open: boolean;
+  onClose: () => void;
+  title?: string;
+  header?: ReactNode;
+  items?: SheetItem[];
+  children?: ReactNode;
+  returnFocusRef?: RefObject<HTMLElement | null>;
+}) {
+  const titleId = useId();
+  const dialog = useRef<HTMLDialogElement>(null);
+  const dismiss = useSurfaceDismiss(dialog, open, ".prism-mobile-sheet-handle, .prism-mobile-sheet-heading", onClose);
+  const [viewport, setViewport] = useState<{ height: number; bottom: number } | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const element = dialog.current;
+    const previous = document.activeElement as HTMLElement | null;
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    element?.showModal();
+    const vv = window.visualViewport;
+    const update = () =>
+      setViewport(
+        vv ? { height: vv.height, bottom: Math.max(0, window.innerHeight - vv.height - vv.offsetTop) } : null,
+      );
+    update();
+    vv?.addEventListener("resize", update);
+    vv?.addEventListener("scroll", update);
+    return () => {
+      vv?.removeEventListener("resize", update);
+      vv?.removeEventListener("scroll", update);
+      // An action of the sheet may have put focus somewhere on purpose before the sheet went away (Rename opens
+      // the row's inline field, which commits on blur). Focus is returned to where it was ONLY when nothing took it:
+      // otherwise the field lost focus the moment it appeared and the rename was over before a key was pressed —
+      // on Safari / iOS, where a tapped button is not focused, "where it was" is the editor, which is still there.
+      const active = document.activeElement as HTMLElement | null;
+      const taken = !!active && active !== document.body && active.isConnected && !element?.contains(active);
+      // Closing a modal dialog natively refocuses what was focused before it opened; a dialog already out of the
+      // document has nothing to close.
+      if (element?.isConnected) element.close();
+      document.body.style.overflow = overflow;
+      if (taken) return;
+      const target = returnFocusRef?.current ?? previous;
+      if (target?.isConnected) target.focus({ preventScroll: true });
+    };
+  }, [open, returnFocusRef]);
+
+  if (!open) return null;
+  return (
+    <dialog
+      ref={dialog}
+      aria-labelledby={titleId}
+      tabIndex={-1}
+      className="prism-mobile-sheet"
+      style={{
+        maxHeight: viewport ? `min(82dvh, ${Math.max(120, viewport.height - 16)}px)` : undefined,
+        bottom: viewport?.bottom ?? 0,
+      }}
+      onCancel={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        dismiss();
+      }}
+      onClick={(event) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        if (
+          event.target === event.currentTarget &&
+          (event.clientX < rect.left ||
+            event.clientX > rect.right ||
+            event.clientY < rect.top ||
+            event.clientY > rect.bottom)
+        )
+          dismiss();
+      }}
+      onKeyDown={(event) => {
+        if ((event.target as HTMLElement).closest("dialog") !== event.currentTarget) return;
+        if (event.key === "Escape") event.stopPropagation();
+        if (event.key !== "Tab") return;
+        const controls = Array.from(
+          event.currentTarget.querySelectorAll<HTMLElement>(
+            'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]',
+          ),
+        ).filter((control) => control.getClientRects().length > 0);
+        event.preventDefault();
+        if (!controls.length) {
+          event.currentTarget.focus();
+          return;
+        }
+        const index = controls.indexOf(document.activeElement as HTMLElement);
+        controls[
+          event.shiftKey ? (index <= 0 ? controls.length - 1 : index - 1) : (index + 1) % controls.length
+        ]?.focus();
+      }}
+    >
+      <div
+        className="prism-mobile-sheet-panel"
+      >
+        <div
+          className="prism-mobile-sheet-handle"
+          aria-hidden="true"
+
+        >
+          <span />
+        </div>
+        <header className="prism-mobile-sheet-heading">
+          <h2 id={titleId}>{title || "Page actions"}</h2>
+          <button type="button" aria-label="Close sheet" onClick={dismiss}>
+            <X size={18} />
+          </button>
+        </header>
+        <div className="prism-mobile-sheet-content">
+          {header && <div className="prism-mobile-sheet-context">{header}</div>}
+          {items ? sections(items).map((section, sectionIndex) => (
+            <div key={section.label ?? `#${sectionIndex}`} className="prism-mobile-sheet-actions"
+              role={section.label ? "group" : undefined} aria-labelledby={section.label ? `${titleId}-g${sectionIndex}` : undefined}>
+              {section.label && <h3 id={`${titleId}-g${sectionIndex}`} className="prism-mobile-sheet-group">{section.label}</h3>}
+              {section.items.map((item, index) => (
+                <button
+                  // Keyed by label (+ occurrence), not position: a row arriving late (lock state
+                  // once the page loads) must not remount the rows after it under a finger.
+                  key={`${item.label}#${section.items.slice(0, index).filter((other) => other.label === item.label).length}`}
+                  type="button"
+                  onClick={item.onClick}
+                  className={[
+                    item.startsGroup ? "starts-group" : "",
+                    item.danger ? "danger" : "",
+                    item.active ? "active" : "",
+                  ].join(" ")}
+                >
+                  {item.icon && <span className="prism-mobile-sheet-icon">{item.icon}</span>}
+                  <span className="prism-mobile-sheet-label">{item.label}</span>
+                  {item.detail && <span className="prism-mobile-sheet-detail">{item.detail}</span>}
+                </button>
+              ))}
+            </div>
+          )) : children}
+        </div>
+      </div>
+    </dialog>
+  );
+}

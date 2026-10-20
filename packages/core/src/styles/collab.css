@@ -1,0 +1,197 @@
+/*
+ * Collaborative-editor styles (remote carets, suggestion marks, comment bubble).
+ *
+ * These MUST live in a bundled, imported stylesheet — NOT a runtime React
+ * <style> in CollabEditor. In the desktop production webview (Tauri WKWebView +
+ * the built bundle) a React-rendered <style> silently fails to register as a
+ * stylesheet (document.styleSheets has no rule for it), so the caret name tag
+ * lost its positioning and rendered as literal inline text ("You") in the doc.
+ * dev (Vite HMR) and the browser tolerated it; this delivery path is the only
+ * one that applies in all four runtimes. Per-user color still rides in via the
+ * extension's inline border-color / background-color.
+ */
+
+/* Remote-collaborator caret + name tag (Google-Docs style). The active class is
+   collaboration-carets__* (plural) in @tiptap/extension-collaboration-caret v3 —
+   the older singular / y-prosemirror "cursor" names are kept too so a version
+   bump can't silently regress this. The caret rule sets ONLY width+style (a
+   "border-left" shorthand would reset the color to currentColor and lose the
+   tint). position is forced (!important) as belt-and-suspenders. */
+.collaboration-carets__caret,
+.collaboration-caret__caret,
+.ProseMirror-yjs-cursor {
+  border-left-width: 1.5px;
+  border-left-style: solid;
+  border-right: none;
+  margin-left: -1px;
+  margin-right: -1px;
+  box-sizing: border-box;
+  pointer-events: none;
+  position: relative !important;
+  word-break: normal;
+}
+
+.collaboration-carets__label,
+.collaboration-caret__label,
+.ProseMirror-yjs-cursor > div {
+  position: absolute !important;
+  top: -1.35em;
+  left: -1px;
+  display: inline-block;
+  width: auto;
+  max-width: 220px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: #fff;
+  padding: 0 5px;
+  border-radius: 4px 4px 4px 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: none;
+  pointer-events: none;
+  /* Show the name on arrival/movement, then fade so it doesn't clutter — the
+     caret bar stays. Yjs rebuilds the element on each awareness update, so the
+     tag re-appears whenever the peer moves or types. */
+  opacity: 0;
+  animation: prism-caret-label 2.6s ease-out forwards;
+}
+
+@keyframes prism-caret-label {
+  0%,
+  55% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* Tracked suggestions (insert/delete) + the on-selection comment bubble. */
+span[data-suggestion="insert"] {
+  background: rgba(34, 197, 94, 0.12);
+}
+span[data-suggestion="delete"] {
+  background: rgba(239, 68, 68, 0.1);
+}
+/* NP-AX-04: a suggestion is told apart by its underline / strike and its tint, in the author's colour;
+   the words keep reading contrast. The stored mark carries an inline colour (any collaborator colour,
+   so not guaranteed AA on the tint) — it is overridden here, never rewritten in the document. The
+   agent's default green/red map to the status tokens, which are AA in both themes. */
+span[data-suggestion="insert"], span[data-suggestion="delete"] { color: var(--text-primary) !important; }
+span[data-suggestion="insert"][data-color="#22c55e"] { color: var(--color-success) !important; }
+span[data-suggestion="delete"][data-color="#ef4444"] { color: var(--color-danger) !important; }
+/* Suggested STRUCTURE (editor/suggestionNodes.ts): a paragraph break put in (the block's start
+   carries data-suggestion-node="insert") or suggested for removal ("delete"), drawn as a "¶" in
+   front of the block; a suggested line break is a small "↵" widget in front of the <br>.
+   Generated content only — nothing here is part of the text. */
+[data-suggestion-node]:not(br)::before {
+  content: "¶";
+  margin-right: 0.3em;
+  font-weight: 400;
+  font-style: normal;
+  font-size: 0.85em;
+  user-select: none;
+  -webkit-user-select: none;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+[data-suggestion-node="insert"]:not(br)::before { color: var(--color-success); background: rgba(34, 197, 94, 0.12); text-decoration: underline; }
+[data-suggestion-node="delete"]:not(br)::before { color: var(--color-danger); background: rgba(239, 68, 68, 0.1); text-decoration: line-through; }
+/* An empty suggested block that holds the caret also shows the editor's placeholder, which is a
+   ::before too (editor-blocks.css): one ::before says both. */
+.tiptap .is-empty[data-suggestion-node]::before { content: "¶ " attr(data-placeholder); opacity: 0.75; margin: 0; padding: 0; font-size: inherit; background: none; text-decoration: none; }
+/* A suggested chip (mention / date): the node decoration's class on the chip's own element. */
+.prism-suggested-chip-insert { text-decoration: underline; text-decoration-color: var(--color-success); box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.28); border-radius: 4px; }
+.prism-suggested-chip-delete { text-decoration: line-through; text-decoration-color: var(--color-danger); box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.28); border-radius: 4px; opacity: 0.75; }
+.prism-suggested-break { user-select: none; -webkit-user-select: none; pointer-events: none; }
+.prism-suggested-break::after {
+  content: "↵";
+  margin: 0 0.15em;
+  font-size: 0.85em;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+.prism-suggested-break[data-kind="insert"]::after { color: var(--color-success); background: rgba(34, 197, 94, 0.12); text-decoration: underline; }
+.prism-suggested-break[data-kind="delete"]::after { color: var(--color-danger); background: rgba(239, 68, 68, 0.1); text-decoration: line-through; }
+/* NP-CO-10: an agent's marks are told apart from every person's — a dashed line in the reserved
+   agent colour (never a caret colour), beside the "(agent)" author label. Selected by the author
+   label / the agent turn, so marks written before the reserved colour existed read the same. */
+:root { --prism-agent-mark: #475569; }
+html.dark { --prism-agent-mark: #94a3b8; }
+span[data-suggestion][data-user$="(agent)"], span[data-suggestion][data-turn-id] {
+  text-decoration-color: var(--prism-agent-mark) !important;
+  text-decoration-style: dashed !important;
+  text-decoration-thickness: 2px !important;
+}
+.cd-bubble {
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 9px;
+  border: 1px solid var(--glass-border);
+  background: var(--bg-surface, #1a1a1f);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+}
+.cd-bubble button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.cd-bubble button:hover {
+  background: var(--glass-hover);
+}
+
+/* Page cover inside the live-document host (contained band; the plain renderer bleeds edge to edge). */
+.collab-cover-bleed .document-cover { margin: -8px 0 28px; border-radius: var(--radius-lg); }
+.collab-cover-bleed .document-cover-controls { right: 14px; }
+@media (max-width: 767px) { .collab-cover-bleed .document-cover { margin: -4px -14px 20px; border-radius: 0; } }
+
+/* w14 visual, defect 13: comments read at one size; thread actions are real 28 px controls. */
+.prism-comment-input { font-size: 13px; line-height: 1.5; }
+.prism-comment-input:focus-visible { border-color: var(--focus-ring) !important; }
+.prism-comment-icon { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; min-height: 28px; border-radius: 6px; }
+.prism-comment-icon:hover:not(:disabled) { background: var(--glass-hover); }
+@media (max-width: 767px), (pointer: coarse) { .prism-comment-input { font-size: 16px; } }
+
+/* Editing-chrome pass: in the live page the chrome row, the review strip and the suggest note share
+   the text column's edges (they spanned the whole page, 140 px left of the title on a wide window).
+   The row's first icon sits on the text edge: the buttons' own padding is taken back. */
+.collab-document-body > :is(.document-formatting-bar, .prism-suggestion-review, .prism-review-complete, .prism-suggest-banner) { max-width: var(--content-measure); margin-left: auto; margin-right: auto; }
+.collab-document-body > .document-formatting-bar { margin-bottom: 8px; }
+.collab-document-body > .document-formatting-bar > .document-formatting-entry { padding-left: 0; padding-right: 0; }
+.collab-document-body > .document-formatting-bar:not([data-chrome]) .document-formatting-navigation { margin-left: -7px; }
+.collab-document-body > .document-formatting-bar .document-formatting-commands { padding-left: 0; padding-right: 0; margin-left: -6px; }
+.collab-document-body > .document-formatting-bar .document-formatting-preference { padding-left: 0; }
+
+/* The phone comments drawer (CollabDoc). It fills the screen's height; while a software keyboard is
+   open it fills the VISIBLE area instead (`lib/softKeyboard` — top = where WebKit panned the page to,
+   bottom = the keyboard), so a reply field and its Resolve / Delete buttons are never under the keys
+   and the drawer scrolls inside itself. It is `position: fixed`, outside the shell's padding, so it
+   clears the status bar and the home indicator itself. */
+.collab-comments-drawer { top: 0; bottom: 0; padding: calc(16px + env(safe-area-inset-top, 0px)) 16px calc(16px + env(safe-area-inset-bottom, 0px)); overscroll-behavior: contain; }
+html[data-soft-keyboard="open"] .collab-comments-drawer { top: var(--visual-viewport-top, 0px); bottom: var(--keyboard-inset, 0px); padding-bottom: 16px; }
+
+/* The suggest-only note above the body. Desktop: the tinted box. Phone: ONE quiet line of caption —
+   the chrome row above it already says "Suggesting", and a boxed strip there crowded the page. */
+.prism-suggest-banner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 12px; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--glass-border); background: color-mix(in srgb, var(--color-accent) 6%, transparent); font-size: 12.5px; color: var(--text-secondary); }
+.prism-suggest-banner-text { flex: 1; min-width: 200px; }
+.prism-suggest-banner-short { display: none; }
+@media (max-width: 767px) {
+  .prism-suggest-banner { margin: 2px 0 10px; padding: 0; border: 0; border-radius: 0; background: none; color: var(--text-muted); }
+  .prism-suggest-banner-long { display: none; }
+  .prism-suggest-banner-short { display: inline; }
+}
+
+/* Keep the live editing row close to the properties divider above it. */
+.collab-page-layout > .document-page-header { margin-bottom: 4px; }

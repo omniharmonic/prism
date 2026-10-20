@@ -1,0 +1,135 @@
+import React from "react";
+import Tooltip from "float-tooltip";
+import { graphTooltip } from "../../../packages/core/src/components/layout/graphTooltip";
+import { createRoot } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  VaultClientProvider,
+  PlatformProvider,
+  useAgentChatStore,
+  useUIStore,
+  type VaultClient,
+  type VaultNeighborhood,
+  type Note,
+} from "@prism/core";
+import { GraphExplorer } from "../../../packages/core/src/components/layout/GraphExplorer";
+import { GraphFullscreen } from "../../../packages/core/src/components/layout/GraphFullscreen";
+const nodes = [
+  {
+    id: "home",
+    title: "A living workspace",
+    path: "Projects/Prism/A living workspace",
+    tags: ["project"],
+  },
+  {
+    id: "people",
+    title: "People and conversations",
+    path: "Research/People and conversations",
+    tags: ["research"],
+  },
+  {
+    id: "ideas",
+    title: "Connected ideas",
+    path: "Notes/Connected ideas",
+    tags: ["note"],
+  },
+  {
+    id: "plan",
+    title: "Next steps",
+    path: "Projects/Prism/Next steps",
+    tags: ["task"],
+  },
+];
+const graph: VaultNeighborhood = {
+  nodes,
+  edges: [
+    { source: "home", target: "people", relationship: "explores" },
+    { source: "ideas", target: "home", relationship: "supports" },
+    { source: "home", target: "plan", relationship: "next" },
+  ],
+  truncated: true,
+};
+const params = new URLSearchParams(location.search);
+if (params.has("dense")) {
+  for (let index = 0; index < 28; index++) {
+    const id = `extra-${index}`;
+    nodes.push({ id, title: `Research document ${index + 1}`, path: `Research/Document ${index + 1}`, tags: ["research"] });
+    graph.edges.push({ source: "home", target: id, relationship: "references" });
+  }
+}
+if (params.has("dark")) document.documentElement.className = "dark";
+const controls = {
+  showTooltip: (text: string) => {
+    const target = document.createElement("div");
+    target.style.cssText = "position:fixed;inset:0;pointer-events:none";
+    document.body.append(target);
+    new Tooltip(target).content(graphTooltip(text));
+    target.dispatchEvent(
+      new MouseEvent("mousemove", {
+        clientX: 100,
+        clientY: 100,
+        bubbles: true,
+      }),
+    );
+  },
+  setRoot: null as null | ((id: string) => void),
+  calls: [] as string[],
+  fail: false,
+  hold: false,
+  release: null as null | (() => void),
+  denyOpen: false,
+  opened: [] as string[],
+};
+const client = {
+  scope: () => useAgentChatStore.getState().scope ?? "",
+  getNeighborhood: async (center: string) => {
+    controls.calls.push(center);
+    if (controls.hold)
+      await new Promise<void>((r) => {
+        controls.release = r;
+      });
+    if (controls.fail) throw Error("denied");
+    return graph;
+  },
+  getNote: async (id: string) => {
+    if (controls.denyOpen) throw Error("denied");
+    controls.opened.push(id);
+    return {
+      ...nodes.find((n) => n.id === id)!,
+      content: "Synthetic graph document",
+      metadata: { type: "document" },
+      createdAt: "2026-10-01",
+      updatedAt: "2026-10-01",
+    } as Note;
+  },
+} as unknown as VaultClient;
+const query = new QueryClient({
+  defaultOptions: { queries: { retry: false } },
+});
+useAgentChatStore.setState({ scope: "graph-a" });
+useUIStore.getState().openTab("home", "A living workspace", "document");
+Object.assign(window, {
+  prismGraphFixture: controls,
+  prismGraphStore: useAgentChatStore,
+  prismGraphUI: useUIStore,
+  prismGraphQuery: query,
+});
+function RootGraph() {
+  const [id, setId] = React.useState("home");
+  React.useEffect(() => { controls.setRoot = setId; return () => { controls.setRoot = null; }; }, []);
+  return <GraphExplorer noteId={id} />;
+}
+createRoot(document.getElementById("root")!).render(
+  <React.StrictMode>
+    <QueryClientProvider client={query}>
+      <PlatformProvider value="web">
+        <VaultClientProvider client={client}>
+          <main style={{ height: "100dvh", maxWidth: 880, margin: "auto" }}>
+            <RootGraph />
+            <GraphFullscreen />
+          </main>
+        </VaultClientProvider>
+      </PlatformProvider>
+    </QueryClientProvider>
+  </React.StrictMode>,
+);

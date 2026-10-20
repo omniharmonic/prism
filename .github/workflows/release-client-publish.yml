@@ -1,0 +1,103 @@
+name: Release (Prism Client update channel)
+
+# When a person PUBLISHES a "prism-client-v*" release, copy its latest.json to the update channel
+# (the long-lived pre-release "prism-client-updates", whose latest.json every installed Prism Client
+# reads). Before it does: the manifest names this release's own archive, the archive's signature
+# verifies against the COMMITTED updater key and binds this version, and the channel only moves
+# forward. A draft never reaches installed apps. docs/client-app.md § Release (CI).
+#
+# workflow_dispatch re-runs it for one tag (e.g. after deleting the channel's latest.json to pause
+# a rollout, to point the channel at a release again).
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "A published prism-client-v<version> release to put on the update channel"
+        type: string
+        required: true
+
+concurrency:
+  group: client-update-channel
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  channel:
+    if: github.event_name == 'workflow_dispatch' || (startsWith(github.event.release.tag_name, 'prism-client-v') && !github.event.release.prerelease && !github.event.release.draft)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # the channel release's asset
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      CHANNEL: prism-client-updates
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Tag shape
+        run: |
+          if [[ ! "$TAG" =~ ^prism-client-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then echo "::error::not a Prism Client release tag: $TAG"; exit 1; fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: The release is published and its version matches the tag
+        id: rel
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          if [[ "$TAG" != "prism-client-v$version" ]]; then echo "::error::$TAG does not match package.json $version at that tag"; exit 1; fi
+          state="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease --jq '"\(.isDraft) \(.isPrerelease)"')"
+          if [[ "$state" != "false false" ]]; then echo "::error::$TAG must be a published, non-pre-release release (draft/prerelease: $state)"; exit 1; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Download this release's manifest and update archive
+        id: dl
+        run: |
+          pub=apps/client/src-tauri/updater/updater.key.pub
+          if [[ ! -f "$pub" ]]; then
+            echo "::notice::no updater public key committed at $TAG: the app has no updater, nothing to publish"
+            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/dl"
+          if ! gh release download "$TAG" --repo "$GITHUB_REPOSITORY" -p latest.json -p '*.app.tar.gz' -D "$RUNNER_TEMP/dl"; then
+            echo "::error::$TAG has no latest.json / update archive although its app carries the updater"; exit 1
+          fi
+          url="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).platforms["darwin-aarch64"].url' "$RUNNER_TEMP/dl/latest.json")"
+          archive="$RUNNER_TEMP/dl/${url##*/}"
+          [[ -f "$archive" ]] || { echo "::error::the manifest names ${url##*/}, which is not an asset of $TAG"; exit 1; }
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+
+      - name: Check the manifest (own archive, committed key, version bound) and that the channel moves forward
+        if: steps.dl.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.rel.outputs.version }}
+          ARCHIVE: ${{ steps.dl.outputs.archive }}
+        run: |
+          node apps/client/scripts/release/updater-manifest.mjs check --manifest "$RUNNER_TEMP/dl/latest.json" --version "$VERSION" \
+            --url-prefix "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/" \
+            --pubkey apps/client/src-tauri/updater/updater.key.pub --archive "$ARCHIVE"
+          current=()
+          mkdir -p "$RUNNER_TEMP/channel"
+          if gh release download "$CHANNEL" --repo "$GITHUB_REPOSITORY" -p latest.json -D "$RUNNER_TEMP/channel" 2>/dev/null; then
+            current=(--current "$RUNNER_TEMP/channel/latest.json")
+          fi
+          node apps/client/scripts/release/updater-manifest.mjs newer --manifest "$RUNNER_TEMP/dl/latest.json" "${current[@]}"
+
+      - name: Put it on the update channel
+        if: steps.dl.outputs.skip != 'true'
+        run: |
+          if ! gh release view "$CHANNEL" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$CHANNEL" --repo "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" \
+              --title "Prism Client update channel" \
+              --notes "Installed Prism Client apps read latest.json from this release. It is replaced by release-client-publish.yml when a prism-client-v* release is published. Do not publish other assets here."
+          fi
+          gh release upload "$CHANNEL" --repo "$GITHUB_REPOSITORY" "$RUNNER_TEMP/dl/latest.json" --clobber
+          echo "### Update channel → $TAG" >> "$GITHUB_STEP_SUMMARY"

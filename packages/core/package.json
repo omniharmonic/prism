@@ -1,0 +1,49 @@
+{
+  "name": "@prism/core",
+  "version": "0.9.0",
+  "license": "PolyForm-Shield-1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "module": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./shell": "./src/shell.ts",
+    "./editor-schema": "./src/editor/collabSchema.ts",
+    "./content-types": "./src/lib/schemas/content-types.ts",
+    "./vault-shapes": "./src/lib/schemas/vault-shapes.ts",
+    "./governance-prose": "./src/lib/governance/prose.ts",
+    "./dashboard-engine": "./src/lib/dashboard/filter-engine.ts",
+    "./database": "./src/lib/database/index.ts",
+    "./map": "./src/components/map/CommonsMap.tsx",
+    "./collab-access": "./src/lib/collab/access.ts",
+    "./collab-commands": "./src/lib/collab/commands.ts",
+    "./collab-colors": "./src/lib/collab/colors.ts",
+    "./wikilinks": "./src/lib/wikilinks.ts",
+    "./media-embeds": "./src/lib/media/embeds.ts",
+    "./mentions": "./src/lib/tiptap/MentionParse.ts",
+    "./pages": "./src/lib/pages/model.ts",
+    "./datetime": "./src/lib/datetime/format.ts",
+    "./datetime-preferences": "./src/lib/datetime/preferences.ts",
+    "./search": "./src/lib/search/match.ts",
+    "./import-export": "./src/lib/import-export/index.ts",
+    "./styles/*": "./src/styles/*",
+    "./messages": "./src/lib/matrix/types.ts",
+    "./task-lists": "./src/lib/html/taskLists.ts",
+    "./projects": "./src/lib/projects/related.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@types/geojson": "^7946.0.16",
+    "diff": "^8.0.4",
+    "dompurify": "^3.4.17",
+    "emoji-picker-react": "^4.19.1",
+    "entities": "^4.5.0",
+    "maplibre-gl": "^6.15.0",
+    "marked": "^14.1.4",
+    "y-codemirror.next": "^0.3.5"
+  }
+}

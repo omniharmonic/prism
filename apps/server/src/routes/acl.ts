@@ -1,0 +1,2305 @@
+import { readerPresentationTheme } from "../publication-presentation";
+import { publicationGraph, publicationMap } from "../publication-projections";
+import { getPresentation, savePresentationDraft, publishPresentationDraft, restorePresentationDraft, PresentationError } from "../publication-presentation";
+/**
+ * Access-control management — owner-only. Lives at /acl/* (NOT /api, whose
+ * owner-passthrough would proxy to the vault; NOT /share, which is the public
+ * read view). Backs the share dialog: per-note people grants, capability links
+ * (Google-Docs "anyone with the link"), note↔tag membership, and tag-grants
+ * ("share everything tagged X with this person"). Authorization for the shared
+ * content itself is still enforced by the /api gateway via these grants.
+ */
+import { publicationInventory, publicationNotes, navTitle } from "../publication-content";
+import { notifyAccessChanged } from "../access-events";
+import { Hono, type Context } from "hono";
+import { randomUUID, randomBytes, createHash } from "node:crypto";
+import { config } from "../config";
+import { getSourceHealth } from "../worker/health";
+import { calendarMode, readCalendarIntents, readCalendarLastPass, verifyCalendarIntents } from "../worker/calendar";
+import { protonMode, readProtonIntents, readProtonLastPass, verifyProtonIntents } from "../worker/proton";
+import { listActionAudit, recordAction } from "../actions/store";
+import { vault, vaultClient, VaultConflictError, VaultError } from "../parachute";
+import { resolveActor, requestVia } from "../auth/actor";
+import { csrfRefusal } from "./actions";
+import { signCapability } from "../auth/capability";
+import { tokenExpiries } from "../auth/vault-token";
+import { EDITABLE_ENV, applyEnvEdit, validateEnvEdit } from "../env-edit";
+import { serverKeyPair, fingerprint } from "../auth/peer";
+import { CAPS, LEVELS, effectiveCaps, expandLevel, isCap, levelForCaps, type Cap, type Level, type NoteRef } from "../permissions";
+import { roleAtLeast, roleFloor, workspaceRole } from "../roles";
+import {
+  ensureUser,
+  hasAccount,
+  listUsers,
+  upsertGrant,
+  removeGrant,
+  removeGrantBySubjectResource,
+  grantsForResource,
+  grantsForUser,
+  type Grant,
+  grantsForCapability,
+  grantsForPeer,
+  createCapability,
+  capabilitiesForResource,
+  deleteCapability,
+  createPublication,
+  getPublicationBySlug,
+  getPublicationByResource,
+  listPublications,
+  excludedNoteIds,
+  publicationVaultId,
+  deletePublication,
+  storePairing,
+  listPeers,
+  removePeer,
+  setPeerCollabUrl,
+  getPeer,
+  createSpace,
+  getSpace,
+  listSpaces,
+  deleteSpace,
+  upsertFederatedNote,
+  federatedNotesForSpace,
+  deleteFederatedNote,
+  getFederatedByKey,
+  listMirrorRequests,
+  getMirrorRequest,
+  setMirrorRequestStatus,
+  updatePublication,
+  listSuggestions,
+  getSuggestion,
+  setSuggestionStatus,
+  deleteSuggestion,
+  getFederationEnabled,
+  setFederationEnabled,
+  addVaultEntry,
+  getVaultEntry,
+  updateVaultEntryToken,
+  getVaultRegistry,
+  removeVaultEntry,
+  listMemberships,
+  setMembership,
+  removeMembership,
+  listGrantsForVault,
+  getGrantById,
+  listPeerEdits,
+  listWorkspaces,
+  getWorkspace,
+  createWorkspace,
+  updateWorkspace,
+  deleteWorkspace,
+  assignVaultToWorkspace,
+  vaultsForWorkspace,
+  workspaceForVault,
+  DEFAULT_WORKSPACE_ID,
+  createVaultMirror,
+  listVaultMirrors,
+  getVaultMirror,
+  updateVaultMirror,
+  removeVaultMirror,
+  removeVaultMirrorsForVault,
+  type MirrorDeleteMode,
+  type VaultMirror,
+  type Space,
+  type Publication,
+} from "../db";
+import { runVaultMirrorOnce } from "../worker/vault-mirror";
+import { startWorker, lostMatrixRooms, clearLostMatrixRooms } from "../worker/scheduler";
+import { vaultRegistry } from "../config";
+import { createVaultViaCli, seedVault } from "../vault-provision";
+import { noteKind, resolveSuggestionsInHtmlAsync, settleUnsaved, unsavedPermanentBody, unsavedPermanentReason } from "../collab";
+import { isCollabUnsaved } from "../db";
+import { normalizePathPrefix, pathInPrefix } from "../paths";
+import { ancestorPages, descendantRefs, descendantRows, grantCapsList, inheritedPeople, personView, viewableAncestors } from "../sharing";
+import { rowRef } from "../tree";
+import { hashPassword } from "../auth/password";
+import { createInvite } from "../auth/invite";
+import { getSecret, secretsConfigured } from "../secrets";
+import { readSetupStatus } from "../setup-facts";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { readFile, writeFile, copyFile } from "node:fs/promises";
+import { notifyShare, suggestionsResolved } from "../notifications";
+import { leafTitle } from "@prism/core/pages";
+const pexec = promisify(execFile);
+
+/** Grant a person access to a resource, inviting them if they have no account
+ *  yet so the access binds to a real, authenticated identity. */
+async function grantAndInvite(
+  email: string,
+  level: Level,
+  resourceType: "note" | "tag" | "page",
+  resource: string,
+  owner: string,
+  vaultId: string,
+  /** Optional explicit capability list (P1). When present it is authoritative and
+   *  upsertGrant derives the stored `level` from it (the coherence rule). */
+  caps?: Cap[] | null,
+): Promise<{ invited: boolean; inviteUrl?: string }> {
+  ensureUser(email);
+  upsertGrant({ vault_id: vaultId, subject_type: "user", subject: email, resource_type: resourceType, resource, level, created_by: owner, caps });
+  if (!hasAccount(email)) {
+    // Return the accept URL so the owner can hand it over directly — email may
+    // not be configured/paid, and even when it is, "copy invite link" is useful.
+    const inviteUrl = await createInvite(email, null, owner);
+    return { invited: true, inviteUrl };
+  }
+  return { invited: false };
+}
+
+export const acl = new Hono();
+
+// ── scoped sharing (P2) ──────────────────────────────────────────────────────
+// `share` was defined in P1 and enforced nowhere: every /acl route was admin-only,
+// so "may manage other people's access to THIS folder" was a capability you could
+// hold and never use. These five routes are the surface where it becomes real —
+// a non-admin who holds `share` on a note (or a tag) may manage that one
+// resource's people grants, and nothing else. Everything else on /acl stays
+// admin-only, and the admin path below is untouched: it is still the first branch
+// of the gate, so an admin request does exactly what it did before.
+//
+// Note the asymmetry with the /api gateway: there, a stronger level implies more
+// power over the CONTENT. Here it is about power over ACCESS, which is why the
+// handlers add anti-escalation on top of the route check (you cannot grant what
+// you do not hold, and you cannot pull a stranger into the workspace).
+type ShareScope = { kind: "note" | "tag"; resource: string };
+
+/** The five non-admin-reachable routes, matched against the acl-relative path. */
+const SHARE_ROUTES: Array<{ method: string; re: RegExp; kind: "note" | "tag" }> = [
+  { method: "PUT", re: /^\/notes\/([^/]+)\/people$/, kind: "note" },
+  { method: "DELETE", re: /^\/notes\/([^/]+)\/people\/[^/]+$/, kind: "note" },
+  { method: "GET", re: /^\/notes\/([^/]+)$/, kind: "note" },
+  { method: "PUT", re: /^\/tags\/([^/]+)\/people$/, kind: "tag" },
+  { method: "DELETE", re: /^\/tags\/([^/]+)\/people\/[^/]+$/, kind: "tag" },
+];
+
+/** The path relative to this router, whether it was mounted at /acl or called
+ *  directly (the tests drive `acl.request("/notes/...")`). */
+const aclPath = (c: Context): string => new URL(c.req.url).pathname.replace(/^\/acl(?=\/|$)/, "");
+
+/** Which shareable resource, if any, does this request address? */
+function shareScopeFor(c: Context): ShareScope | null {
+  const path = aclPath(c);
+  const method = c.req.method.toUpperCase();
+  for (const r of SHARE_ROUTES) {
+    if (r.method !== method) continue;
+    const m = path.match(r.re);
+    if (m) return { kind: r.kind, resource: decodeURIComponent(m[1]!) };
+  }
+  return null;
+}
+
+// One vault read per request, reused by the gate and then by the handler's
+// anti-escalation check (they ask the same question of the same resource).
+const sharerCapsCache = new WeakMap<Context, Set<Cap>>();
+
+/**
+ * The caps the REQUESTING actor holds on the resource they are trying to share.
+ * For a note this is the real note (tags, creator, private-visibility all
+ * honored, exactly as routes/api.ts builds it); for a tag it is a synthetic ref
+ * carrying just that tag — the same shape `effectiveCaps` sees for a tag grant.
+ * A note that cannot be read resolves to no caps (fail closed).
+ */
+async function sharerCaps(c: Context, scope: ShareScope): Promise<Set<Cap>> {
+  const cached = sharerCapsCache.get(c);
+  if (cached) return cached;
+  const actor = resolveActor(c);
+  const subject = actor.kind === "user" ? actor.email : actor.kind === "link" ? actor.capabilityId : null;
+  let noteRef: NoteRef;
+  if (scope.kind === "tag") {
+    noteRef = { id: `<tag:${scope.resource}>`, tags: [scope.resource] };
+  } else {
+    try {
+      const n = await vaultClient(actor.vaultId).getNote(scope.resource);
+      noteRef = {
+        id: n.id,
+        tags: n.tags ?? [],
+        creator: (n.metadata?.prism_creator as string | undefined) ?? null,
+        visibility: n.metadata?.prism_visibility === "private" ? "private" : "workspace",
+        path: n.path ?? null,
+      };
+    } catch {
+      return new Set<Cap>();
+    }
+  }
+  const caps = effectiveCaps(actor.grants, noteRef, roleFloor(actor.role), subject);
+  sharerCapsCache.set(c, caps);
+  return caps;
+}
+
+// Everything here is owner/admin-only (workspace management) — except the five
+// share routes above, which additionally admit a signed-in holder of `share` on
+// the specific resource being shared.
+acl.use("*", async (c, next) => {
+  // Never let an explicitly selected, removed vault fall back to primary.
+  const requestedVault = c.req.header("x-prism-vault");
+  if (requestedVault && !getVaultRegistry().some((v) => v.id === requestedVault)) {
+    return c.json({ error: "unknown_vault" }, 400);
+  }
+  const expectedActor = c.req.header("x-prism-write-actor");
+  const actor = resolveActor(c);
+  if (expectedActor && expectedActor !== (actor.kind === "user" ? `user:${actor.email}` : null)) {
+    return c.json({ error: "write_actor_changed" }, 409);
+  }
+  // Host-wide registries and federation are server-owner responsibilities,
+  // never authority inherited from administration of one vault.
+  const globalManagement = /^\/(?:vaults|mirrors|workspace|workspaces|server|workers|peers|spaces|federation)(?:\/|$)/.test(c.req.path.replace(/^\/acl(?=\/|$)/, ""));
+  if (globalManagement && !isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  if (roleAtLeast(actor.role, "admin")) return next();
+  const scope = shareScopeFor(c);
+  if (!scope) return c.json({ error: "forbidden" }, 403);
+  if (resolveActor(c).kind !== "user") return c.json({ error: "forbidden" }, 403);
+  if (!(await sharerCaps(c, scope)).has("share")) {
+    return c.json({ error: "forbidden", reason: `sharing requires the share capability on this ${scope.kind}` }, 403);
+  }
+  return next();
+});
+
+/**
+ * Anti-escalation for a NON-ADMIN sharer. Two rules, both of which an admin is
+ * exempt from (they already hold everything, and inviting is their job):
+ *
+ *  (a) SUBSET — the caps handed out must be a subset of the caps the granter
+ *      themself holds on that resource. Sharing may distribute access, never
+ *      manufacture it; without this a `view+share` grant would be a path to
+ *      minting `edit` for a confederate (and then for yourself).
+ *  (b) EXISTING ACCOUNTS ONLY — a non-admin may share with people who already
+ *      have an account. The auto-invite path pulls a NEW person into the
+ *      workspace, which is a membership decision, not a sharing one.
+ *
+ * Returns a Response to send, or null to proceed.
+ */
+async function denyEscalation(
+  c: Context,
+  scope: ShareScope,
+  recipient: string,
+  granting: Iterable<Cap>,
+): Promise<Response | null> {
+  if (roleAtLeast(resolveActor(c).role, "admin")) return null;
+  if (!hasAccount(recipient)) {
+    return c.json({ error: "forbidden", reason: "inviting new people requires an admin" }, 403);
+  }
+  const mine = await sharerCaps(c, scope);
+  const excess = [...new Set(granting)].filter((cap) => !mine.has(cap));
+  if (excess.length) {
+    return c.json(
+      { error: "forbidden", reason: `cannot grant capabilities you do not hold: ${excess.join(", ")}`, caps: excess },
+      403,
+    );
+  }
+  return null;
+}
+
+/** Who a grant should be attributed to. Admin writes keep recording the owner
+ *  (unchanged); a scoped sharer is recorded as themself, so the audit says who
+ *  actually handed out the access. Never starts with "governance:", so the
+ *  materializer will never mistake a human grant for one of its own. */
+function grantAuthor(c: Context): string {
+  const actor = resolveActor(c);
+  if (roleAtLeast(actor.role, "admin")) return config.ownerEmail;
+  return actor.kind === "user" ? actor.email : config.ownerEmail;
+}
+
+const isLevel = (x: unknown): x is Level =>
+  typeof x === "string" && (LEVELS as readonly string[]).includes(x);
+/**
+ * Optional `caps` on a people-grant (P1). Returns the parsed list, `null` when
+ * absent, or "invalid" when it is not an array of known cap names (→ 400, so a
+ * typo'd capability is never silently dropped into a weaker grant).
+ */
+const parseCapsInput = (x: unknown): Cap[] | null | "invalid" => {
+  if (x === undefined || x === null) return null;
+  if (!Array.isArray(x) || x.length === 0 || !x.every(isCap)) return "invalid";
+  return [...new Set(x as Cap[])];
+};
+const isEmail = (x: unknown): x is string => typeof x === "string" && /.+@.+\..+/.test(x);
+const normEmail = (x: string) => x.trim().toLowerCase();
+
+/** After any federation-relevant mutation, re-reconcile the live bridge so new
+ *  bindings come up (and revoked ones tear down) without a server restart. Gated
+ *  + lazy so the @hocuspocus/provider client never loads on a non-federation
+ *  deployment; failures are swallowed (best-effort — never block the ACL write). */
+function kickFederationSync(): void {
+  if (!getFederationEnabled()) return;
+  void import("../federation-manager")
+    .then(({ federationManager }) => federationManager.syncSpaces())
+    .catch((e) => console.error("[federation] syncSpaces after ACL change failed:", e));
+}
+
+/** Capability-link URL: opens the FOCUSED collaborative document (Google-Docs
+ *  style) — just the doc, level-aware (read-only for viewers, comments sidebar,
+ *  suggest mode), live via Hocuspocus. NOT the full workspace. The token is the
+ *  only credential the recipient needs. */
+function linkUrl(noteId: string, token: string): string {
+  return `${config.appOrigin}/collab/${encodeURIComponent(noteId)}?t=${encodeURIComponent(token)}`;
+}
+
+function deriveTitle(content: string): string {
+  const c = content ?? "";
+  const h = c.match(/<h[1-3][^>]*>(.*?)<\/h[1-3]>/i);
+  if (h?.[1]) return h[1].replace(/<[^>]+>/g, "").trim().slice(0, 120) || "Untitled";
+  if (!c.includes("<")) {
+    const line = c.split("\n").find((l) => l.trim().length > 0);
+    if (line) return line.replace(/^#+\s*/, "").trim().slice(0, 120);
+  }
+  const text = c.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  return text.slice(0, 100) || "Untitled";
+}
+
+acl.get("/users", (c) => {
+  const users = listUsers();
+  if (isServerOwner(c)) return c.json(users);
+  const actor = resolveActor(c);
+  const visible = new Set(listMemberships(actor.vaultId).map((m) => m.email));
+  for (const g of listGrantsForVault(actor.vaultId)) if (g.subject_type === "user") visible.add(g.subject);
+  if (actor.kind === "user") visible.add(actor.email);
+  return c.json(users.filter((u) => visible.has(u.email)));
+});
+
+// ── Vault registry management (multi-vault: in-app create / link) ────────────
+// Owner-only (the whole /acl group is). Tokens are written to SQLite server-side
+// and NEVER returned — the response is the same token-free summary as GET
+// /api/vaults: { id, label, vault, active:false } (added vaults are never the
+// primary/active one, which stays the env entry[0]).
+const vaultSlug = (s: string): string =>
+  s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
+
+/** A registry-unique id derived from the label (random suffix on collision). */
+function uniqueVaultId(label: string): string {
+  let id = vaultSlug(label) || randomUUID().slice(0, 8);
+  const taken = new Set(getVaultRegistry().map((v) => v.id));
+  while (taken.has(id)) id = `${vaultSlug(label) || "vault"}-${Math.floor(Math.random() * 10000)}`;
+  return id;
+}
+
+/** Probe a linked vault is reachable with the given token (GET /tags). Returns
+ *  true on a 2xx, false on any error/non-2xx — best-effort guard, not auth. */
+async function probeVault(url: string, vault: string, token: string): Promise<boolean> {
+  try {
+    const resp = await fetch(`${url}/vault/${encodeURIComponent(vault)}/api/tags`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
+acl.post("/vaults", async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+  const mode = body.mode;
+
+  if (mode === "link") {
+    const label = typeof body.label === "string" ? body.label.trim() : "";
+    const url = typeof body.url === "string" ? body.url.trim().replace(/\/+$/, "") : "";
+    const vault = typeof body.vault === "string" ? body.vault.trim() : "";
+    const token = typeof body.token === "string" ? body.token.trim() : "";
+    if (!label || !vault || !token) return c.json({ error: "bad_request", detail: "label, vault and token are required" }, 400);
+    if (!/^https?:\/\//i.test(url)) return c.json({ error: "bad_request", detail: "url must be http(s)" }, 400);
+    if (!(await probeVault(url, vault, token))) return c.json({ error: "unreachable" }, 400);
+    const id = uniqueVaultId(label);
+    addVaultEntry({ id, label, url, vault, token });
+    return c.json({ id, label, vault, active: false });
+  }
+
+  if (mode === "create") {
+    if (!config.allowVaultCreate) return c.json({ error: "disabled", detail: "vault creation is disabled on this server" }, 403);
+    const label = typeof body.label === "string" ? body.label.trim() : "";
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    if (!label || !name) return c.json({ error: "bad_request", detail: "label and name are required" }, 400);
+    if (!/^[a-z0-9_-]+$/.test(name)) return c.json({ error: "bad_request", detail: "name must match ^[a-z0-9_-]+$" }, 400);
+
+    let created: { name: string; token: string };
+    try {
+      created = await createVaultViaCli(name);
+    } catch (e) {
+      // The failure happens BEFORE any token is minted (creation failed), so the
+      // message can't carry a token; still, log server-side and keep detail terse.
+      console.error("[vaults] parachute-vault create failed:", e);
+      return c.json({ error: "create_failed", detail: (e as Error).message }, 500);
+    }
+
+    const url = config.parachuteUrl;
+    const id = uniqueVaultId(label);
+    addVaultEntry({ id, label, url, vault: name, token: created.token });
+
+    if (body.seedSchemas !== false) {
+      try {
+        await seedVault({ vaultUrl: url, vault: name, token: created.token });
+      } catch (e) {
+        console.error("[vaults] seedTagSchemas failed (non-fatal):", e);
+      }
+    }
+    return c.json({ id, label, vault: name, active: false });
+  }
+
+  return c.json({ error: "bad_request", detail: "mode must be 'link' or 'create'" }, 400);
+});
+
+// Rotate an owner-ADDED vault's token (write-only: the old and new tokens are
+// never returned). SERVER-owner only — the token is a whole-vault credential.
+// Env-configured vaults (PARACHUTE_TOKEN / PRISM_VAULTS) are host config and are
+// rotated in .env, never from a browser (docs/credentials.md). The new token is
+// probed first, so a typo can't silently break every sync into that vault.
+acl.put("/vaults/:id/token", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const id = c.req.param("id");
+  if (vaultRegistry.some((v) => v.id === id)) {
+    return c.json({ error: "env_configured", detail: "this vault's token comes from the server .env (PARACHUTE_TOKEN / PRISM_VAULTS); rotate it there and restart" }, 400);
+  }
+  const entry = getVaultEntry(id);
+  if (!entry) return c.json({ error: "not_found" }, 404);
+  const body = await c.req.json<{ token?: unknown }>().catch(() => ({}) as { token?: unknown });
+  const token = typeof body.token === "string" ? body.token.trim() : "";
+  if (!token || token.length > 8192) return c.json({ error: "bad_request", detail: "token required" }, 400);
+  if (!(await probeVault(entry.url, entry.vault, token))) return c.json({ error: "unreachable", detail: "the vault did not accept this token" }, 400);
+  updateVaultEntryToken(id, token);
+  const [expiry] = tokenExpiries([{ id, vault: entry.vault, token }]);
+  return c.json({ ok: true, expiry });
+});
+
+// Remove an owner-ADDED vault. Env-configured vaults (e.g. "primary") are not in
+// the prism_vaults table, so removeVaultEntry no-ops on them and the merged
+// registry keeps the env entry — i.e. an env vault can never be deleted here.
+acl.delete("/vaults/:id", (c) => {
+  const id = c.req.param("id");
+  if (vaultRegistry.some((v) => v.id === id)) {
+    return c.json({ error: "forbidden", detail: "cannot remove an env-configured vault" }, 400);
+  }
+  // Mirrors referencing this vault must die with it: an orphaned mirror would
+  // silently retarget the primary vault (resolveVaultEntry fallback) and its
+  // delete-verify would then mass-archive/delete the destination copies.
+  const mirrorsDropped = removeVaultMirrorsForVault(id);
+  if (mirrorsDropped) console.log(`[vaults] removed ${mirrorsDropped} mirror(s) referencing deleted vault ${id}`);
+  removeVaultEntry(id);
+  return c.json({ ok: true, mirrorsRemoved: mirrorsDropped });
+});
+
+// ── Vault mirrors (single-server vault-to-vault folder sync) ─────────────────
+// A mirror converges a folder (path prefix) of one registry vault onto a prefix
+// in another vault on this server — one-way, source-wins, structure preserved.
+// Config rows only; the sync itself runs in the worker (src/worker/vault-mirror.ts)
+// and on demand via POST /acl/mirrors/:id/sync.
+//
+// SERVER-OWNER only (not just the /acl admin gate): a mirror names arbitrary
+// src/dest vaults and the engine writes with the server's own vault tokens, so
+// a mere vault-admin could otherwise exfiltrate another tenant's vault into one
+// they control. Same posture as the workspace routes.
+acl.use("/mirrors/*", async (c, next) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  await next();
+});
+acl.use("/mirrors", async (c, next) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  await next();
+});
+
+const isDeleteMode = (x: unknown): x is MirrorDeleteMode =>
+  x === "archive" || x === "delete" || x === "keep";
+
+/** Client view of a mirror row: last_result JSON parsed, nothing secret to strip. */
+function mirrorView(m: VaultMirror): Record<string, unknown> {
+  let lastResult: unknown = null;
+  if (m.last_result) {
+    try {
+      lastResult = JSON.parse(m.last_result);
+    } catch {
+      lastResult = m.last_result;
+    }
+  }
+  return { ...m, last_result: lastResult };
+}
+
+acl.get("/mirrors", (c) => c.json(listVaultMirrors().map(mirrorView)));
+
+acl.post("/mirrors", async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+  const srcVault = typeof body.srcVault === "string" ? body.srcVault.trim() : "";
+  const destVault = typeof body.destVault === "string" ? body.destVault.trim() : "";
+  const srcPrefix = typeof body.srcPrefix === "string" ? normalizePathPrefix(body.srcPrefix) : null;
+  const destPrefix = typeof body.destPrefix === "string" ? normalizePathPrefix(body.destPrefix) : null;
+  if (!srcVault || !destVault) return c.json({ error: "bad_request", detail: "srcVault and destVault are required" }, 400);
+  if (!srcPrefix || !destPrefix) return c.json({ error: "bad_request", detail: "srcPrefix and destPrefix must be valid path prefixes" }, 400);
+  if (body.deleteMode !== undefined && !isDeleteMode(body.deleteMode)) {
+    return c.json({ error: "bad_request", detail: "deleteMode must be 'archive', 'delete' or 'keep'" }, 400);
+  }
+  const registry = getVaultRegistry();
+  for (const [name, id] of [["srcVault", srcVault], ["destVault", destVault]] as const) {
+    if (!registry.some((v) => v.id === id)) return c.json({ error: "bad_request", detail: `${name} "${id}" is not a registered vault` }, 400);
+  }
+  // A mirror whose destination lies inside its own source (or vice versa) in the
+  // SAME vault would feed itself — refuse the overlap outright.
+  if (srcVault === destVault && (pathInPrefix(srcPrefix, destPrefix) || pathInPrefix(destPrefix, srcPrefix))) {
+    return c.json({ error: "bad_request", detail: "source and destination prefixes overlap within the same vault" }, 400);
+  }
+  const actor = resolveActor(c);
+  const mirror = createVaultMirror({
+    src_vault: srcVault,
+    src_prefix: srcPrefix,
+    dest_vault: destVault,
+    dest_prefix: destPrefix,
+    delete_mode: isDeleteMode(body.deleteMode) ? body.deleteMode : undefined,
+    created_by: actor.kind === "user" ? actor.email : null,
+  });
+  // The worker gate is "secrets OR mirrors exist" — creating the first mirror on
+  // a secrets-less server must start the loop without a restart (idempotent).
+  startWorker();
+  return c.json(mirrorView(mirror));
+});
+
+acl.patch("/mirrors/:id", async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+  if (body.deleteMode !== undefined && !isDeleteMode(body.deleteMode)) {
+    return c.json({ error: "bad_request", detail: "deleteMode must be 'archive', 'delete' or 'keep'" }, 400);
+  }
+  const updated = updateVaultMirror(c.req.param("id"), {
+    enabled: typeof body.enabled === "boolean" ? body.enabled : undefined,
+    delete_mode: isDeleteMode(body.deleteMode) ? body.deleteMode : undefined,
+  });
+  if (!updated) return c.json({ error: "not_found" }, 404);
+  return c.json(mirrorView(updated));
+});
+
+acl.delete("/mirrors/:id", (c) => {
+  if (!getVaultMirror(c.req.param("id"))) return c.json({ error: "not_found" }, 404);
+  removeVaultMirror(c.req.param("id"));
+  return c.json({ ok: true });
+});
+
+/** Run a mirror NOW (bypasses the enabled flag and the worker cadence). */
+acl.post("/mirrors/:id/sync", async (c) => {
+  const mirror = getVaultMirror(c.req.param("id"));
+  if (!mirror) return c.json({ error: "not_found" }, 404);
+  try {
+    const result = await runVaultMirrorOnce(mirror, { force: true });
+    return c.json({ ok: true, result });
+  } catch (e) {
+    return c.json({ error: "sync_failed", detail: (e as Error).message }, 500);
+  }
+});
+
+/** Full sharing picture for a note: direct people, links, and tag-grants that
+ *  currently reach it (because the note carries a granted tag). */
+acl.get("/notes/:id", async (c) => {
+  const id = c.req.param("id");
+  const vaultId = resolveActor(c).vaultId;
+  try {
+    const note = await vaultClient(vaultId).getNote(id);
+    // A note is shared by its id only — never through a path/title alias.
+    if (note.id !== id) return c.json({ error: "not_found" }, 404);
+    const tags = note.tags ?? [];
+    const grants = grantsForResource("note", id, vaultId);
+    // Direct people: per-note grants plus page-subtree grants anchored HERE
+    // (`scope: "page"` — sharing this page shares its sub-pages, NP-CO-09).
+    // Names/avatars go only to callers who already see these emails (the
+    // admin/share-holder gate above) — see sharing.ts NAMING POLICY.
+    const pageGrants = grantsForResource("page", id, vaultId).filter((g) => g.subject_type === "user");
+    const pageSubjects = new Set(pageGrants.map((g) => g.subject));
+    const people = [
+      ...pageGrants.map((g) => ({ ...personView(g.subject), level: g.level, caps: grantCapsList(g), customPermissions: !!g.caps?.length, scope: "page" as const })),
+      ...grants
+        .filter((g) => g.subject_type === "user" && !pageSubjects.has(g.subject))
+        .map((g) => ({ ...personView(g.subject), level: g.level, caps: [...(g.caps ?? expandLevel(g.level))], customPermissions: !!g.caps?.length, scope: "note" as const })),
+    ];
+    const entry = getVaultRegistry().find((v) => v.id === vaultId);
+    // Only ancestors the CALLER can view count (admins: all); emails only for admins (review L-4).
+    const viewer = resolveActor(c);
+    const isAdminViewer = roleAtLeast(viewer.role, "admin");
+    const viewerSubject = viewer.kind === "user" ? viewer.email : null;
+    const ancestors =
+      !entry || note.metadata?.prism_visibility === "private"
+        ? []
+        : isAdminViewer
+          ? await ancestorPages(entry, note.path)
+          : await viewableAncestors(entry, note.path, (r) => effectiveCaps(viewer.grants, r, roleFloor(viewer.role), viewerSubject).has("view"));
+    const inherited = entry && ancestors.length ? await inheritedPeople(entry, id, note.path, ancestors, { emails: isAdminViewer }) : [];
+    const linkIds = new Set(grants.filter((g) => g.subject_type === "link").map((g) => g.subject));
+    // A bearer URL IS a credential. Scoped sharers may manage people grants,
+    // but must not receive existing links that can confer powers they lack.
+    const canManageLinks = roleAtLeast(resolveActor(c).role, "admin");
+    const links = (canManageLinks ? capabilitiesForResource("note", id) : []).filter((cap) => linkIds.has(cap.id)).map((cap) => ({
+      id: cap.id,
+      level: cap.level,
+      label: cap.label,
+      expiresAt: cap.expires_at,
+      url: linkUrl(id, signCapability({ id: cap.id, exp: cap.expires_at })),
+    }));
+    const tagAccess: Array<{ tag: string; email?: string; subjectType: string; level: Level }> = [];
+    for (const tag of tags) {
+      for (const g of grantsForResource("tag", tag, resolveActor(c).vaultId)) {
+        tagAccess.push({
+          tag,
+          email: g.subject_type === "user" ? g.subject : undefined,
+          subjectType: g.subject_type,
+          level: g.level,
+        });
+      }
+    }
+    const visibility = note.metadata?.prism_visibility === "private" ? "private" : "workspace";
+    const creator = (note.metadata?.prism_creator as string | undefined) ?? null;
+    const held = canManageLinks ? null : await sharerCaps(c, { kind: "note", resource: id });
+    const allowedLevels = LEVELS.filter(level => level !== "own" && (!held || [...expandLevel(level)].every(cap => held.has(cap))));
+    const ownerEmail = creator ?? config.ownerEmail;
+    const ownerView = personView(ownerEmail);
+    // The owner row names the page's creator (else the workspace owner). Its email
+    // is shown to admins only; a scoped sharer sees the name/avatar.
+    const owner = canManageLinks ? ownerView : { email: null, name: ownerView.name, avatar: ownerView.avatar };
+    const parent = ancestors[0] ? { id: ancestors[0].id, title: ancestors[0].title } : null;
+    const me = resolveActor(c);
+    const createdByMe = me.kind === "user" && !!creator && creator === me.email;
+    // The creator's EMAIL is for admins; a scoped sharer learns only whether it is them (review M-B).
+    return c.json({ note: { id, tags, title: (typeof note.metadata?.title === "string" && note.metadata.title.trim()) || leafTitle(note.path, note.metadata) || deriveTitle(note.content), visibility, creator: canManageLinks ? creator : null, createdByMe, path: note.path ?? null }, owner, people, inherited, parent, links, tagAccess, canManageLinks, allowedLevels });
+  } catch (e) {
+    if (e instanceof VaultError && e.status === 404) return c.json({ error: "not_found" }, 404);
+    return c.json({ error: "vault_error" }, 502);
+  }
+});
+
+acl.put("/notes/:id/people", async (c) => {
+  const { email, level, caps: rawCaps, scope: rawScope } = await c.req.json<{ email?: string; level?: string; caps?: unknown; scope?: unknown }>();
+  if (rawScope !== undefined && rawScope !== "note" && rawScope !== "page") return c.json({ error: "bad_request", reason: "scope must be note or page" }, 400);
+  const caps = parseCapsInput(rawCaps);
+  if (caps === "invalid") return c.json({ error: "bad_request", reason: `caps must be a non-empty subset of: ${CAPS.join(", ")}` }, 400);
+  // With caps the level is DERIVED (and may be omitted); without them the level
+  // is required exactly as before.
+  const lvl: Level | null = isLevel(level) ? level : caps ? levelForCaps(caps) : null;
+  if (!isEmail(email) || lvl === null) return c.json({ error: "bad_request" }, 400);
+  // A non-admin reached here by holding `share` on THIS note; they may not hand
+  // out more than they hold, nor pull a new person into the workspace.
+  const id = c.req.param("id");
+  const vaultId = resolveActor(c).vaultId;
+  const recipient = normEmail(email);
+  const denied = await denyEscalation(c, { kind: "note", resource: id }, recipient, caps ?? expandLevel(lvl));
+  if (denied) return denied;
+  // Scope: explicit, else keep the kind of grant this person already has here
+  // (so a level change from an older caller never forks a page share in two).
+  const hasPageGrant = grantsForResource("page", id, vaultId).some((g) => g.subject_type === "user" && g.subject === recipient);
+  const scope: "note" | "page" = rawScope === "note" || rawScope === "page" ? rawScope : hasPageGrant ? "page" : "note";
+  const narrowing = await scopedSharerRefusal(c, { kind: "note", id }, recipient, { scope, level: lvl, caps: caps ?? null });
+  if (narrowing) return narrowing;
+  if (scope === "page") {
+    const refused = await pageShareRefusal(c, id, caps ?? expandLevel(lvl));
+    if (refused) return refused;
+  }
+  const { invited, inviteUrl } = await grantAndInvite(recipient, lvl, scope, id, grantAuthor(c), vaultId, caps);
+  // One grant per person per page: the other kind is replaced.
+  removeGrantBySubjectResource("user", recipient, scope === "page" ? "note" : "page", id, vaultId);
+  // Wave 2A inbox: "shared a page with you" (ids only; view re-checked at delivery).
+  { const a = resolveActor(c); notifyShare({ vaultId: a.vaultId, noteId: id, recipient, actorEmail: a.kind === "user" ? a.email : null }); }
+  return c.json({ ok: true, email: recipient, level: caps ? levelForCaps(caps) : lvl, caps, scope, invited, inviteUrl });
+});
+
+// Revoking a person's access to a note. The route gate is the whole check: a
+// non-admin only reaches this handler with `share` on THIS note, which is exactly
+// the authority to manage other subjects' grants on it. (Removing a grant can
+// only ever reduce access, so there is nothing to escalate.)
+acl.delete("/notes/:id/people/:email", async (c) => {
+  const who = normEmail(decodeURIComponent(c.req.param("email")));
+  const refused = await scopedSharerRefusal(c, { kind: "note", id: c.req.param("id") }, who, null);
+  if (refused) return refused;
+  // Both kinds: a per-note grant and a page-subtree grant anchored on this page.
+  removeGrantBySubjectResource("user", who, "note", c.req.param("id"), resolveActor(c).vaultId);
+  removeGrantBySubjectResource("user", who, "page", c.req.param("id"), resolveActor(c).vaultId);
+  return c.json({ ok: true });
+});
+
+/** A grant an administrator (or governance) made — a scoped sharer may not change it. */
+function adminAuthored(g: Grant, vaultId: string): boolean {
+  const by = g.created_by ?? "";
+  if (!by || by === config.ownerEmail || by.startsWith("governance:")) return true;
+  return roleAtLeast(workspaceRole(by, vaultId), "admin");
+}
+
+/**
+ * Scoped (non-admin) sharers manage access; they never take it away from under an
+ * administrator (security review M2 / M-C). Refused, for a non-admin:
+ *  - changing or removing a grant an admin/owner/governance made;
+ *  - replacing (other kind) a grant someone else made;
+ *  - a new/changed grant that leaves the person with LESS than they would have
+ *    without the sharer's own grants on this resource (so a sharer may freely
+ *    lower or remove what THEY gave — L-5 — but can never cut into access that
+ *    comes from elsewhere, e.g. by a nearer page share on a sub-page).
+ * `next` null = a removal. Answers carry no other person's grants.
+ */
+async function scopedSharerRefusal(
+  c: Context,
+  target: { kind: "note"; id: string } | { kind: "tag"; tag: string },
+  recipient: string,
+  next: { scope: "note" | "page" | "tag"; level: Level; caps: Cap[] | null } | null,
+): Promise<Response | null> {
+  const actor = resolveActor(c);
+  if (roleAtLeast(actor.role, "admin")) return null;
+  const vaultId = actor.vaultId;
+  const mine = actor.kind === "user" ? actor.email : "";
+  const resource = target.kind === "note" ? target.id : target.tag;
+  const kinds = target.kind === "note" ? (["note", "page"] as const) : (["tag"] as const);
+  const existing = kinds.flatMap((t) => grantsForResource(t, resource, vaultId).filter((g) => g.subject_type === "user" && g.subject === recipient));
+  const forbid = (reason: string) => c.json({ error: "forbidden", reason }, 403);
+  if (existing.some((g) => adminAuthored(g, vaultId))) return forbid("This person’s access here was set by an administrator. Ask an administrator to change it.");
+  if (existing.some((g) => g.created_by !== mine)) return forbid("This person’s access here was set by someone else. Ask them or an administrator to change it.");
+  if (!next) return null; // removing only what the sharer gave
+  if (target.kind === "tag") return null; // a tag grant only adds (max over grants): raising/lowering one's own grant cuts nothing else
+  // Would the new grant leave the person with less than they have WITHOUT the sharer's grants here?
+  let note;
+  try {
+    note = await vaultClient(vaultId).getNote(target.id);
+  } catch {
+    return forbid("This page is not available.");
+  }
+  if (note.id !== target.id) return c.json({ error: "not_found" }, 404);
+  const ref = (n: { id: string; tags?: string[] | null; path?: string | null; metadata?: Record<string, unknown> | null }): NoteRef => ({
+    id: n.id,
+    tags: n.tags ?? [],
+    creator: (n.metadata?.prism_creator as string | undefined) ?? null,
+    visibility: n.metadata?.prism_visibility === "private" ? "private" : "workspace",
+    path: n.path ?? null,
+  });
+  const refs: NoteRef[] = [ref(note)];
+  const entry = getVaultRegistry().find((v) => v.id === vaultId);
+  if (entry && note.path && (next.scope === "page" || existing.some((g) => g.resource_type === "page"))) {
+    for (const r of await descendantRows(entry, note.path)) refs.push(rowRef(r));
+  }
+  const floor = roleFloor(workspaceRole(recipient, vaultId));
+  const replaced = new Set(existing.map((g) => g.id));
+  const baseline = grantsForUser(recipient, vaultId).filter((g) => !replaced.has(g.id));
+  const after: Grant[] = [
+    ...baseline,
+    { id: "<next>", vault_id: vaultId, subject_type: "user", subject: recipient, resource_type: next.scope, resource: target.id, level: next.caps ? levelForCaps(next.caps) : next.level, created_by: mine, created_at: 0, expires_at: null, caps: next.caps },
+  ];
+  for (const r of refs) {
+    const before = effectiveCaps(baseline, r, floor, recipient);
+    const later = effectiveCaps(after, r, floor, recipient);
+    for (const cap of before) if (!later.has(cap)) return forbid("That would reduce access this person has from elsewhere. Only an administrator can do that.");
+  }
+  return null;
+}
+
+/**
+ * A page share reaches the page's sub-pages. An ADMIN may always make one. A
+ * scoped sharer (holder of `share` on this page) may only when they hold the
+ * granted caps AND `share` on every CURRENT sub-page too — otherwise the share
+ * would hand out access to pages they could not share themselves. The refusal
+ * never says how many or which sub-pages (no existence oracle). The page must be
+ * addressed by its real id.
+ */
+async function pageShareRefusal(c: Context, id: string, granting: Iterable<Cap>): Promise<Response | null> {
+  const actor = resolveActor(c);
+  let note;
+  try {
+    note = await vaultClient(actor.vaultId).getNote(id);
+  } catch (e) {
+    if (e instanceof VaultError && e.status === 404) return c.json({ error: "not_found" }, 404);
+    return c.json({ error: "vault_error" }, 502);
+  }
+  if (note.id !== id) return c.json({ error: "not_found" }, 404);
+  if (note.metadata?.prism_visibility === "private") {
+    return c.json({ error: "bad_request", reason: "A private page is shared on its own. Share it with “This page only”." }, 400);
+  }
+  if (roleAtLeast(actor.role, "admin") || !note.path) return null;
+  const entry = getVaultRegistry().find((v) => v.id === actor.vaultId);
+  if (!entry) return c.json({ error: "forbidden" }, 403);
+  const need = new Set<Cap>([...granting, "share"]);
+  const subject = actor.kind === "user" ? actor.email : null;
+  // A FRESH listing (not the cached tree — L1), TRASHED notes included (M2): a live
+  // page share reaches the trashed pages under it (so a holder can restore what they
+  // trashed), which makes them part of "everything inside it".
+  let inside: NoteRef[];
+  try {
+    inside = await descendantRefs(entry, note.path);
+  } catch {
+    return c.json({ error: "vault_error" }, 502);
+  }
+  for (const r of inside) {
+    const caps = effectiveCaps(actor.grants, r, roleFloor(actor.role), subject);
+    for (const cap of need) {
+      if (!caps.has(cap)) {
+        return c.json({ error: "forbidden", reason: "You can share this page only on its own: you cannot share everything inside it." }, 403);
+      }
+    }
+  }
+  return null;
+}
+
+acl.post("/notes/:id/links", async (c) => {
+  const id = c.req.param("id");
+  const body = await c.req.json<unknown>().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error: "bad_request" }, 400);
+  const { level, expiresInDays, label } = body as { level?: string; expiresInDays?: number; label?: string };
+  if (!isLevel(level)) return c.json({ error: "bad_request" }, 400);
+  if (expiresInDays !== undefined && (!Number.isFinite(expiresInDays) || expiresInDays <= 0 || expiresInDays > 365)) {
+    return c.json({ error: "bad_request", reason: "expiresInDays must be greater than zero and at most 365" }, 400);
+  }
+  if (label !== undefined && (typeof label !== "string" || label.length > 200)) {
+    return c.json({ error: "bad_request", reason: "label must be at most 200 characters" }, 400);
+  }
+  const capId = randomUUID();
+  const exp = Date.now() + (expiresInDays ?? 30) * 86_400_000;
+  createCapability({ id: capId, resource_type: "note", resource: id, level, label: label ?? null, expires_at: exp });
+  upsertGrant({
+    vault_id: resolveActor(c).vaultId,
+    subject_type: "link",
+    subject: capId,
+    resource_type: "note",
+    resource: id,
+    level,
+    created_by: config.ownerEmail,
+  });
+  return c.json({ id: capId, level, expiresAt: exp, url: linkUrl(id, signCapability({ id: capId, exp })) });
+});
+
+acl.delete("/notes/:id/links/:capId", (c) => {
+  const capId = c.req.param("capId");
+  const vaultId = resolveActor(c).vaultId;
+  const noteId = c.req.param("id");
+  // Capabilities are global IDs; authority comes from their vault-bound grant.
+  // A known ID from another note/vault is never enough to revoke it.
+  if (!grantsForResource("note", noteId, vaultId).some((g) => g.subject_type === "link" && g.subject === capId)) return c.json({ error: "not_found" }, 404);
+  removeGrantBySubjectResource("link", capId, "note", noteId, vaultId);
+  if (!grantsForCapability(capId).length) deleteCapability(capId);
+  return c.json({ ok: true });
+});
+
+// Mark a note private-to-creator (or back to workspace-visible). One path for
+// BOTH shells: web + desktop call this (desktop can't reach the /api gateway
+// PATCH directly). Patch only the visibility key against the observed revision;
+// a concurrent edit must be reviewed, never overwritten by a force retry.
+acl.put("/notes/:id/visibility", async (c) => {
+  const id = c.req.param("id");
+  const { isPrivate } = await c.req.json<{ isPrivate?: boolean }>().catch(() => ({}) as { isPrivate?: boolean });
+  if (typeof isPrivate !== "boolean") return c.json({ error: "bad_request", detail: "isPrivate (boolean) required" }, 400);
+  const vc = vaultClient(resolveActor(c).vaultId);
+  try {
+    const note = await vc.getNote(id);
+    if (!note.updatedAt) return c.json({ error: "conflict", detail: "Reload this note before changing visibility." }, 409);
+    await vc.updateNote(id, {
+      metadata: { prism_visibility: isPrivate ? "private" : "workspace" },
+      ifUpdatedAt: note.updatedAt,
+    });
+    notifyAccessChanged(resolveActor(c).vaultId);
+    return c.json({ ok: true, visibility: isPrivate ? "private" : "workspace" });
+  } catch (e) {
+    if (e instanceof VaultError && (e.status === 409 || e.status === 428)) {
+      return c.json({ error: "conflict", detail: "This note changed. Reload before changing visibility." }, 409);
+    }
+    if (e instanceof VaultError && e.status === 404) return c.json({ error: "not_found" }, 404);
+    return c.json({ error: "vault_error" }, 502);
+  }
+});
+
+// Join / leave a shared tag (so a note becomes covered by tag-grants).
+acl.post("/notes/:id/tags", async (c) => {
+  const { tag } = await c.req.json<{ tag?: string }>();
+  if (!tag) return c.json({ error: "bad_request" }, 400);
+  await vaultClient(resolveActor(c).vaultId).addTags(c.req.param("id"), [tag]);
+  notifyAccessChanged(resolveActor(c).vaultId);
+  return c.json({ ok: true });
+});
+
+acl.delete("/notes/:id/tags/:tag", async (c) => {
+  await vaultClient(resolveActor(c).vaultId).removeTags(c.req.param("id"), [decodeURIComponent(c.req.param("tag"))]);
+  notifyAccessChanged(resolveActor(c).vaultId);
+  return c.json({ ok: true });
+});
+
+// Tag-grants: a person can access everything carrying a tag (≈ "share a folder").
+acl.put("/tags/:tag/people", async (c) => {
+  const tag = decodeURIComponent(c.req.param("tag"));
+  const { email, level, caps: rawCaps } = await c.req.json<{ email?: string; level?: string; caps?: unknown }>();
+  const caps = parseCapsInput(rawCaps);
+  if (caps === "invalid") return c.json({ error: "bad_request", reason: `caps must be a non-empty subset of: ${CAPS.join(", ")}` }, 400);
+  const lvl: Level | null = isLevel(level) ? level : caps ? levelForCaps(caps) : null;
+  if (!isEmail(email) || lvl === null) return c.json({ error: "bad_request" }, 400);
+  const denied = await denyEscalation(c, { kind: "tag", resource: tag }, normEmail(email), caps ?? expandLevel(lvl));
+  if (denied) return denied;
+  // M-C: a tag sharer never changes a tag grant an admin (or anyone else) made.
+  const narrowing = await scopedSharerRefusal(c, { kind: "tag", tag }, normEmail(email), { scope: "tag", level: lvl, caps: caps ?? null });
+  if (narrowing) return narrowing;
+  const { invited, inviteUrl } = await grantAndInvite(normEmail(email), lvl, "tag", tag, grantAuthor(c), resolveActor(c).vaultId, caps);
+  return c.json({ ok: true, email: normEmail(email), level: caps ? levelForCaps(caps) : lvl, caps, invited, inviteUrl });
+});
+
+// Who currently has access to a tag/folder in the active vault (backs the Share
+// dialog's folder panel + the ProjectTree → Members deep-link, Phase 2.3).
+acl.get("/tags/:tag/access", (c) => {
+  const tag = decodeURIComponent(c.req.param("tag"));
+  return c.json(
+    grantsForResource("tag", tag, resolveActor(c).vaultId).map((g) => ({
+      tag,
+      email: g.subject_type === "user" ? g.subject : undefined,
+      subjectType: g.subject_type,
+      level: g.level,
+    })),
+  );
+});
+
+// Same as the note revoke: reaching this handler as a non-admin already required
+// `share` on this tag, and a revoke can only narrow access.
+acl.delete("/tags/:tag/people/:email", async (c) => {
+  const refused = await scopedSharerRefusal(c, { kind: "tag", tag: decodeURIComponent(c.req.param("tag")) }, normEmail(decodeURIComponent(c.req.param("email"))), null);
+  if (refused) return refused;
+  removeGrantBySubjectResource(
+    "user",
+    normEmail(decodeURIComponent(c.req.param("email"))),
+    "tag",
+    decodeURIComponent(c.req.param("tag")),
+    resolveActor(c).vaultId,
+  );
+  return c.json({ ok: true });
+});
+
+// ── Members & whole-workspace access (Phase 2) ───────────────────────────────
+// Manage who belongs to THIS vault (the active X-Prism-Vault) and at what role,
+// plus a whole-workspace access grant. Admin-gated by the group middleware.
+acl.get("/members", (c) => {
+  const vaultId = resolveActor(c).vaultId;
+  const byEmail = new Map(listUsers().map((u) => [u.email, u.name]));
+  return c.json(
+    listMemberships(vaultId).map((m) => ({
+      email: m.email,
+      name: byEmail.get(m.email) ?? null,
+      role: m.role,
+      joinedAt: m.created_at,
+    })),
+  );
+});
+
+const isRoleName = (x: unknown): x is "owner" | "admin" | "member" | "guest" =>
+  x === "owner" || x === "admin" || x === "member" || x === "guest";
+
+acl.put("/members", async (c) => {
+  const actor = resolveActor(c);
+  const { email, role } = await c.req.json<{ email?: string; role?: string }>();
+  if (!isEmail(email) || !isRoleName(role)) return c.json({ error: "bad_request" }, 400);
+  setMembership(actor.vaultId, normEmail(email), role, actor.kind === "user" ? actor.email : config.ownerEmail);
+  // If they have no account yet, issue an invite link the admin can hand over.
+  let inviteUrl: string | undefined;
+  if (!hasAccount(normEmail(email))) inviteUrl = await createInvite(normEmail(email), null, config.ownerEmail);
+  return c.json({ ok: true, email: normEmail(email), role, invited: !!inviteUrl, inviteUrl });
+});
+
+acl.delete("/members/:email", (c) => {
+  removeMembership(resolveActor(c).vaultId, normEmail(decodeURIComponent(c.req.param("email"))));
+  return c.json({ ok: true });
+});
+
+// ── Grants audit (2.2): every grant in the active vault, each revocable ──
+acl.get("/grants", (c) => {
+  const byEmail = new Map(listUsers().map((u) => [u.email, u.name]));
+  return c.json(
+    listGrantsForVault(resolveActor(c).vaultId).map((g) => ({
+      id: g.id,
+      subjectType: g.subject_type,
+      subject: g.subject,
+      subjectName: g.subject_type === "user" ? (byEmail.get(g.subject) ?? null) : null,
+      resourceType: g.resource_type,
+      resource: g.resource,
+      level: g.level,
+      caps: g.caps ?? null,
+      grantedBy: g.created_by,
+      grantedAt: g.created_at,
+    })),
+  );
+});
+
+acl.delete("/grants/:id", (c) => {
+  // Scope the revoke to the admin's OWN vault — a grant id from another tenant
+  // must not be deletable here.
+  const g = getGrantById(c.req.param("id"));
+  if (!g || g.vault_id !== resolveActor(c).vaultId) return c.json({ error: "not_found" }, 404);
+  removeGrant(g.id);
+  return c.json({ ok: true });
+});
+
+// ── Workspace (= this server) management: people × vaults (server-owner only) ──
+// A WORKSPACE is the whole server — a permission boundary grouping MULTIPLE vaults
+// and the people who can reach them. The per-vault /acl/members endpoints above
+// manage ONE vault (the active X-Prism-Vault); these give the server owner a
+// single cross-vault surface: every person, their role + access in each vault, and
+// the ability to add a person to a CHOSEN vault at a chosen level in one step.
+// Gated on the SERVER owner (not just any vault admin) since it spans all vaults.
+function isServerOwner(c: Parameters<typeof resolveActor>[0]): boolean {
+  const a = resolveActor(c);
+  return a.kind === "user" && a.email === config.ownerEmail;
+}
+
+/** The full workspace picture: the vaults on this server + every person's access
+ *  matrix (per-vault management `role` and/or whole-vault access `level`). */
+acl.get("/workspace", (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const vaults = getVaultRegistry().map((v) => ({ id: v.id, label: v.label, vault: v.vault }));
+  const names = new Map(listUsers().map((u) => [u.email, u.name]));
+  type Access = { role?: string; level?: string };
+  const people = new Map<string, { email: string; name: string | null; isServerOwner: boolean; access: Record<string, Access> }>();
+  const ensure = (email: string) => {
+    let p = people.get(email);
+    if (!p) { p = { email, name: names.get(email) ?? null, isServerOwner: email === config.ownerEmail, access: {} }; people.set(email, p); }
+    return p;
+  };
+  // The server owner is owner of every vault (implicit — may have no rows).
+  if (config.ownerEmail) {
+    const owner = ensure(config.ownerEmail);
+    for (const v of vaults) (owner.access[v.id] ??= {}).role = "owner";
+  }
+  for (const v of vaults) {
+    for (const m of listMemberships(v.id)) (ensure(m.email).access[v.id] ??= {}).role = m.role;
+    for (const g of listGrantsForVault(v.id)) {
+      if (g.subject_type === "user" && g.resource_type === "vault") {
+        (ensure(g.subject).access[v.id] ??= {}).level = g.level;
+      }
+    }
+  }
+  return c.json({ vaults, people: [...people.values()] });
+});
+
+const inRegistry = (vaultId: string): boolean => getVaultRegistry().some((v) => v.id === vaultId);
+
+/** Give a person whole-vault ACCESS to a chosen vault at a level (view..own).
+ *  This is the "add someone to the workspace → access to a chosen vault" step. */
+acl.put("/workspace/access", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const { email, vaultId, level } = await c.req.json<{ email?: string; vaultId?: string; level?: string }>().catch(() => ({}) as Record<string, string>);
+  if (!isEmail(email) || !isLevel(level) || typeof vaultId !== "string" || !inRegistry(vaultId)) {
+    return c.json({ error: "bad_request", detail: "email, known vaultId, and level required" }, 400);
+  }
+  ensureUser(normEmail(email));
+  upsertGrant({ vault_id: vaultId, subject_type: "user", subject: normEmail(email), resource_type: "vault", resource: vaultId, level, created_by: config.ownerEmail });
+  let inviteUrl: string | undefined;
+  if (!hasAccount(normEmail(email))) inviteUrl = await createInvite(normEmail(email), null, config.ownerEmail);
+  return c.json({ ok: true, email: normEmail(email), vaultId, level, invited: !!inviteUrl, inviteUrl });
+});
+
+acl.delete("/workspace/access/:vaultId/:email", (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const vaultId = c.req.param("vaultId");
+  removeGrantBySubjectResource("user", normEmail(decodeURIComponent(c.req.param("email"))), "vault", vaultId, vaultId);
+  return c.json({ ok: true });
+});
+
+/** Set a person's management ROLE in a chosen vault (owner/admin/member/guest).
+ *  Distinct from access: a role confers management rights over that vault. */
+acl.put("/workspace/members", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const { email, vaultId, role } = await c.req.json<{ email?: string; vaultId?: string; role?: string }>().catch(() => ({}) as Record<string, string>);
+  if (!isEmail(email) || !isRoleName(role) || typeof vaultId !== "string" || !inRegistry(vaultId)) {
+    return c.json({ error: "bad_request", detail: "email, known vaultId, and role required" }, 400);
+  }
+  setMembership(vaultId, normEmail(email), role, config.ownerEmail);
+  let inviteUrl: string | undefined;
+  if (!hasAccount(normEmail(email))) inviteUrl = await createInvite(normEmail(email), null, config.ownerEmail);
+  return c.json({ ok: true, email: normEmail(email), vaultId, role, invited: !!inviteUrl, inviteUrl });
+});
+
+acl.delete("/workspace/members/:vaultId/:email", (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  removeMembership(c.req.param("vaultId"), normEmail(decodeURIComponent(c.req.param("email"))));
+  return c.json({ ok: true });
+});
+
+// ── Workspaces: one server, many workspaces (server-owner only) ──────────────
+// A workspace groups one or more VAULTS + a subdomain. The owner defines them
+// here; each vault belongs to exactly one workspace (unassigned → 'default').
+// Membership/access stay per-vault, so a workspace's people = the union over its
+// vaults (surfaced by the existing /acl/workspace matrix, scoped as the UI lands).
+const wsSlug = (s: string): string =>
+  s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "workspace";
+
+function workspaceView(w: { id: string; name: string; hostname: string | null; created_at: number }) {
+  const vaultIds = vaultsForWorkspace(w.id);
+  const registry = new Map(getVaultRegistry().map((v) => [v.id, v]));
+  return {
+    id: w.id,
+    name: w.name,
+    hostname: w.hostname,
+    createdAt: w.created_at,
+    isDefault: w.id === DEFAULT_WORKSPACE_ID,
+    vaults: vaultIds.map((id) => ({ id, label: registry.get(id)?.label ?? id, vault: registry.get(id)?.vault ?? id })),
+  };
+}
+
+acl.get("/workspaces", (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  return c.json(listWorkspaces().map(workspaceView));
+});
+
+acl.post("/workspaces", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const { name, hostname } = await c.req.json<{ name?: string; hostname?: string }>().catch(() => ({}) as { name?: string; hostname?: string });
+  if (typeof name !== "string" || !name.trim()) return c.json({ error: "bad_request", detail: "name required" }, 400);
+  if (hostname !== undefined && hostname !== "" && !/^[a-z0-9.-]+$/i.test(hostname)) {
+    return c.json({ error: "bad_request", detail: "hostname must be a bare host (no scheme/path)" }, 400);
+  }
+  let id = wsSlug(name);
+  const taken = new Set(listWorkspaces().map((w) => w.id));
+  while (taken.has(id)) id = `${wsSlug(name)}-${Math.floor(Math.random() * 10000)}`;
+  return c.json(workspaceView(createWorkspace({ id, name: name.trim(), hostname: hostname?.trim() || null })));
+});
+
+acl.put("/workspaces/:id", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const id = c.req.param("id");
+  if (!getWorkspace(id)) return c.json({ error: "not_found" }, 404);
+  const { name, hostname } = await c.req.json<{ name?: string; hostname?: string | null }>().catch(() => ({}) as { name?: string; hostname?: string | null });
+  if (hostname !== undefined && hostname !== null && hostname !== "" && !/^[a-z0-9.-]+$/i.test(hostname)) {
+    return c.json({ error: "bad_request", detail: "hostname must be a bare host" }, 400);
+  }
+  updateWorkspace(id, {
+    ...(typeof name === "string" && name.trim() ? { name: name.trim() } : {}),
+    ...(hostname !== undefined ? { hostname: hostname ? hostname.trim() : null } : {}),
+  });
+  return c.json(workspaceView(getWorkspace(id)!));
+});
+
+acl.delete("/workspaces/:id", (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const id = c.req.param("id");
+  if (id === DEFAULT_WORKSPACE_ID) return c.json({ error: "forbidden", detail: "the default workspace is permanent" }, 400);
+  deleteWorkspace(id);
+  return c.json({ ok: true });
+});
+
+/** Assign a vault to a workspace (each vault belongs to exactly one). */
+acl.put("/workspaces/:id/vaults", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const id = c.req.param("id");
+  if (!getWorkspace(id)) return c.json({ error: "not_found" }, 404);
+  const { vaultId } = await c.req.json<{ vaultId?: string }>().catch(() => ({}) as { vaultId?: string });
+  if (typeof vaultId !== "string" || !getVaultRegistry().some((v) => v.id === vaultId)) {
+    return c.json({ error: "bad_request", detail: "known vaultId required" }, 400);
+  }
+  const previous = workspaceForVault(vaultId);
+  assignVaultToWorkspace(vaultId, id);
+  return c.json({ ok: true, vaultId, workspaceId: id, previous });
+});
+
+// ── Server settings + Cloudflare tunnel management (server-owner only) ────────
+// The workspace's operator surface: a config snapshot (secret VALUES are never
+// returned — only booleans), Cloudflare tunnel status + controls (the tunnel is a
+// pm2 process, `prism-tunnel`), and a CURATED editable-.env allowlist. Infra-
+// sensitive → server-owner-gated and narrowly scoped: no token/secret is editable
+// here, and .env writes are backed up first + flagged restart-required.
+
+/** Cloudflare tunnel status: the pm2 process state + the public hostname it
+ *  fronts (read from the cloudflared config). Best-effort — never throws. */
+async function tunnelStatus(): Promise<Record<string, unknown>> {
+  let hostname: string | null = null;
+  try {
+    const cfg = await readFile(`${process.env.HOME}/.cloudflared/prism-config.yml`, "utf8");
+    hostname = cfg.match(/hostname:\s*(\S+)/)?.[1] ?? null;
+  } catch { /* config absent */ }
+  try {
+    const { stdout } = await pexec("pm2", ["jlist"]);
+    const list = JSON.parse(stdout) as Array<{ name: string; pm2_env: { status: string; restart_time: number; pm_uptime: number } }>;
+    const proc = list.find((p) => p.name === "prism-tunnel");
+    if (proc) {
+      return { managed: true, name: "prism-tunnel", status: proc.pm2_env.status, restarts: proc.pm2_env.restart_time, uptime: proc.pm2_env.pm_uptime, hostname };
+    }
+    return { managed: false, hostname, detail: "no pm2 process named 'prism-tunnel'" };
+  } catch {
+    return { managed: false, hostname, detail: "pm2 not available on this host" };
+  }
+}
+
+/** Per-source ingest health (server workers + desktop-owned sources inferred from
+ *  the vault). Server-owner only; error text is scrubbed in worker/health.ts. */
+acl.get("/workers", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  return c.json({ sources: await getSourceHealth(), checkedAt: new Date().toISOString() });
+});
+
+/** Matrix rooms the ingester gave up replaying (worker/scheduler.ts): while any is
+ *  listed the `matrix` source reads `failing`. GET to look (ids + cursors only, never
+ *  a room name); DELETE once looked at — the rooms may then be replayed again if they
+ *  fail again. Server-owner only; the DELETE is CSRF-guarded and audited (counts). */
+acl.get("/workers/matrix/lost", (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const vaultId = resolveActor(c).vaultId;
+  return c.json({ vaultId, rooms: lostMatrixRooms(vaultId) });
+});
+acl.delete("/workers/matrix/lost", (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const via = requestVia(c);
+  const csrf = csrfRefusal(c, via);
+  if (csrf) return csrf;
+  const actor = resolveActor(c);
+  const cleared = clearLostMatrixRooms(actor.vaultId);
+  recordAction({ actorEmail: config.ownerEmail, via, origin: via === "session" || via === "device" ? "human" : "agent", action: "admin.matrix-lost-clear", vaultId: actor.vaultId, target: { cleared }, idempotencyKey: null, status: "ok", error: null });
+  return c.json({ ok: true, cleared });
+});
+
+/** Server calendar ingest (WP1.3): the last persisted intents (what the server
+ *  did or WOULD do — create/update/delete/cancel/archive/…) + the last pass
+ *  summary, for comparing against the desktop during the shadow period.
+ *  `?vault=<id>` (default primary), `?limit=N` (newest N, default 200),
+ *  `?action=delete,cancel` to filter, `?verify=1` to re-read every note a
+ *  delete/cancel intent named and report what is there NOW (gone / cancelled /
+ *  archived / present) — read-only. Server-owner only. */
+acl.get("/workers/calendar/intents", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const vaultId = c.req.query("vault") || "primary";
+  if (!getVaultRegistry().some((v) => v.id === vaultId)) return c.json({ error: "not_found" }, 404);
+  const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 200) || 200, 1), 5000);
+  const actions = (c.req.query("action") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  let intents = readCalendarIntents(vaultId);
+  if (actions.length) intents = intents.filter((i) => actions.includes(i.action));
+  const body: Record<string, unknown> = {
+    mode: calendarMode(),
+    deleteMode: config.calendarDeleteMode,
+    lastPass: readCalendarLastPass(vaultId),
+    total: intents.length,
+    intents: intents.slice(-limit).reverse(),
+  };
+  if (c.req.query("verify") === "1") body.verify = await verifyCalendarIntents(vaultId, intents);
+  return c.json(body);
+});
+
+/** Live actions audit (WP1.5): newest first; `?limit=N` (default 100, max 1000),
+ *  `?action=email.send,matrix.send`, `?before=<id>` to page. Ids + hashes only —
+ *  never a body, subject or address. Server-owner only. */
+acl.get("/actions/audit", (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const actions = (c.req.query("action") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const before = Number(c.req.query("before") ?? 0) || undefined;
+  const limit = Number(c.req.query("limit") ?? 100) || 100;
+  return c.json({ entries: listActionAudit({ limit, action: actions, before }) });
+});
+
+/** Server Proton Bridge ingest (WP1.2b): the last persisted intents (what the
+ *  server wrote or WOULD write — create / update-flags / skip-*; never a subject,
+ *  body, address or path slug: only note ids, uids, the 8-hex path hash and
+ *  hashes) + the last pass
+ *  summary, for comparing against the agent's proton_mail.py during the shadow
+ *  period. `?vault=<id>` (default primary), `?limit=N` (newest N, default 200),
+ *  `?action=create,update-flags` to filter, `?verify=1` to re-read what the
+ *  script actually wrote for each intent (match / differs + which keys /
+ *  missing) — read-only. Server-owner only. */
+acl.get("/workers/proton/intents", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const vaultId = c.req.query("vault") || "primary";
+  if (!getVaultRegistry().some((v) => v.id === vaultId)) return c.json({ error: "not_found" }, 404);
+  const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 200) || 200, 1), 5000);
+  const actions = (c.req.query("action") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  let intents = readProtonIntents(vaultId);
+  if (actions.length) intents = intents.filter((i) => actions.includes(i.action));
+  const body: Record<string, unknown> = {
+    mode: protonMode(),
+    lastPass: readProtonLastPass(vaultId),
+    total: intents.length,
+    intents: intents.slice(-limit).reverse(),
+  };
+  if (c.req.query("verify") === "1") body.verify = await verifyProtonIntents(vaultId, intents);
+  return c.json(body);
+});
+
+/** Server config + status snapshot. NEVER returns a secret/token value — only
+ *  whether each is configured. */
+acl.get("/server", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const integrations: Record<string, boolean> = {};
+  for (const k of ["matrix", "fathom", "fireflies", "clickup", "github", "google", "notion", "proton-bridge"]) {
+    integrations[k] = secretsConfigured() && !!getSecret("primary", config.ownerEmail, k);
+  }
+  return c.json({
+    appOrigin: config.appOrigin,
+    port: config.port,
+    ownerEmail: config.ownerEmail,
+    parachuteUrl: config.parachuteUrl,
+    parachuteVault: config.parachuteVault,
+    vaultCount: getVaultRegistry().length,
+    federationEnabled: getFederationEnabled(),
+    trustLocal: config.trustLocal,
+    secretsAvailable: secretsConfigured(),
+    emailConfigured: !!config.resendApiKey,
+    magicFrom: config.magicFrom,
+    integrations,
+    tunnel: await tunnelStatus(),
+    // Vault-token expiry per registry entry — dates + status only, never token
+    // material. Registry tokens are ~90-day hub JWTs with no auto-renewal.
+    // `rotatable` = owner-added (PUT /acl/vaults/:id/token); env vaults rotate in .env.
+    tokens: tokenExpiries(getVaultRegistry()).map((t) => ({ ...t, rotatable: !vaultRegistry.some((v) => v.id === t.id) })),
+  });
+});
+
+/** First-run checklist (server owner): which setup steps are done. Booleans and plain sentences
+ *  only — never a token, a key or an address beyond APP_ORIGIN (`setup-status.ts`). */
+acl.get("/setup", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  return c.json(await readSetupStatus());
+});
+
+acl.get("/server/tunnel", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  return c.json(await tunnelStatus());
+});
+
+/** Start / stop / restart the Cloudflare tunnel (the pm2 `prism-tunnel` process).
+ *  NOTE: `stop` takes the PUBLIC site offline — the UI warns, and if the caller is
+ *  reaching this over the tunnel they'd cut their own connection. Owner's choice. */
+acl.post("/server/tunnel", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const { action } = await c.req.json<{ action?: string }>().catch(() => ({}) as { action?: string });
+  if (action !== "start" && action !== "stop" && action !== "restart") {
+    return c.json({ error: "bad_request", detail: "action must be start|stop|restart" }, 400);
+  }
+  try {
+    await pexec("pm2", [action, "prism-tunnel"]);
+    return c.json({ ok: true, action, tunnel: await tunnelStatus() });
+  } catch (e) {
+    return c.json({ error: "tunnel_control_failed", detail: (e as Error).message }, 500);
+  }
+});
+
+// ── Tunnel ingress: wire each workspace subdomain to this server ─────────────
+// A workspace serves on its own subdomain; that needs (1) a Cloudflare DNS route
+// and (2) an ingress rule in the cloudflared config. This surfaces both: the
+// current config, which workspace hostnames are missing an ingress rule, the
+// exact `cloudflared tunnel route dns` command per hostname (DNS is created by
+// the operator — it mutates their Cloudflare account), and a GUARDED apply that
+// only ADDS missing rules (never rewrites/drops existing ones), backs up first,
+// restarts the tunnel, and ROLLS BACK if it doesn't come back online.
+const CF_CONFIG = `${process.env.HOME}/.cloudflared/prism-config.yml`;
+
+async function readTunnelConfig(): Promise<{ text: string; tunnelId: string | null }> {
+  const text = await readFile(CF_CONFIG, "utf8");
+  const tunnelId = text.match(/^tunnel:\s*(\S+)/m)?.[1] ?? null;
+  return { text, tunnelId };
+}
+
+/** Workspace hostnames that aren't yet present as an ingress `hostname:` line. */
+function missingIngress(configText: string): string[] {
+  const present = new Set([...configText.matchAll(/hostname:\s*(\S+)/g)].map((m) => m[1]!.toLowerCase()));
+  return listWorkspaces()
+    .map((w) => w.hostname)
+    .filter((h): h is string => !!h)
+    .filter((h) => !present.has(h.toLowerCase()));
+}
+
+acl.get("/server/tunnel/ingress", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  try {
+    const { text, tunnelId } = await readTunnelConfig();
+    const missing = missingIngress(text);
+    return c.json({
+      configPath: CF_CONFIG,
+      config: text,
+      tunnelId,
+      missing,
+      // DNS is created out-of-band (it mutates the operator's Cloudflare account),
+      // so we surface the exact commands rather than run them.
+      routeDnsCommands: missing.map((h) => `cloudflared tunnel route dns ${tunnelId ?? "<tunnel>"} ${h}`),
+    });
+  } catch (e) {
+    return c.json({ error: "config_unreadable", detail: (e as Error).message }, 500);
+  }
+});
+
+acl.post("/server/tunnel/ingress", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  let text: string;
+  try {
+    ({ text } = await readTunnelConfig());
+  } catch (e) {
+    return c.json({ error: "config_unreadable", detail: (e as Error).message }, 500);
+  }
+  const missing = missingIngress(text);
+  if (missing.length === 0) return c.json({ ok: true, added: [], detail: "all workspace hostnames already routed" });
+
+  // Insert each missing rule immediately BEFORE the catch-all (`- service:
+  // http_status:404`), preserving every existing rule. If there's no catch-all,
+  // append to the end of the ingress list.
+  const rules = missing.map((h) => `  - hostname: ${h}\n    service: http://localhost:${config.port}\n`).join("");
+  const catchAll = text.match(/^\s*-\s*service:\s*http_status:404\s*$/m);
+  const next = catchAll
+    ? text.replace(catchAll[0], `${rules}${catchAll[0]}`)
+    : `${text.replace(/\n?$/, "\n")}${rules}`;
+
+  try {
+    await copyFile(CF_CONFIG, `${CF_CONFIG}.bak-${Date.now()}`);
+    await writeFile(CF_CONFIG, next);
+    await pexec("pm2", ["restart", "prism-tunnel"]);
+  } catch (e) {
+    return c.json({ error: "apply_failed", detail: (e as Error).message }, 500);
+  }
+  // Verify the tunnel came back; roll back the config if not.
+  const status = await tunnelStatus();
+  if ((status as { status?: string }).status !== "online") {
+    try {
+      await writeFile(CF_CONFIG, text); // restore
+      await pexec("pm2", ["restart", "prism-tunnel"]);
+    } catch { /* best-effort rollback */ }
+    return c.json({ error: "tunnel_unhealthy_rolled_back", detail: "tunnel did not come back online; config restored" }, 500);
+  }
+  return c.json({ ok: true, added: missing, tunnel: status });
+});
+
+// Curated editable .env keys — deliberately NARROW. No token/secret/OWNER_EMAIL
+// (editing those from the web could lock the owner out or leak). Each write backs
+// up .env first and is flagged restart-required (the process reads env at boot).
+// RESEND_API_KEY was removed (docs/credentials.md): it controls the channel that
+// delivers owner magic links, so a stolen owner session could swap in an
+// attacker-owned Resend account, read every later sign-in link in that account's
+// logs, and keep owner access after the session is revoked. Set it in .env.
+// APP_ORIGIN was removed too (security review H1): it drives magic-link/invite
+// URLs, credentialed CORS, the MCP Origin allowlist and the cookie `secure` flag,
+// so a stolen session could point future owner sign-in links at its own origin.
+// The allowlist + the central injection guard live in env-edit.ts (C1).
+acl.put("/server/config", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const body = await c.req.json<{ key?: unknown; value?: unknown }>().catch(() => ({}) as { key?: unknown; value?: unknown });
+  const v = validateEnvEdit(body.key, body.value);
+  if (!v.ok) {
+    return v.error === "not_editable"
+      ? c.json({ error: "not_editable", detail: `only ${Object.keys(EDITABLE_ENV).join(", ")} are editable here` }, 400)
+      : c.json({ error: "bad_value", detail: `invalid value for ${String(body.key)}` }, 400);
+  }
+  const { key, value } = v;
+  const envPath = `${process.cwd()}/.env`;
+  try {
+    const raw = await readFile(envPath, "utf8");
+    // Back up before any write (timestamped, gitignored *.env.bak-*).
+    await copyFile(envPath, `${envPath}.bak-${Date.now()}`).catch(() => {});
+    const next = applyEnvEdit(raw, key, value);
+    await writeFile(envPath, next, { mode: 0o600 });
+    return c.json({ ok: true, key, restartRequired: true });
+  } catch (e) {
+    return c.json({ error: "write_failed", detail: (e as Error).message }, 500);
+  }
+});
+
+// Whole-workspace access grant: broad note access (view..own) WITHOUT management
+// rights. Distinct from a role (which also confers management). resource = vault_id.
+acl.put("/vault/people", async (c) => {
+  const actor = resolveActor(c);
+  const { email, level } = await c.req.json<{ email?: string; level?: string }>();
+  if (!isEmail(email) || !isLevel(level)) return c.json({ error: "bad_request" }, 400);
+  ensureUser(normEmail(email));
+  upsertGrant({ vault_id: actor.vaultId, subject_type: "user", subject: normEmail(email), resource_type: "vault", resource: actor.vaultId, level, created_by: config.ownerEmail });
+  let inviteUrl: string | undefined;
+  if (!hasAccount(normEmail(email))) inviteUrl = await createInvite(normEmail(email), null, config.ownerEmail);
+  return c.json({ ok: true, email: normEmail(email), level, invited: !!inviteUrl, inviteUrl });
+});
+
+acl.delete("/vault/people/:email", (c) => {
+  const actor = resolveActor(c);
+  removeGrantBySubjectResource("user", normEmail(decodeURIComponent(c.req.param("email"))), "vault", actor.vaultId, actor.vaultId);
+  return c.json({ ok: true });
+});
+
+// ── Publishing (Horizon B): turn a tag into a public, read-only site ──
+// Config (the publications row) and access (an `anyone` grant) are decoupled;
+// effectiveLevel in the /api/p gateway stays the only authoritative guard.
+const slugify = (s: string): string =>
+  s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64) || "site";
+
+/** Parse a stored theme JSON blob back into an object for the settings UI.
+ *  Tolerates null/malformed → null (never throws into the list response). */
+function parsePublicationTheme(raw: string | null): unknown {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v === "object" && !Array.isArray(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Max serialized size for a per-publication theme blob (renders on a PUBLIC
+ *  page, so it stays small + bounded). */
+const MAX_THEME_BYTES = 4096;
+
+/** Validate an owner-supplied theme: a plain JSON object under the size cap (or
+ *  null to clear). Returns the serialized string to persist, `null` to clear, or
+ *  an `{ error }` describing why it was rejected. The publinc site additionally
+ *  re-validates every value at render (http(s) logo, color/url patterns) — this
+ *  is the size/shape gate, not the injection gate. */
+function validateTheme(value: unknown): { json: string | null } | { error: string } {
+  if (value === null || value === undefined) return { json: null };
+  if (typeof value !== "object" || Array.isArray(value)) {
+    return { error: "theme must be a plain object or null" };
+  }
+  const json = JSON.stringify(value);
+  if (Buffer.byteLength(json, "utf8") > MAX_THEME_BYTES) {
+    return { error: `theme must be under ${MAX_THEME_BYTES} bytes` };
+  }
+  return { json };
+}
+
+function canManagePublication(c: Context, pub: Publication): boolean {
+  const actor = resolveActor(c);
+  return actor.kind === "user" && roleAtLeast(workspaceRole(actor.email, publicationVaultId(pub)), "admin");
+}
+function managedPublication(c: Context): Publication | null {
+  const slug = c.req.param("slug");
+  const pub = slug ? getPublicationBySlug(slug) : null;
+  return pub && canManagePublication(c, pub) ? pub : null;
+}
+
+acl.get("/publications", (c) =>
+  c.json(
+    listPublications().filter(p => canManagePublication(c, p)).map((p) => {
+      const kind = p.resource_type === "path" ? "path" : "tag";
+      return {
+        slug: p.id,
+        kind,
+        // Which vault this publication serves from ('primary' = the default).
+        vaultId: publicationVaultId(p),
+        vaultLabel: getVaultRegistry().find(v => v.id === publicationVaultId(p))?.label ?? publicationVaultId(p),
+        isCurrentVault: publicationVaultId(p) === resolveActor(c).vaultId,
+        // Keep `tag` populated for tag pubs (existing UI/e2e), add `pathPrefix`
+        // for path pubs. Both echo `resource` for their respective kind; the
+        // other is empty/null to match core's PublicationInfo contract.
+        tag: kind === "tag" ? p.resource : "",
+        pathPrefix: kind === "path" ? p.resource : null,
+        template: p.template,
+        title: p.title,
+        passwordRequired: !!p.password_hash,
+        theme: parsePublicationTheme(p.theme),
+        homeNoteId: p.home_note_id,
+        excludeNoteIds: excludedNoteIds(p),
+        expiresAt: p.expires_at,
+        url: `${config.appOrigin}/p/${p.id}`,
+        createdAt: p.created_at,
+      };
+    }),
+  ),
+);
+
+/** Owner-only preview of the SAME membership used by every public reader.
+ * Slug management remains server-wide for owners; always use the publication's
+ * own vault, never whichever vault happens to be selected in the client. */
+acl.get("/publications/:slug/preview", async (c) => {
+  const pub = managedPublication(c);
+  if (!pub) return c.json({ error: "not_found" }, 404);
+  try {
+    const { candidates, privateExcludedCount } = await publicationInventory(pub);
+    const excluded = new Set(excludedNoteIds(pub));
+    const expired = pub.expires_at !== null && pub.expires_at <= Date.now();
+    const notes = candidates.map(n => ({ id: n.id, title: navTitle(n), path: n.path, excluded: excluded.has(n.id) }));
+    return c.json({ slug: pub.id, vaultId: publicationVaultId(pub), notes, privateExcludedCount,
+      publishedCount: expired ? 0 : notes.filter(n => !n.excluded).length, expired });
+  } catch { return c.json({ error: "preview_unavailable" }, 502); }
+});
+
+// Presentation drafts are private management state, never a public access token.
+acl.get("/publications/:slug/presentation", (c) => {
+  const pub = managedPublication(c);
+  if (!pub) return c.json({ error: "not_found" }, 404);
+  c.header("Cache-Control", "no-store");
+  return c.json(getPresentation(pub.id));
+});
+acl.get("/publications/:slug/presentation/preview", async (c) => {
+  const pub = managedPublication(c);
+  if (!pub) return c.json({ error: "not_found" }, 404);
+  c.header("Cache-Control", "no-store");
+  const state = getPresentation(pub.id);
+  const revision = Number(c.req.query("draftRevision"));
+  if (!state.draft || !Number.isSafeInteger(revision) || revision !== state.draftRevision) return c.json({ error: "presentation_conflict", detail: "The saved draft changed. Reload its current revision to preview." }, 409);
+  try {
+    // Same reader-eligible set; management authority never adds private pages.
+    const notes = await publicationNotes(pub, true);
+    // Revalidate after the asynchronous vault read: do not serve a stale draft
+    // or a deleted/recreated publication after authority/settings changed.
+    const fresh = managedPublication(c);
+    if (!fresh || JSON.stringify(fresh) !== JSON.stringify(pub)) return c.json({ error: "presentation_conflict" }, 409);
+    if (getPresentation(pub.id).draftRevision !== revision) return c.json({ error: "presentation_conflict" }, 409);
+    const nav = notes.map(n => ({id:n.id,title:navTitle({...n,content:""}),path:n.path,tags:n.tags ?? []}));
+    const home = nav.some(n=>n.id===pub.home_note_id) ? pub.home_note_id : nav[0]?.id ?? null;
+    const requested = c.req.query("noteId");
+    const selected = notes.find(n=>n.id===(requested ?? home));
+    if (requested && !selected) return c.json({error:"not_found"},404);
+    const mapFeatures = publicationMap(notes);
+    return c.json({
+      manifest: {slug:pub.id,title:state.draft.title || nav.find(n=>n.id===home)?.title || pub.resource,
+        template:state.draft.template,theme:readerPresentationTheme(state.draft.theme, nav.map(n => n.id)),homeNoteId:home,passwordRequired:!!pub.password_hash,locked:false,
+        notes:nav,mapFeatureCount:mapFeatures.length},
+      note: selected ? {...selected,title:navTitle(selected)} : null,
+      graph:publicationGraph(notes),mapFeatures,
+      expired:pub.expires_at !== null && pub.expires_at <= Date.now(),draftRevision:revision,
+    });
+  } catch { return c.json({error:"preview_unavailable"},502); }
+});
+
+for (const action of ["draft", "publish", "restore"] as const) {
+  acl.post(`/publications/:slug/presentation/${action}`, async (c) => {
+    const pub = managedPublication(c);
+    if (!pub) return c.json({ error: "not_found" }, 404);
+    c.header("Cache-Control", "no-store");
+    const body = await c.req.json().catch(() => null);
+    if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error: "bad_request" }, 400);
+    try {
+      const actor = resolveActor(c);
+      const result = action === "draft"
+        ? savePresentationDraft(pub.id, body.presentation, body.draftRevision, body.liveRevision)
+        : action === "restore"
+          ? restorePresentationDraft(pub.id, body.revision, body.draftRevision, body.liveRevision)
+          : publishPresentationDraft(pub.id, body.draftRevision, body.liveRevision, actor.kind === "user" ? actor.email : "");
+      return c.json(result);
+    } catch (error) {
+      if (error instanceof PresentationError) return c.json({ error: error.code, detail: error.message }, error.code === "bad_presentation" ? 400 : 409);
+      throw error;
+    }
+  });
+}
+
+acl.post("/tags/:tag/publish", async (c) => {
+  const tag = decodeURIComponent(c.req.param("tag"));
+  // Publications are vault-scoped: the ACTIVE vault (X-Prism-Vault, same
+  // resolution as the gateway) is stamped on the publication row AND its
+  // backing anyone-grant, so the public path serves THIS vault's notes.
+  const vaultId = resolveActor(c).vaultId;
+  const body = await c.req
+    .json<{ template?: string; title?: string; slug?: string; homeNoteId?: string; password?: string }>()
+    .catch(() => ({}) as { template?: string; title?: string; slug?: string; homeNoteId?: string; password?: string });
+
+  // Optional password: hashed at rest (scrypt). Empty/absent → open publication.
+  const passwordHash = body.password ? hashPassword(body.password) : null;
+
+  // One publication per (vault, tag) → idempotent: reuse the existing slug if present.
+  const existing = getPublicationByResource("tag", tag, vaultId);
+  let slug = existing?.id ?? "";
+  if (!existing) {
+    slug = (body.slug && slugify(body.slug)) || slugify(tag);
+    while (getPublicationBySlug(slug)) slug = `${slug}-${Math.floor(Math.random() * 1000)}`;
+    createPublication({
+      id: slug,
+      vault_id: vaultId,
+      resource_type: "tag",
+      resource: tag,
+      template: body.template || "wiki",
+      title: body.title ?? null,
+      home_note_id: body.homeNoteId ?? null,
+      password_hash: passwordHash,
+      theme: null,
+      expires_at: null,
+      created_by: config.ownerEmail,
+    });
+  } else if (body.password !== undefined) {
+    // Re-publishing with a password field present updates the gate (set or clear).
+    updatePublication(existing.id, { password_hash: passwordHash });
+  }
+  // The publication primitive: an `anyone-with-the-link` grant scoped to the tag
+  // IN THE PUBLICATION'S VAULT (a public slice of A must not open the tag in B).
+  upsertGrant({ vault_id: vaultId, subject_type: "anyone", subject: "*", resource_type: "tag", resource: tag, level: "view", created_by: config.ownerEmail });
+
+  // Live count for the UI warning ("this will publish N notes" — and is dynamic),
+  // counted in the publication's own vault.
+  let count = 0;
+  try { const published = getPublicationBySlug(slug); if (published && (!published.expires_at || published.expires_at > Date.now())) count = (await publicationNotes(published, false)).length; } catch { /* best-effort */ }
+  return c.json({ slug, tag, url: `${config.appOrigin}/p/${slug}`, count, passwordRequired: !!passwordHash });
+});
+
+/** Set or clear a publication's password (clear by sending an empty/omitted password). */
+acl.put("/tags/:tag/publish/password", async (c) => {
+  const tag = decodeURIComponent(c.req.param("tag"));
+  const pub = getPublicationByResource("tag", tag, resolveActor(c).vaultId);
+  if (!pub) return c.json({ error: "not_found" }, 404);
+  const { password } = await c.req.json<{ password?: string }>().catch(() => ({}) as { password?: string });
+  updatePublication(pub.id, { password_hash: password ? hashPassword(password) : null });
+  return c.json({ ok: true, passwordRequired: !!password });
+});
+
+acl.delete("/tags/:tag/publish", (c) => {
+  const tag = decodeURIComponent(c.req.param("tag"));
+  const vaultId = resolveActor(c).vaultId;
+  const pub = getPublicationByResource("tag", tag, vaultId);
+  if (pub) deletePublication(pub.id);
+  // Drop the backing anyone-grant in THIS vault only — a same-named tag
+  // published from another vault keeps its own grant.
+  removeGrantBySubjectResource("anyone", "*", "tag", tag, vaultId);
+  return c.json({ ok: true });
+});
+
+// ── Publish-by-path-prefix: a public, read-only site rooted at a directory ──
+// Unlike tag pubs, a path publication uses NO `anyone` grant — the public read
+// path (routes/publish.ts) requires directory membership and excludes private
+// notes. So this only writes the `publications` row.
+acl.post("/publish/path", async (c) => {
+  const body = await c.req
+    .json<{ pathPrefix?: string; title?: string; slug?: string; password?: string }>()
+    .catch(() => ({}) as { pathPrefix?: string; title?: string; slug?: string; password?: string });
+
+  const prefix = typeof body.pathPrefix === "string" ? normalizePathPrefix(body.pathPrefix) : null;
+  if (!prefix) return c.json({ error: "bad_request", message: "invalid path prefix" }, 400);
+
+  // Optional password: hashed at rest (scrypt). Empty/absent → open publication.
+  const passwordHash = body.password ? hashPassword(body.password) : null;
+
+  // The active vault (X-Prism-Vault) — stamped on the row; the public path
+  // reads the prefix from THIS vault.
+  const vaultId = resolveActor(c).vaultId;
+
+  // One publication per (vault, prefix) → idempotent: reuse the existing slug if present.
+  const existing = getPublicationByResource("path", prefix, vaultId);
+  let slug = existing?.id ?? "";
+  if (!existing) {
+    slug = (body.slug && slugify(body.slug)) || slugify(prefix);
+    while (getPublicationBySlug(slug)) slug = `${slug}-${Math.floor(Math.random() * 1000)}`;
+    createPublication({
+      id: slug,
+      vault_id: vaultId,
+      resource_type: "path",
+      resource: prefix,
+      template: "wiki",
+      title: body.title ?? null,
+      home_note_id: null,
+      password_hash: passwordHash,
+      theme: null,
+      expires_at: null,
+      created_by: config.ownerEmail,
+    });
+  } else if (body.password !== undefined) {
+    updatePublication(existing.id, { password_hash: passwordHash });
+  }
+
+  // Live count (and dynamic): notes whose path is inside the prefix, counted in
+  // the publication's own vault. The same membership predicate the public read
+  // path uses — never trust a vault query.
+  let count = 0;
+  try {
+    const published = getPublicationBySlug(slug);
+    if (published && (!published.expires_at || published.expires_at > Date.now())) count = (await publicationNotes(published, false)).length;
+  } catch {
+    /* best-effort */
+  }
+  return c.json({ slug, pathPrefix: prefix, url: `${config.appOrigin}/p/${slug}`, count, passwordRequired: !!passwordHash });
+});
+
+// ── Slug-based publication management (works for BOTH tag and path pubs) ──
+/** Set or clear a publication's password by slug (clear by omitting/empty password). */
+acl.put("/publications/:slug/password", async (c) => {
+  const pub = managedPublication(c);
+  if (!pub) return c.json({ error: "not_found" }, 404);
+  const { password } = await c.req.json<{ password?: string }>().catch(() => ({}) as { password?: string });
+  updatePublication(pub.id, { password_hash: password ? hashPassword(password) : null });
+  return c.json({ ok: true, passwordRequired: !!password });
+});
+
+/** Per-publication "tending" controls (owner hand-tuning of a public wiki):
+ *  - homeNoteId: which note loads first (string, or null to clear → derive at read).
+ *  - excludeNoteIds: note ids to DROP from the public set even though they match
+ *    the tag/path (string[]; empty clears all exclusions).
+ *  - theme: a small plain object of presentation overrides (logo/colors/font),
+ *    persisted as JSON (≤4KB; null clears). Re-validated at render on the public
+ *    site (http(s) logo, color patterns) — never trusted as raw HTML.
+ *  Only the provided fields are patched. Returns 404 for an unknown slug. */
+acl.put("/publications/:slug/settings", async (c) => {
+  const pub = managedPublication(c);
+  if (!pub) return c.json({ error: "not_found" }, 404);
+  const body = await c.req
+    .json<{ title?: string | null; homeNoteId?: string | null; excludeNoteIds?: unknown; theme?: unknown }>()
+    .catch(() => ({}) as { title?: string | null; homeNoteId?: string | null; excludeNoteIds?: unknown; theme?: unknown });
+
+  const patch: {
+    title?: string | null;
+    home_note_id?: string | null;
+    excluded_note_ids?: string | null;
+    theme?: string | null;
+  } = {};
+
+  if ("title" in body) {
+    if (body.title !== null && typeof body.title !== "string") {
+      return c.json({ error: "bad_request", detail: "title must be a string or null" }, 400);
+    }
+    // Empty string → clear (fall back to derived title).
+    patch.title = body.title && body.title.trim() ? body.title.trim() : null;
+  }
+
+  if ("homeNoteId" in body) {
+    if (body.homeNoteId !== null && typeof body.homeNoteId !== "string") {
+      return c.json({ error: "bad_request", detail: "homeNoteId must be a string or null" }, 400);
+    }
+    patch.home_note_id = body.homeNoteId;
+  }
+
+  if ("excludeNoteIds" in body) {
+    const ids = body.excludeNoteIds;
+    if (!Array.isArray(ids) || !ids.every((s) => typeof s === "string")) {
+      return c.json({ error: "bad_request", detail: "excludeNoteIds must be an array of strings" }, 400);
+    }
+    patch.excluded_note_ids = JSON.stringify(ids);
+  }
+
+  if ("theme" in body) {
+    const t = validateTheme(body.theme);
+    if ("error" in t) return c.json({ error: "bad_request", detail: t.error }, 400);
+    patch.theme = t.json;
+  }
+
+  updatePublication(pub.id, patch);
+  return c.json({ ok: true });
+});
+
+/** Unpublish by slug. Removes the row; for a tag pub it also drops the backing
+ *  `anyone/tag/view` grant. (Path pubs have no grant to remove.) */
+acl.delete("/publications/:slug", (c) => {
+  const pub = managedPublication(c);
+  if (!pub) return c.json({ error: "not_found" }, 404);
+  deletePublication(pub.id);
+  if (pub.resource_type === "tag") {
+    // The grant lives in the publication's OWN vault — remove it there, never
+    // in whatever vault the caller happens to have active.
+    removeGrantBySubjectResource("anyone", "*", "tag", pub.resource, publicationVaultId(pub));
+  }
+  return c.json({ ok: true });
+});
+
+// ── Suggestions review (Horizon C, suggest-level): durable owner inbox ──
+// A suggest-level peer/collaborator's proposed change is stored (survives
+// restart) for the owner to accept or reject. Accept/reject is a status
+// transition; applying an accepted suggestion to the live doc is handled by the
+// collab/federation layer when that note next loads (gated path).
+acl.get("/suggestions", (c) => {
+  const status = c.req.query("status") as "pending" | "accepted" | "rejected" | undefined;
+  return c.json(
+    listSuggestions(status).map((s) => ({
+      id: s.id,
+      noteId: s.note_id,
+      spaceNoteKey: s.space_note_key,
+      author: s.author,
+      authorKind: s.author_kind,
+      summary: s.summary,
+      status: s.status,
+      createdAt: s.created_at,
+      resolvedAt: s.resolved_at,
+    })),
+  );
+});
+
+/** Resolve a captured suggested-edit: APPLY the author's suggestion marks to the
+ *  live note (accept keeps insertions / removes deletions; reject the inverse),
+ *  then flip the row's status. The open collab doc absorbs the change via the
+ *  external-edit reconcile loop, so connected editors see it live. (G2b — the
+ *  old endpoints flipped status without applying anything.) */
+async function resolveSuggestion(c: Context, action: "accept" | "reject") {
+  const s = getSuggestion(c.req.param("id") ?? "");
+  if (!s) return c.json({ error: "not_found" }, 404);
+  if (s.status !== "pending") return c.json({ error: "resolved", detail: `suggestion is ${s.status}` }, 409);
+  let applied = false;
+  // Only mark-captured USER suggestions apply via the HTML transform. Peer-kind
+  // rows (the federation inbox) carry a Yjs payload consumed by the collab
+  // layer on doc load — their accept/reject stays a durable status transition.
+  if (s.author && s.author_kind === "user") {
+    try {
+      // The stored body is stale while live-editor changes are still being saved: give them the
+      // chance to be written first (and read the note only after that), else resolve later.
+      const settled = isCollabUnsaved(s.note_id, "primary") ? await settleUnsaved("primary", s.note_id) : "clear";
+      // Changes that can never be written as they are: not "try again in a moment".
+      if (settled === "permanent") return c.json(unsavedPermanentBody(unsavedPermanentReason("primary", s.note_id)), 409);
+      if (settled === "pending") {
+        return c.json({ error: "conflict", live: true, retry: true, detail: "This page has changes that are still being saved from the live editor. Try again in a moment." }, 409);
+      }
+      const note = await vault.getNote(s.note_id);
+      const next = await resolveSuggestionsInHtmlAsync(note.content, s.author, action);
+      if (next !== note.content) {
+        // Compare-and-set on the version the suggestion was resolved against (never a blind overwrite).
+        try {
+          await vault.updateNote(s.note_id, { content: next, ...(note.updatedAt ? { ifUpdatedAt: note.updatedAt } : {}) });
+        } catch (e) {
+          if (e instanceof VaultConflictError || (e instanceof VaultError && e.status === 409)) return c.json({ error: "conflict", retry: true, detail: "The page changed while the suggestion was being applied. Try again." }, 409);
+          throw e;
+        }
+        applied = true;
+        // Tell the suggester (wave 3): only suggestions that carry an account's actor id.
+        const decider = resolveActor(c);
+        void suggestionsResolved({ vaultId: "primary", noteId: s.note_id, prev: note.content, next, editors: decider.kind === "user" ? [decider.email] : [] }).catch(() => {});
+      }
+    } catch (e) {
+      return c.json({ error: "apply_failed", detail: (e as Error).message }, 500);
+    }
+  }
+  setSuggestionStatus(s.id, action === "accept" ? "accepted" : "rejected");
+  return c.json({ ok: true, status: action === "accept" ? "accepted" : "rejected", applied });
+}
+
+acl.post("/suggestions/:id/accept", (c) => resolveSuggestion(c, "accept"));
+
+acl.post("/suggestions/:id/reject", (c) => resolveSuggestion(c, "reject"));
+
+acl.delete("/suggestions/:id", (c) => {
+  deleteSuggestion(c.req.param("id"));
+  return c.json({ ok: true });
+});
+
+// ── Peer federation (Horizon C): identity + one-time pairing (owner setup) ──
+acl.get("/peers/identity", (c) => {
+  const kp = serverKeyPair();
+  return c.json({ publicKey: kp.publicKeyB64url, fingerprint: fingerprint(kp.publicKeyB64url) });
+});
+
+/** Whether the live federation transport is enabled on this node. The pairing /
+ *  space / mirror endpoints work either way (they only mutate the local store),
+ *  but actual sync requires the flag — the UI shows status + a toggle. Reads the
+ *  runtime value (persisted; defaults to the FEDERATION_ENABLED env). */
+acl.get("/federation/status", (c) => c.json({ enabled: getFederationEnabled() }));
+
+/** Toggle the live federation transport at runtime (owner-only; persisted, no
+ *  restart). Enabling starts the FederationManager and binds known spaces;
+ *  disabling tears every binding down. The module is imported LAZILY so a node
+ *  that never enables federation never loads @hocuspocus/provider. */
+acl.post("/federation/enabled", async (c) => {
+  const { enabled } = await c.req.json<{ enabled?: boolean }>().catch(() => ({}) as { enabled?: boolean });
+  if (typeof enabled !== "boolean") return c.json({ error: "bad_request" }, 400);
+  setFederationEnabled(enabled); // set first — start()/syncSpaces() gate on this flag
+  try {
+    const { federationManager } = await import("../federation-manager");
+    if (enabled) {
+      federationManager.start();
+      await federationManager.syncSpaces();
+    } else {
+      await federationManager.stop();
+    }
+  } catch (e) {
+    console.error("[federation] toggle lifecycle failed:", e);
+    // The flag is persisted regardless; a restart will reconcile the manager.
+  }
+  return c.json({ enabled });
+});
+
+acl.post("/peers/pair", async (c) => {
+  const { label } = await c.req.json<{ label?: string }>().catch(() => ({}) as { label?: string });
+  // The raw code is shown to the owner ONCE to hand to the peer out-of-band; only
+  // its hash is stored (invite.ts pattern). 7-day single-use TTL.
+  const code = randomBytes(18).toString("base64url");
+  storePairing(createHash("sha256").update(code).digest("hex"), label ?? null, config.ownerEmail, 7 * 86_400_000);
+  const kp = serverKeyPair();
+  return c.json({
+    code,
+    expiresInDays: 7,
+    serverPublicKey: kp.publicKeyB64url,
+    fingerprint: fingerprint(kp.publicKeyB64url),
+  });
+});
+
+acl.get("/peers", (c) =>
+  c.json(
+    listPeers().map((p) => ({
+      pubkey: p.pubkey,
+      email: p.email,
+      label: p.label,
+      fingerprint: fingerprint(p.pubkey),
+      pairedAt: p.paired_at,
+      createdAt: p.created_at,
+    })),
+  ),
+);
+
+acl.delete("/peers/:pubkey", (c) => {
+  const pubkey = decodeURIComponent(c.req.param("pubkey"));
+  for (const g of grantsForPeer(pubkey)) removeGrant(g.id);
+  removePeer(pubkey);
+  kickFederationSync();
+  return c.json({ ok: true });
+});
+
+/** Set (or clear) a paired peer's /collab WS URL so the FederationManager can
+ *  open the outbound binding without an out-of-band step (federation gap #1). */
+acl.post("/peers/:pubkey/url", async (c) => {
+  const pubkey = decodeURIComponent(c.req.param("pubkey"));
+  if (!getPeer(pubkey)) return c.json({ error: "unknown_peer" }, 404);
+  const { collabUrl } = await c.req.json<{ collabUrl?: string | null }>().catch(() => ({}) as { collabUrl?: string });
+  if (collabUrl !== undefined && collabUrl !== null && !/^wss?:\/\//.test(collabUrl)) {
+    return c.json({ error: "bad_url" }, 400);
+  }
+  setPeerCollabUrl(pubkey, collabUrl ?? null);
+  kickFederationSync();
+  return c.json({ ok: true });
+});
+
+// ── Shared spaces (Horizon C): owner-managed federation collections ──
+// A space groups notes (each assigned a content-independent space_note_key) and
+// is shared with peers via grants (subject_type='peer', resource_type='space').
+// The live bridge (federation-manager.ts) is GATED behind config.federationEnabled;
+// these management endpoints only mutate the local ACL/identity store.
+const asStringArray = (x: unknown): string[] =>
+  Array.isArray(x) ? x.filter((s): s is string => typeof s === "string") : [];
+
+/** Serialize a Space row for the API (parse the JSON tag scopes). Includes the
+ *  granted peers (so the UI reflects real grants, not optimistic state) and a
+ *  sync summary derived from the space's federated-note mappings. */
+function spaceView(s: Space) {
+  const peers = grantsForResource("space", s.id)
+    .filter((g) => g.subject_type === "peer")
+    .map((g) => {
+      const peer = getPeer(g.subject);
+      return {
+        pubkey: g.subject,
+        fingerprint: fingerprint(g.subject),
+        label: peer?.label ?? null,
+        level: g.level,
+      };
+    });
+  const fed = federatedNotesForSpace(s.id);
+  const syncedAts = fed.map((f) => f.peer_synced_at).filter((t): t is number => t != null);
+  return {
+    id: s.id,
+    title: s.title,
+    includeTags: s.scope_include_tags ? (JSON.parse(s.scope_include_tags) as string[]) : [],
+    excludeTags: s.scope_exclude_tags ? (JSON.parse(s.scope_exclude_tags) as string[]) : [],
+    pathPrefix: s.path_prefix,
+    createdAt: s.created_at,
+    peers,
+    noteCount: fed.length,
+    lastSyncedAt: syncedAts.length ? Math.max(...syncedAts) : null,
+  };
+}
+
+acl.get("/spaces", (c) => c.json(listSpaces().map(spaceView)));
+
+acl.post("/spaces", async (c) => {
+  const body = await c.req
+    .json<{ title?: string; includeTags?: string[]; excludeTags?: string[]; pathPrefix?: string }>()
+    .catch(() => ({}) as Record<string, never>);
+  const space = createSpace({
+    id: randomUUID(),
+    title: typeof body.title === "string" ? body.title : null,
+    scope_include_tags: JSON.stringify(asStringArray(body.includeTags)),
+    scope_exclude_tags: JSON.stringify(asStringArray(body.excludeTags)),
+    path_prefix: typeof body.pathPrefix === "string" ? body.pathPrefix : null,
+    created_by: config.ownerEmail,
+  });
+  return c.json(spaceView(space));
+});
+
+acl.delete("/spaces/:id", (c) => {
+  const id = c.req.param("id");
+  // Drop the space's federated-note identities and any peer grants on it.
+  for (const fed of federatedNotesForSpace(id)) deleteFederatedNote(fed.space_note_key);
+  for (const g of grantsForResource("space", id)) removeGrant(g.id);
+  deleteSpace(id);
+  kickFederationSync();
+  return c.json({ ok: true });
+});
+
+// Add a note to a space: mint its content-independent space_note_key and PIN the
+// collab kind (so an inbound peer update can never reseed it as the wrong shape).
+acl.post("/spaces/:id/notes", async (c) => {
+  const id = c.req.param("id");
+  if (!getSpace(id)) return c.json({ error: "not_found" }, 404);
+  const { noteId } = await c.req.json<{ noteId?: string }>().catch(() => ({}) as { noteId?: string });
+  if (typeof noteId !== "string" || !noteId) return c.json({ error: "bad_request" }, 400);
+  let kind: string;
+  try {
+    const note = await vault.getNote(noteId);
+    kind = noteKind({ path: note.path, tags: note.tags, metadata: note.metadata, content: note.content });
+  } catch (e) {
+    if (e instanceof VaultError && e.status === 404) return c.json({ error: "note_not_found" }, 404);
+    return c.json({ error: "vault_error" }, 502);
+  }
+  const row = upsertFederatedNote({
+    space_note_key: randomUUID(),
+    space_id: id,
+    local_id: noteId,
+    kind,
+    peer_synced_at: null,
+    source_updated_at: null,
+  });
+  kickFederationSync();
+  return c.json(row);
+});
+
+// Grant / revoke a paired peer's access to a space.
+acl.post("/spaces/:id/peers", async (c) => {
+  const id = c.req.param("id");
+  if (!getSpace(id)) return c.json({ error: "not_found" }, 404);
+  const { pubkey, level, expiresInDays } = await c.req.json<{ pubkey?: string; level?: string; expiresInDays?: number }>().catch(() => ({}) as { pubkey?: string; level?: string; expiresInDays?: number });
+  if (typeof pubkey !== "string" || !isLevel(level)) return c.json({ error: "bad_request" }, 400);
+  if (!getPeer(pubkey)) return c.json({ error: "unknown_peer" }, 404);
+  const grant = upsertGrant({
+    subject_type: "peer",
+    subject: pubkey,
+    resource_type: "space",
+    resource: id,
+    level,
+    created_by: config.ownerEmail,
+    expires_at: typeof expiresInDays === "number" && expiresInDays > 0 ? Date.now() + expiresInDays * 86_400_000 : null,
+  });
+  kickFederationSync();
+  return c.json({ ok: true, grant });
+});
+
+acl.delete("/spaces/:id/peers/:pubkey", (c) => {
+  removeGrantBySubjectResource("peer", decodeURIComponent(c.req.param("pubkey")), "space", c.req.param("id"));
+  kickFederationSync();
+  return c.json({ ok: true });
+});
+
+// Per-note level override (4.3): raise a peer's access on ONE shared note above
+// the space default (a note-level peer grant is maxed in by effectiveLevel /
+// resolveLevel). Additive (raises only — the project avoids deny grants); with an
+// optional TTL. resource = this hub's local note id.
+acl.put("/federation/note-level", async (c) => {
+  const { noteId, pubkey, level, expiresInDays } = await c.req
+    .json<{ noteId?: string; pubkey?: string; level?: string; expiresInDays?: number }>()
+    .catch(() => ({}) as { noteId?: string; pubkey?: string; level?: string; expiresInDays?: number });
+  if (typeof noteId !== "string" || !noteId || typeof pubkey !== "string" || !isLevel(level)) {
+    return c.json({ error: "bad_request", detail: "noteId + pubkey + level required" }, 400);
+  }
+  if (!getPeer(pubkey)) return c.json({ error: "unknown_peer" }, 404);
+  const grant = upsertGrant({
+    subject_type: "peer",
+    subject: pubkey,
+    resource_type: "note",
+    resource: noteId,
+    level,
+    created_by: config.ownerEmail,
+    expires_at: typeof expiresInDays === "number" && expiresInDays > 0 ? Date.now() + expiresInDays * 86_400_000 : null,
+  });
+  kickFederationSync();
+  return c.json({ ok: true, noteId, pubkey, level, grant });
+});
+
+acl.delete("/federation/note-level/:noteId/:pubkey", (c) => {
+  removeGrantBySubjectResource("peer", decodeURIComponent(c.req.param("pubkey")), "note", decodeURIComponent(c.req.param("noteId")));
+  kickFederationSync();
+  return c.json({ ok: true });
+});
+
+// Peer-edit audit (4.3): who among our federated peers edited which shared note,
+// and when — owner review of inbound federated changes.
+acl.get("/federation/peer-edits", (c) => {
+  const limit = Math.min(Number(c.req.query("limit") ?? 200) || 200, 1000);
+  return c.json(
+    listPeerEdits(limit).map((e) => ({
+      spaceNoteKey: e.space_note_key,
+      localId: e.local_id,
+      peer: e.peer_pubkey,
+      peerFingerprint: fingerprint(e.peer_pubkey),
+      editedAt: e.edited_at,
+    })),
+  );
+});
+
+// ── "Parachute Sync": mirror ONE note to a paired peer in a single action (4.2) ──
+// Collapses the 4-step flow (create space → add note → grant peer → sync) behind
+// one call, reusing a singleton "Parachute Sync" space so every one-click mirror
+// shares it. Idempotent per note: re-mirroring refreshes the peer grant/level.
+const SYNC_SPACE_TITLE = "Parachute Sync";
+acl.post("/notes/:id/mirror", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const noteId = c.req.param("id");
+  const { pubkey, level, expiresInDays } = await c.req
+    .json<{ pubkey?: string; level?: string; expiresInDays?: number }>()
+    .catch(() => ({}) as { pubkey?: string; level?: string; expiresInDays?: number });
+  if (typeof pubkey !== "string" || !isLevel(level)) return c.json({ error: "bad_request", detail: "pubkey + level required" }, 400);
+  if (!getPeer(pubkey)) return c.json({ error: "unknown_peer" }, 404);
+  const expires_at = typeof expiresInDays === "number" && expiresInDays > 0 ? Date.now() + expiresInDays * 86_400_000 : null;
+
+  let kind: string;
+  try {
+    const note = await vault.getNote(noteId);
+    kind = noteKind({ path: note.path, tags: note.tags, metadata: note.metadata, content: note.content });
+  } catch (e) {
+    if (e instanceof VaultError && e.status === 404) return c.json({ error: "note_not_found" }, 404);
+    return c.json({ error: "vault_error" }, 502);
+  }
+
+  // 1. find-or-create the singleton sync space.
+  let space = listSpaces().find((s) => s.title === SYNC_SPACE_TITLE);
+  if (!space) {
+    space = createSpace({
+      id: randomUUID(),
+      title: SYNC_SPACE_TITLE,
+      scope_include_tags: "[]",
+      scope_exclude_tags: "[]",
+      path_prefix: null,
+      created_by: config.ownerEmail,
+    });
+  }
+  // 2. add the note (reuse its federated identity if already mirrored).
+  const existing = federatedNotesForSpace(space.id).find((f) => f.local_id === noteId);
+  const fed =
+    existing ??
+    upsertFederatedNote({ space_note_key: randomUUID(), space_id: space.id, local_id: noteId, kind, peer_synced_at: null, source_updated_at: null });
+  // 3. grant the peer access to the space at the requested level (with optional TTL).
+  upsertGrant({ subject_type: "peer", subject: pubkey, resource_type: "space", resource: space.id, level, created_by: config.ownerEmail, expires_at });
+  // 4. kick the bridge so the doc starts mirroring to the peer.
+  kickFederationSync();
+  return c.json({ ok: true, spaceId: space.id, spaceNoteKey: fed.space_note_key, pubkey, level, expiresAt: expires_at });
+});
+
+// ── Inbound federation mirror requests (owner-reviewed) ──────────────────────
+// A paired peer's POST /api/federation/mirror lands here as 'pending'. Accepting
+// creates the local shared space (same id) + a peer grant + a placeholder note
+// per shared space_note_key + the federated_notes mapping — productionizing what
+// the two-hub harness used to insert into SQLite by hand.
+acl.get("/federation/mirrors", (c) => {
+  const status = c.req.query("status") as "pending" | "accepted" | "rejected" | undefined;
+  return c.json(
+    listMirrorRequests(status).map((r) => ({
+      id: r.id,
+      peer: r.peer_pubkey,
+      fingerprint: fingerprint(r.peer_pubkey),
+      spaceId: r.space_id,
+      spaceTitle: r.space_title,
+      notes: JSON.parse(r.payload) as Array<{ spaceNoteKey: string; kind: string; title?: string }>,
+      status: r.status,
+      createdAt: r.created_at,
+      resolvedAt: r.resolved_at,
+    })),
+  );
+});
+
+// UUID-shaped ids only — defense-in-depth so a stored mirror payload can never
+// escape the `shared/<space>/<key>.md` note path (the /mirror route validates
+// too, but accept must not trust the row blindly).
+const FED_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+acl.post("/federation/mirrors/:id/accept", async (c) => {
+  const req = getMirrorRequest(c.req.param("id"));
+  if (!req || req.status !== "pending") return c.json({ error: "not_found" }, 404);
+  if (!getPeer(req.peer_pubkey)?.paired_at) return c.json({ error: "unknown_peer" }, 400);
+  if (!FED_ID_RE.test(req.space_id)) return c.json({ error: "bad_space_id" }, 400);
+  const { level } = await c.req.json<{ level?: string }>().catch(() => ({}) as { level?: string });
+  const lvl: Level = isLevel(level) ? level : "edit";
+
+  // Local shared space (same id as the peer's) + the peer's grant on it.
+  if (!getSpace(req.space_id)) {
+    createSpace({
+      id: req.space_id,
+      title: req.space_title,
+      scope_include_tags: null,
+      scope_exclude_tags: null,
+      path_prefix: `shared/${req.space_id}`,
+      created_by: config.ownerEmail,
+    });
+  }
+  upsertGrant({ subject_type: "peer", subject: req.peer_pubkey, resource_type: "space", resource: req.space_id, level: lvl, created_by: config.ownerEmail });
+
+  // One placeholder note per shared key (empty so the first peer sync is the
+  // unambiguous seed; kind PINNED via metadata.prism_type so noteKind matches the
+  // federated row and the bridge won't skip on a kind mismatch). Idempotent.
+  const notes = JSON.parse(req.payload) as Array<{ spaceNoteKey: string; kind: string; title?: string }>;
+  const mapped: Array<{ spaceNoteKey: string; localId: string; kind: string }> = [];
+  const skipped: string[] = [];
+  for (const n of notes) {
+    if (!FED_ID_RE.test(n.spaceNoteKey)) { skipped.push(n.spaceNoteKey); continue; } // anti-traversal
+    const existing = getFederatedByKey(n.spaceNoteKey);
+    if (existing) {
+      mapped.push({ spaceNoteKey: n.spaceNoteKey, localId: existing.local_id, kind: existing.kind });
+      continue;
+    }
+    let localId: string;
+    try {
+      const note = await vault.createNote({
+        content: "",
+        path: `shared/${req.space_id}/${n.spaceNoteKey}.md`,
+        metadata: { prism_type: n.kind, ...(n.title ? { title: n.title } : {}) },
+      });
+      localId = note.id;
+    } catch {
+      return c.json({ error: "vault_error" }, 502);
+    }
+    upsertFederatedNote({ space_note_key: n.spaceNoteKey, space_id: req.space_id, local_id: localId, kind: n.kind, peer_synced_at: null, source_updated_at: null });
+    mapped.push({ spaceNoteKey: n.spaceNoteKey, localId, kind: n.kind });
+  }
+  setMirrorRequestStatus(req.id, "accepted");
+  kickFederationSync();
+  return c.json({ ok: true, spaceId: req.space_id, level: lvl, mapped, skipped });
+});
+
+acl.post("/federation/mirrors/:id/reject", (c) => {
+  const req = getMirrorRequest(c.req.param("id"));
+  if (!req) return c.json({ error: "not_found" }, 404);
+  setMirrorRequestStatus(req.id, "rejected");
+  return c.json({ ok: true, status: "rejected" });
+});

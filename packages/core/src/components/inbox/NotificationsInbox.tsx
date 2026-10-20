@@ -1,0 +1,311 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Archive, ArchiveRestore, Bell, Check, CheckCheck, RefreshCw, Settings2, UserCheck, WifiOff, Inbox as InboxIcon } from "lucide-react";
+import type { RendererProps } from "../renderers/RendererProps";
+import { useArchive, useMarkRead, useNotifications, useOnline, useUnreadCount, isNotificationsUnavailable, announceNotificationsChanged } from "../../lib/notifications/hooks";
+import { openNotification, takePendingNotification, clearPendingNotification } from "../../lib/notifications/anchor";
+import { notificationsApi, type AccessLevel, type NotificationItem, type NotificationType } from "../../lib/notifications/client";
+import { NotificationSettingsPanel } from "./NotificationSettingsPanel";
+import { useSwipeActions } from "../../lib/gestures/useSwipeActions";
+import { usePullToRefresh } from "../../lib/gestures/usePullToRefresh";
+import { formatDate as fmtDate, formatTime as fmtTime } from "../../lib/datetime/format";
+import "./inbox.css";
+
+type Filter = "all" | "mentions" | "assigned" | "replies" | "reminders" | "requests";
+/** `empty` = what the filter says when it holds nothing: a title and what would show up there. */
+const FILTERS: Array<{ id: Filter; label: string; types: NotificationType[] | null; empty: [string, string] }> = [
+  { id: "all", label: "All", types: null, empty: ["You’re all caught up", "Mentions, assignments, replies, reminders and access requests show up here."] },
+  { id: "mentions", label: "Mentions", types: ["mention", "comment_mention"], empty: ["No mentions", "When someone @mentions you on a page or in a comment, it shows up here."] },
+  { id: "assigned", label: "Assigned", types: ["assigned"], empty: ["Nothing assigned to you", "When someone adds you to a task or a person property, it shows up here."] },
+  { id: "replies", label: "Replies", types: ["comment_reply", "comment_thread"], empty: ["No replies", "Replies to your comment threads, and new comments on pages you follow, show up here."] },
+  { id: "reminders", label: "Reminders", types: ["reminder"], empty: ["No reminders", "Reminders you set on dates show up here when they are due."] },
+  { id: "requests", label: "Requests", types: ["access_request", "access_granted", "access_denied", "share"], empty: ["No requests", "Pages shared with you and access requests show up here."] },
+];
+/** "Mark all read": Shift+A while the Inbox has focus (never while typing in a field). */
+const MARK_ALL_KEYS = "Shift+A";
+
+const DAY = 86_400_000;
+function groupOf(ts: number, now = Date.now()): "Today" | "Yesterday" | "Earlier" {
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  if (ts >= start.getTime()) return "Today";
+  if (ts >= start.getTime() - DAY) return "Yesterday";
+  return "Earlier";
+}
+function timeLabel(ts: number): string {
+  const d = new Date(ts);
+  const g = groupOf(ts);
+  if (g === "Earlier") return fmtDate(d, { month: "short", day: "numeric" });
+  return fmtTime(d, { hour: "numeric", minute: "2-digit" });
+}
+
+/** One plain sentence per type. Names and titles are text nodes (never HTML). */
+function sentence(n: NotificationItem): { who: string | null; text: string; page: string } {
+  const who = n.actor?.name ?? null;
+  const page = n.title ?? "a page";
+  switch (n.type) {
+    case "mention": return { who, text: "mentioned you in", page };
+    case "comment_mention": return { who, text: "mentioned you in a comment on", page };
+    case "comment_reply": return { who, text: "replied to your thread on", page };
+    case "reminder": return { who: null, text: "Reminder:", page };
+    case "share": return { who, text: "shared a page with you:", page };
+    case "access_request": return { who, text: "requested access to", page };
+    case "access_granted": return { who: null, text: "Your access request was approved:", page };
+    case "access_denied": return { who: null, text: "Your access request was declined:", page };
+    case "suggestion_accepted": return { who, text: "accepted your suggestion on", page };
+    case "suggestion_rejected": return { who, text: "declined your suggestion on", page };
+    case "suggestion_resolved": return { who, text: "resolved your suggestion on", page };
+    // "Someone" when there is no account to name (a share-link guest).
+    case "assigned": return { who: who ?? "Someone", text: "assigned you to", page };
+    case "comment_thread": return { who: who ?? "Someone", text: "commented on", page };
+    default: return { who, text: "updated", page };
+  }
+}
+
+/**
+ * A row that is archived leaves the list. When its own button had keyboard focus, focus would fall to
+ * <body> (the next Tab restarts from the top of the page): hand it to the same button of the row that
+ * takes its place — next, else previous, else the Inbox heading.
+ */
+function keepFocusAfterRemoval(row: HTMLElement | null) {
+  if (!row || !row.contains(document.activeElement)) return;
+  const scope = row.closest<HTMLElement>("[data-testid=notifications-inbox]");
+  const rows = Array.from(scope?.querySelectorAll<HTMLElement>("[data-testid=notification-row]") ?? []);
+  const at = rows.indexOf(row);
+  const label = (document.activeElement as HTMLElement).getAttribute("aria-label");
+  const neighbour = rows[at + 1] ?? rows[at - 1];
+  const id = neighbour?.dataset.rowId;
+  let tries = 0;
+  const move = () => {
+    if (document.activeElement && document.activeElement !== document.body && document.activeElement.isConnected && !row.isConnected) return;
+    if (row.isConnected && tries++ < 40) { window.setTimeout(move, 50); return; }
+    const next = id ? scope?.querySelector<HTMLElement>(`[data-row-id="${CSS.escape(id)}"]`) : null;
+    const target = next?.querySelector<HTMLElement>(`button[aria-label="${label}"]`) ?? next?.querySelector<HTMLElement>("button") ?? scope?.querySelector<HTMLElement>("h1");
+    target?.focus();
+  };
+  window.setTimeout(move, 0);
+}
+
+/** Notion-style notifications inbox (NP-CO-03): Inbox / Archived, grouped, read state, deep links. */
+export default function NotificationsInbox(_props: RendererProps) {
+  const [box, setBox] = useState<"inbox" | "archived">("inbox");
+  const [filter, setFilter] = useState<Filter>("all");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsButton = useRef<HTMLButtonElement>(null);
+  const online = useOnline();
+  const list = useNotifications(box);
+  const markRead = useMarkRead();
+  const archive = useArchive();
+
+  const all = useMemo(() => list.data?.pages.flatMap((p) => p.items) ?? [], [list.data]);
+  // The live unread count (the one the sidebar badge shows): marking read updates it
+  // at once, whereas the list page's own `unread` is only as fresh as its last fetch —
+  // "Mark all read" used to stay enabled after everything was read.
+  const live = useUnreadCount();
+  const unread = live.available && !live.loading ? live.count : list.data?.pages[0]?.unread ?? 0;
+  const types = FILTERS.find((f) => f.id === filter)!.types;
+  const items = types ? all.filter((n) => types.includes(n.type)) : all;
+  const groups = useMemo(() => {
+    const out: Array<{ label: string; items: NotificationItem[] }> = [];
+    for (const n of items) {
+      const label = groupOf(n.createdAt);
+      const g = out.find((x) => x.label === label);
+      if (g) g.items.push(n);
+      else out.push({ label, items: [n] });
+    }
+    return out;
+  }, [items]);
+
+  const open = (n: NotificationItem) => {
+    if (!n.readAt) markRead.mutate({ ids: [n.id] });
+    openNotification(n);
+  };
+  const unavailable = list.isError && isNotificationsUnavailable(list.error);
+  // Phone: pull the list down to refetch it (the Refresh button does the same for everyone else).
+  const pull = usePullToRefresh<HTMLDivElement>({ onRefresh: () => list.refetch(), label: "Inbox", disabled: unavailable });
+
+  // Push deep link (/inbox/<id>): open that notification once it is loaded.
+  useEffect(() => {
+    const pending = takePendingNotification();
+    if (!pending || !list.data) return;
+    const hit = all.find((n) => n.id === pending);
+    if (hit) { clearPendingNotification(); open(hit); }
+    else if (!list.hasNextPage) clearPendingNotification();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [list.data]);
+
+  // Shift+A marks everything read (the hint is on the button). Only while the Inbox itself has
+  // focus — a keystroke in a field, or anywhere else in the app, is never taken.
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== "A" || !e.shiftKey || e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
+    const t = e.target as HTMLElement;
+    if (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
+    if (box !== "inbox" || unread === 0 || markRead.isPending) return;
+    e.preventDefault();
+    markRead.mutate({ all: true });
+  };
+  const current = FILTERS.find((f) => f.id === filter)!;
+
+  return (
+    <div className="prism-inbox" data-testid="notifications-inbox" ref={pull.ref} onKeyDown={onKeyDown}>
+      {pull.indicator}
+      <div className="prism-inbox-inner">
+        <header className="prism-inbox-header">
+          <h1 tabIndex={-1}>Inbox</h1>
+          <div className="prism-inbox-actions">
+            {box === "inbox" && (
+              <button type="button" className="prism-inbox-btn" disabled={unread === 0 || markRead.isPending} onClick={() => markRead.mutate({ all: true })}
+                aria-keyshortcuts={MARK_ALL_KEYS} title={`Mark all read (${MARK_ALL_KEYS.replace("+", " + ")})`}>
+                <CheckCheck size={15} /> <span>Mark all read</span>
+                {/* The shortcut is said by aria-keyshortcuts; the visible hint is decoration. */}
+                <kbd className="prism-inbox-kbd" aria-hidden="true">⇧A</kbd>
+              </button>
+            )}
+            <button type="button" className="prism-inbox-btn" aria-label="Refresh" title="Refresh" aria-busy={pull.refreshing || undefined} disabled={pull.refreshing || unavailable} onClick={pull.refresh}>
+              <RefreshCw size={15} />
+            </button>
+            <button ref={settingsButton} type="button" className="prism-inbox-btn" aria-label="Notification settings" aria-expanded={settingsOpen} onClick={() => setSettingsOpen((v) => !v)}>
+              <Settings2 size={15} />
+            </button>
+          </div>
+        </header>
+
+        {settingsOpen && <NotificationSettingsPanel onClose={() => { setSettingsOpen(false); settingsButton.current?.focus(); }} />}
+
+        <div className="prism-inbox-tabs" role="tablist" aria-label="Inbox folders">
+          {(["inbox", "archived"] as const).map((b) => (
+            <button key={b} type="button" role="tab" aria-selected={box === b} className="prism-inbox-tab focus-ring" onClick={() => setBox(b)}>
+              {b === "inbox" ? `Inbox${unread ? ` · ${unread}` : ""}` : "Archived"}
+            </button>
+          ))}
+        </div>
+        <div className="prism-inbox-filters" role="group" aria-label="Filter notifications">
+          {FILTERS.map((f) => (
+            <button key={f.id} type="button" className="prism-inbox-chip focus-ring" aria-pressed={filter === f.id} onClick={() => setFilter(f.id)}>{f.label}</button>
+          ))}
+        </div>
+
+        {!online && (
+          <div role="status" className="prism-inbox-banner"><WifiOff size={14} /> You’re offline. Showing the notifications loaded last.</div>
+        )}
+
+        {list.isLoading ? (
+          <p className="prism-inbox-empty">Loading notifications…</p>
+        ) : unavailable ? (
+          <div className="prism-inbox-empty"><Bell size={28} /><strong>Notifications aren’t available here</strong>Sign in to your Prism Server to see mentions, replies and reminders.</div>
+        ) : list.isError && all.length === 0 ? (
+          <div role="alert" className="prism-inbox-empty">
+            <Bell size={28} /><strong>Couldn’t load your inbox</strong>Check your connection and try again.
+            <div className="mt-4"><button type="button" className="prism-inbox-btn" data-variant="outline" onClick={() => void list.refetch()}>Retry</button></div>
+          </div>
+        ) : items.length === 0 ? (
+          <div className="prism-inbox-empty" data-testid="inbox-empty" data-filter={filter}>
+            <InboxIcon size={28} />
+            <strong>{box === "inbox" ? current.empty[0] : filter === "all" ? "Nothing archived" : `Nothing archived under ${current.label}`}</strong>
+            {box === "inbox" ? current.empty[1] : "Archived notifications stay here for reference."}
+          </div>
+        ) : (
+          groups.map((g) => (
+            <section key={g.label} className="prism-inbox-group" aria-label={g.label}>
+              <h2>{g.label}</h2>
+              <ul className="list-none p-0 m-0" style={{ overflowX: "clip" }}>
+                {g.items.map((n) => (
+                  <NotificationRow key={n.id} n={n} box={box} onOpen={() => open(n)}
+                    onRead={() => markRead.mutate({ ids: [n.id] })}
+                    onArchive={(row) => { keepFocusAfterRemoval(row); archive.mutate({ ids: [n.id], archived: box === "inbox" }); }} />
+                ))}
+              </ul>
+            </section>
+          ))
+        )}
+        {list.hasNextPage && (
+          <div className="mt-4 text-center">
+            <button type="button" className="prism-inbox-btn" data-variant="outline" disabled={list.isFetchingNextPage} onClick={() => void list.fetchNextPage()}>
+              {list.isFetchingNextPage ? "Loading…" : "Load older"}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function initials(name: string | null): string {
+  if (!name) return "•";
+  return name.split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]!.toUpperCase()).join("");
+}
+
+function NotificationRow({ n, box, onOpen, onRead, onArchive }: {
+  n: NotificationItem; box: "inbox" | "archived"; onOpen: () => void; onRead: () => void; onArchive: (row: HTMLElement | null) => void;
+}) {
+  const s = sentence(n);
+  const canOpen = !!n.noteId;
+  // Phone (touch): swipe left to archive / restore, right to mark read. The row's
+  // buttons below do the same for keyboard, mouse and screen readers.
+  const swipe = useSwipeActions<HTMLLIElement>({
+    left: { label: box === "inbox" ? "Archive" : "Move to Inbox", run: () => onArchive(null) },
+    right: n.readAt ? null : { label: "Mark as read", run: onRead, tone: "accent" },
+  });
+  return (
+    <li ref={swipe.ref} className="prism-inbox-row prism-swipe-row" data-unread={!n.readAt} data-testid="notification-row" data-row-id={n.id} data-type={n.type}>
+      {swipe.hint}
+      <span className="prism-inbox-avatar" aria-hidden data-icon={n.type === "assigned" ? "assigned" : undefined}>{n.type === "reminder" ? <Bell size={14} /> : n.type === "assigned" ? <UserCheck size={14} /> : initials(s.who)}</span>
+      <div className="flex-1 min-w-0">
+        <button type="button" className="prism-inbox-open focus-ring" onClick={onOpen} disabled={!canOpen}
+          aria-label={`${s.who ? `${s.who} ` : ""}${s.text} ${s.page}${n.readAt ? "" : ", unread"}`}>
+          <div className="prism-inbox-line">
+            {s.who && <strong>{s.who} </strong>}{s.text} <strong>{s.page}</strong>
+          </div>
+          {n.preview && <div className="prism-inbox-preview">{n.preview}</div>}
+          <div className="prism-inbox-meta">{timeLabel(n.createdAt)}</div>
+        </button>
+        {n.type === "access_request" && n.requestId && <AccessDecision requestId={n.requestId} onDone={onRead} />}
+      </div>
+      <div className="prism-inbox-row-actions">
+        {!n.readAt && (
+          <button type="button" className="prism-inbox-icon-btn focus-ring" aria-label="Mark as read" title="Mark as read" onClick={onRead}><Check size={15} /></button>
+        )}
+        <button type="button" className="prism-inbox-icon-btn focus-ring" aria-label={box === "inbox" ? "Archive" : "Move to Inbox"} title={box === "inbox" ? "Archive" : "Move to Inbox"} onClick={(e) => onArchive(e.currentTarget.closest<HTMLElement>("[data-testid=notification-row]"))}>
+          {box === "inbox" ? <Archive size={15} /> : <ArchiveRestore size={15} />}
+        </button>
+      </div>
+    </li>
+  );
+}
+
+const LEVELS: Array<{ id: AccessLevel; label: string }> = [
+  { id: "view", label: "Can view" },
+  { id: "comment", label: "Can comment" },
+  { id: "suggest", label: "Can suggest" },
+  { id: "edit", label: "Can edit" },
+];
+
+/** Approve (with a level) or deny an access request, inline in its notification. */
+function AccessDecision({ requestId, onDone }: { requestId: string; onDone: () => void }) {
+  const [level, setLevel] = useState<AccessLevel>("view");
+  const [state, setState] = useState<"idle" | "busy" | "approved" | "denied" | "error" | "gone">("idle");
+  const decide = async (decision: "approve" | "deny") => {
+    setState("busy");
+    try {
+      const r = await notificationsApi.decideAccessRequest(requestId, decision, decision === "approve" ? level : undefined);
+      setState(r.status === "approved" ? "approved" : "denied");
+      onDone();
+      announceNotificationsChanged();
+    } catch (e) {
+      const status = (e as { status?: number }).status;
+      setState(status === 404 || status === 409 ? "gone" : "error");
+    }
+  };
+  if (state === "approved") return <p role="status" className="prism-inbox-meta" data-testid="access-decided">Approved · {LEVELS.find((l) => l.id === level)?.label.toLowerCase()}</p>;
+  if (state === "denied") return <p role="status" className="prism-inbox-meta" data-testid="access-decided">Declined</p>;
+  if (state === "gone") return <p role="status" className="prism-inbox-meta">This request was already handled.</p>;
+  return (
+    <div className="prism-inbox-decide" data-testid="access-decision">
+      <select className="prism-inbox-select" aria-label="Access level" value={level} onChange={(e) => setLevel(e.target.value as AccessLevel)}>
+        {LEVELS.map((l) => <option key={l.id} value={l.id}>{l.label}</option>)}
+      </select>
+      <button type="button" className="prism-inbox-btn" data-variant="primary" disabled={state === "busy"} onClick={() => void decide("approve")}>Approve</button>
+      <button type="button" className="prism-inbox-btn" data-variant="outline" disabled={state === "busy"} onClick={() => void decide("deny")}>Deny</button>
+      {state === "error" && <span role="alert" className="text-xs text-[var(--color-danger)]">Couldn’t record the decision. Try again.</span>}
+    </div>
+  );
+}

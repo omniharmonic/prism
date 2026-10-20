@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/prism-icon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0a0a0b" />
+    <!-- Sets the light/dark class (stored choice, else the OS scheme) and the theme-color above
+         BEFORE first paint. A classic, render-blocking file on purpose: the CSP allows no inline
+         script, and a module would run after the first frame. -->
+    <script src="/theme-boot.js"></script>
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Prism" />
+    <title>Prism</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Web fonts must not block the first paint: the sheet is only PRELOADED here and is
+         switched to a stylesheet by src/bootstrap.ts (an inline onload handler would be
+         refused by the script-src CSP). Until it arrives text uses the fallback stacks;
+         the sheet itself declares font-display: swap. -->
+    <link id="prism-web-fonts" rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700&family=JetBrains+Mono:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap" />
+    <style>
+      /* Prevent FOUC — set background before CSS loads */
+      html.dark body { background: #0a0a0b; color: rgba(255,255,255,0.92); }
+      html.light body { background: #f4f4f6; color: rgba(0,0,0,0.88); }
+      body { margin: 0; transition: background 0.4s ease, color 0.4s ease; }
+      .prism-boot { min-height: 100dvh; display: grid; place-content: center; justify-items: center; gap: 14px; font: 13px system-ui, sans-serif; opacity: .72; animation: prism-boot-in .5s ease-out both; }
+      /* A fast start never flashes the line: it arrives only if opening takes a moment. */
+      .prism-boot > span { animation: prism-boot-in .4s ease-out .6s both; }
+      @keyframes prism-boot-in { from { opacity: 0; } }
+      @media (prefers-reduced-motion: reduce) { .prism-boot, .prism-boot > span { animation: none; } }
+      /* The mark forming and unforming, for a moment of waiting: the outline is drawn, then the two
+         golden-ratio cuts, then the three inside them; it rests whole, and each line runs on out the
+         way it came. One 3.6 s cycle that starts and ends on nothing, so it loops without a seam.
+         Each path is measured as length 1 (`pathLength`), so the same numbers fit every line. */
+      .prism-mark-loop path { stroke-dasharray: 1 1.2; stroke-dashoffset: 1.04; animation: 3.6s cubic-bezier(.45, 0, .2, 1) infinite both; }
+      .prism-mark-loop path:nth-child(1) { animation-name: prism-mark-outline; }
+      .prism-mark-loop path:nth-child(2) { animation-name: prism-mark-cuts; }
+      .prism-mark-loop path:nth-child(3) { animation-name: prism-mark-inner; }
+      @keyframes prism-mark-outline { 0% { stroke-dashoffset: 1.04; } 30%, 60% { stroke-dashoffset: 0; } 90%, 100% { stroke-dashoffset: -1.04; } }
+      @keyframes prism-mark-cuts { 0%, 14% { stroke-dashoffset: 1.04; } 40%, 64% { stroke-dashoffset: 0; } 92%, 100% { stroke-dashoffset: -1.04; } }
+      @keyframes prism-mark-inner { 0%, 26% { stroke-dashoffset: 1.04; } 50%, 68% { stroke-dashoffset: 0; } 94%, 100% { stroke-dashoffset: -1.04; } }
+      /* Reduced motion: the whole mark, at rest. */
+      @media (prefers-reduced-motion: reduce) { .prism-mark-loop path { animation: none; stroke-dasharray: none; stroke-dashoffset: 0; } }
+    </style>
+  </head>
+
+  <body>
+    <!-- The first frame, before any script has run: the mark and one quiet line, centred, in the
+         theme's own colours (the same mark as PrismMark; the paths are its output). -->
+    <div id="root"><div class="prism-boot" role="status"><svg class="prism-mark-loop" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 34" width="44" height="47" fill="none" aria-hidden="true"><g stroke-width="1.15" stroke-linejoin="round" stroke-linecap="round"><path pathLength="1" d="M16 3 30 29 2 29Z" stroke="#92a9d6"/><path pathLength="1" d="M2 29 24.6525 19.0689M30 29 16 22.8622" stroke="#7c96ce"/><path pathLength="1" d="M24.6525 19.0689 21.3475 25.2067M16 22.8622 22.6099 22.8622M21.3475 25.2067 20.0851 22.8622" stroke="#b4a4ce"/></g></svg><span>Opening Prism…</span></div></div>
+    <script type="module" src="/src/bootstrap.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,23 @@
+.env
+*.db
+*.db-wal
+*.db-shm
+node_modules
+dist
+*.db.backup-*
+*.db.bak-*
+.env.bak-*
+# The local sign-in host key (src/auth/local-signin.ts) — rewritten at every server start
+host-signin.key
+host-signin.key.tmp-*
+
+# Ad-hoc DB recovery snapshots (contain sessions + encrypted secrets)
+*.db.postrecovery-*
+
+# Per-host model routing (providers/config.ts; copy config/models.example.json)
+config/models.json
+
+# Dev stub Hermes state (omni-dev.sh) and its web-build log
+*.stub.json
+*.stub.json.tmp
+.omni-dev-web-build.log

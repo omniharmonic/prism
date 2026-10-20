@@ -1,0 +1,349 @@
+name: Release (Prism Client, macOS)
+
+# Builds "Prism Client.app" on Apple silicon; signs it with the Developer ID (hardened runtime, no
+# entitlements), notarizes and staples it; packages a signed, notarized, stapled DMG; makes the
+# in-app updater's signed archive + latest.json; checksums; and uploads it all to a DRAFT GitHub
+# Release (a person publishes it — publishing is also what reaches installed apps, through
+# release-client-publish.yml). Each signing step runs only when its secrets exist.
+# docs/client-app.md § Release (CI) lists the secrets and what each step proves.
+#
+# Public builds name NO server (first run shows "Enter your server"). The owner's pinned build
+# (`server_origin` input) bakes PRISM_SERVER_ORIGIN in; it carries no updater and is a workflow
+# artifact only, never a release.
+on:
+  push:
+    tags: ["prism-client-v*"]
+  workflow_dispatch:
+    inputs:
+      draft_release:
+        description: "Also create a draft GitHub Release (else: workflow artifact only). Ignored for a pinned build."
+        type: boolean
+        default: false
+      server_origin:
+        description: "Owner's pinned build only: https://your.server (baked in as PRISM_SERVER_ORIGIN). Leave empty for the public build."
+        type: string
+        default: ""
+
+concurrency:
+  group: release-client-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  mac-client:
+    name: Prism Client (macOS arm64)
+    runs-on: macos-14
+    timeout-minutes: 120
+    permissions:
+      contents: write # the draft release
+    env:
+      # `secrets` cannot be read in a step's `if:`; these flags can. Same secret names as the host
+      # bundle release (release.yml): one Developer ID, one notary key, one minisign key.
+      HAS_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID_P12 != '' && secrets.APPLE_DEVELOPER_ID_P12_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
+      HAS_NOTARY: ${{ secrets.APPLE_NOTARY_API_KEY != '' && secrets.APPLE_NOTARY_API_KEY_ID != '' && secrets.APPLE_NOTARY_API_ISSUER_ID != '' }}
+      HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+      HAS_MINISIGN: ${{ secrets.MINISIGN_SECRET_KEY != '' }}
+      # Never interpolated into a script: read from the environment only.
+      PINNED_ORIGIN: ${{ inputs.server_origin }}
+      APP_DIR: apps/client/src-tauri/target/release/bundle/macos
+      OUT: apps/client/release-out
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Rust toolchain (stable, Apple silicon)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            apps/client/src-tauri/target
+          key: client-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/client/src-tauri/Cargo.lock') }}
+          restore-keys: client-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Version and tag agree
+        id: version
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          node scripts/version.mjs check
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=prism-client-v$version" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "prism-client-v$version" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the root package.json version $version (expected prism-client-v$version)"
+            exit 1
+          fi
+
+      - name: Build mode (public or pinned; updater on or off)
+        id: mode
+        run: |
+          pinned=false
+          if [[ -n "$PINNED_ORIGIN" ]]; then
+            if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then echo "::error::a tag build is public: it never names a server"; exit 1; fi
+            if [[ ! "$PINNED_ORIGIN" =~ ^https://[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?(:[0-9]{1,5})?$ ]]; then
+              echo "::error::server_origin must be https://host[:port] (no path, query or credentials)"; exit 1
+            fi
+            pinned=true
+            echo "::notice::pinned build for $PINNED_ORIGIN: no updater, workflow artifact only"
+          fi
+          updater=false
+          if [[ -f apps/client/src-tauri/updater/updater.key.pub && "$pinned" == false ]]; then updater=true; fi
+          # An update reaches installed apps only when it is signed by the updater key AND the app is
+          # Developer ID signed + notarized. A tag build of a key-carrying app must ship one.
+          publish_update=false
+          if [[ "$updater" == true && "$HAS_UPDATER_KEY" == true && "$HAS_DEVELOPER_ID" == true && "$HAS_NOTARY" == true ]]; then publish_update=true; fi
+          if [[ "$updater" == true && "$publish_update" == false && "$GITHUB_REF_TYPE" == "tag" ]]; then
+            echo "::error::the updater key is committed, so a release must carry a signed update: set TAURI_SIGNING_PRIVATE_KEY (+ _PASSWORD) and the Developer ID + notary secrets"
+            exit 1
+          fi
+          if [[ "$updater" == false && "$pinned" == false ]]; then
+            echo "::warning::no updater public key committed (apps/client/src-tauri/updater/updater.key.pub): this build has NO in-app updater"
+          fi
+          suffix=""
+          if [[ "$pinned" == true ]]; then suffix="-pinned"; fi
+          {
+            echo "pinned=$pinned"
+            echo "updater=$updater"
+            echo "publish_update=$publish_update"
+            echo "endpoint=https://github.com/$GITHUB_REPOSITORY/releases/download/prism-client-updates/latest.json"
+            echo "name=Prism-Client_${{ steps.version.outputs.version }}_aarch64$suffix"
+          } >> "$GITHUB_OUTPUT"
+
+      - run: npm ci
+
+      - name: Check (typecheck all workspaces + e2e specs, static guards)
+        run: npm run check
+
+      - name: Client unit tests (host target)
+        working-directory: apps/client/src-tauri
+        run: cargo test --lib
+
+      # ── Build (unsigned; signing is done below, inside out, by our own scripts) ─────────────────
+      - name: Build the app
+        working-directory: apps/client
+        env:
+          UPDATER: ${{ steps.mode.outputs.updater }}
+          PINNED: ${{ steps.mode.outputs.pinned }}
+          ENDPOINT: ${{ steps.mode.outputs.endpoint }}
+        run: |
+          unset PRISM_SERVER_ORIGIN PRISM_UPDATER_ENDPOINT
+          if [[ "$PINNED" == true ]]; then export PRISM_SERVER_ORIGIN="$PINNED_ORIGIN"; fi
+          if [[ "$UPDATER" == true ]]; then export PRISM_UPDATER_ENDPOINT="$ENDPOINT"; fi
+          # The DMG is made by make-dmg.sh from the app AFTER it is signed, notarized and stapled.
+          npm run tauri build -- --bundles app --ci
+
+      - name: Verify the client (CSP, capabilities, IPC lists, updater rules, the bundled native web build)
+        # The web build checked here is the one `tauri build` just bundled (its beforeBuildCommand).
+        run: node apps/client/scripts/verify-client.mjs
+
+      - name: Check the built app (identity, version)
+        run: |
+          mkdir -p "$OUT"
+          apps/client/scripts/release/check-app.sh "$APP_DIR/Prism Client.app" --version "${{ steps.version.outputs.version }}"
+
+      - name: Third-party licence list (the copy inside the app, next to the DMG)
+        # Generated by the build's beforeBuildCommand (apps/client/scripts/licenses/generate.mjs),
+        # which fails the build on a component without an acceptable licence.
+        run: |
+          list="$APP_DIR/Prism Client.app/Contents/Resources/THIRD-PARTY-LICENSES.md"
+          [[ -s "$list" ]] || { echo "::error::the built app carries no THIRD-PARTY-LICENSES.md"; exit 1; }
+          cp "$list" "$OUT/THIRD-PARTY-LICENSES.md"
+
+      # ── Developer ID signing (only when the secrets exist) ─────────────────────────────────
+      - name: Import the Developer ID identity into a temporary keychain
+        id: keychain
+        if: env.HAS_DEVELOPER_ID == 'true'
+        env:
+          P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          kc="$RUNNER_TEMP/prism-client-signing.keychain-db"
+          kc_pass="$(openssl rand -hex 24)"
+          p12="$RUNNER_TEMP/developer-id.p12"
+          umask 077
+          printf '%s' "$P12_BASE64" | base64 --decode > "$p12"
+          security create-keychain -p "$kc_pass" "$kc"
+          security set-keychain-settings -lut 3600 "$kc"
+          security unlock-keychain -p "$kc_pass" "$kc"
+          security import "$p12" -k "$kc" -P "$P12_PASSWORD" -T /usr/bin/codesign -f pkcs12
+          rm -f "$p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_pass" "$kc" >/dev/null
+          existing=()
+          while IFS= read -r k; do k="${k//\"/}"; existing+=("${k// /}"); done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$kc" "${existing[@]}"
+          identity="$(security find-identity -v -p codesigning "$kc" | awk -v t="($APPLE_TEAM_ID)" '/Developer ID Application/ && index($0, t) { print $2; exit }')"
+          if [[ -z "$identity" ]]; then echo "::error::no 'Developer ID Application' identity for team $APPLE_TEAM_ID in the imported p12"; exit 1; fi
+          echo "keychain=$kc" >> "$GITHUB_OUTPUT"
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+
+      - name: Sign the app (hardened runtime, timestamp, no entitlements)
+        if: env.HAS_DEVELOPER_ID == 'true'
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          apps/client/scripts/release/sign-app.sh "$APP_DIR/Prism Client.app" "${{ steps.keychain.outputs.identity }}" --keychain "${{ steps.keychain.outputs.keychain }}"
+          apps/client/scripts/release/check-app.sh "$APP_DIR/Prism Client.app" --version "${{ steps.version.outputs.version }}" --team "$APPLE_TEAM_ID"
+
+      - name: Unsigned build
+        if: env.HAS_DEVELOPER_ID != 'true'
+        run: echo "::warning::APPLE_DEVELOPER_ID_P12 / _PASSWORD / APPLE_TEAM_ID not set — the app and DMG are NOT signed or notarized, and no in-app update is made"
+
+      - name: Notary key
+        id: notary
+        if: env.HAS_DEVELOPER_ID == 'true' && env.HAS_NOTARY == 'true'
+        env:
+          NOTARY_KEY: ${{ secrets.APPLE_NOTARY_API_KEY }}
+        run: |
+          key="$RUNNER_TEMP/notary-key.p8"
+          umask 077
+          # The secret may hold the .p8 text itself or its base64.
+          if printf '%s' "$NOTARY_KEY" | grep -q "BEGIN PRIVATE KEY"; then printf '%s\n' "$NOTARY_KEY" > "$key"; else printf '%s' "$NOTARY_KEY" | base64 --decode > "$key"; fi
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      - name: Notarize + staple the app
+        if: steps.notary.outputs.key != ''
+        env:
+          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_API_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_API_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          apps/client/scripts/release/notarize.sh "$APP_DIR/Prism Client.app" "${{ steps.notary.outputs.key }}" "$NOTARY_KEY_ID" "$NOTARY_ISSUER"
+          apps/client/scripts/release/check-app.sh "$APP_DIR/Prism Client.app" --version "${{ steps.version.outputs.version }}" --team "$APPLE_TEAM_ID" --notarized
+
+      - name: DMG (from the signed, stapled app; signed itself when signing ran)
+        run: |
+          dmg="$OUT/${{ steps.mode.outputs.name }}.dmg"
+          if [[ "$HAS_DEVELOPER_ID" == true ]]; then
+            apps/client/scripts/release/make-dmg.sh "$APP_DIR/Prism Client.app" "$dmg" "${{ steps.keychain.outputs.identity }}" --keychain "${{ steps.keychain.outputs.keychain }}"
+          else
+            apps/client/scripts/release/make-dmg.sh "$APP_DIR/Prism Client.app" "$dmg"
+          fi
+
+      - name: Notarize + staple the DMG
+        if: steps.notary.outputs.key != ''
+        env:
+          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_API_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_API_ISSUER_ID }}
+        run: |
+          dmg="$OUT/${{ steps.mode.outputs.name }}.dmg"
+          apps/client/scripts/release/notarize.sh "$dmg" "${{ steps.notary.outputs.key }}" "$NOTARY_KEY_ID" "$NOTARY_ISSUER"
+          /usr/sbin/spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
+
+      # ── In-app update: signed archive + latest.json (only for a signed, notarized, key-carrying build) ──
+      - name: Updater archive + latest.json
+        if: steps.mode.outputs.publish_update == 'true'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          NAME: ${{ steps.mode.outputs.name }}
+        run: |
+          archive="$OUT/$NAME.app.tar.gz"
+          apps/client/scripts/release/updater-archive.sh "$APP_DIR/Prism Client.app" "$archive" "$VERSION"
+          notes="$RUNNER_TEMP/update-notes.txt"
+          printf 'Prism Client %s. Details are on the release page.\n' "$VERSION" > "$notes"
+          node apps/client/scripts/release/updater-manifest.mjs make --version "$VERSION" \
+            --archive "$archive" --sig "$archive.sig" --pubkey apps/client/src-tauri/updater/updater.key.pub \
+            --url "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$NAME.app.tar.gz" \
+            --notes-file "$notes" --out "$OUT/latest.json"
+          node apps/client/scripts/release/updater-manifest.mjs check --manifest "$OUT/latest.json" --version "$VERSION" \
+            --url-prefix "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/" \
+            --pubkey apps/client/src-tauri/updater/updater.key.pub --archive "$archive"
+
+      - name: Checksums
+        working-directory: ${{ env.OUT }}
+        run: |
+          shopt -s nullglob
+          files=(*.dmg *.app.tar.gz)
+          if [[ -f latest.json ]]; then files+=(latest.json); fi
+          if [[ -f THIRD-PARTY-LICENSES.md ]]; then files+=(THIRD-PARTY-LICENSES.md); fi
+          [[ ${#files[@]} -gt 0 ]] || { echo "::error::nothing to checksum"; exit 1; }
+          /usr/bin/shasum -a 256 -- "${files[@]}" > SHA256SUMS
+          cat SHA256SUMS
+          /usr/bin/shasum -a 256 -c SHA256SUMS
+
+      - name: Sign SHA256SUMS (minisign; the host bundle's key)
+        if: env.HAS_MINISIGN == 'true'
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          command -v minisign >/dev/null || brew install minisign
+          key="$RUNNER_TEMP/minisign.key"
+          umask 077
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
+          packaging/host/release/sign-sums.sh "$OUT" "$key" "prism-client ${{ steps.version.outputs.version }} ${{ github.sha }}"
+          rm -f "$key"
+
+      - name: Upload the workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.mode.outputs.name }}
+          path: ${{ env.OUT }}/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Draft GitHub Release
+        if: steps.mode.outputs.pinned != 'true' && (github.ref_type == 'tag' || inputs.draft_release)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PUBLISH_UPDATE: ${{ steps.mode.outputs.publish_update }}
+        run: |
+          signed="NOT signed or notarized (no Developer ID secrets in this run)"
+          if [[ "$HAS_DEVELOPER_ID" == "true" ]]; then signed="Developer ID signed (hardened runtime); NOT notarized"; fi
+          if [[ "$HAS_DEVELOPER_ID" == "true" && "$HAS_NOTARY" == "true" ]]; then signed="Developer ID signed (hardened runtime), notarized and stapled (app and DMG)"; fi
+          update="No in-app update in this release."
+          if [[ "$PUBLISH_UPDATE" == "true" ]]; then
+            update="In-app update: \`latest.json\` + the signed \`.app.tar.gz\`. Installed apps see it only after this release is PUBLISHED (release-client-publish.yml then moves the update channel to $VERSION)."
+          fi
+          sums="SHA256SUMS is NOT signed in this run."
+          if [[ -f "$OUT/SHA256SUMS.minisig" ]]; then sums="Verify SHA256SUMS: \`minisign -Vm SHA256SUMS -p minisign.pub\` (packaging/host/release/minisign.pub at this commit)."; fi
+          notes="$RUNNER_TEMP/release-notes.md"
+          cat > "$notes" <<EOF
+          Prism Client $VERSION for macOS (Apple silicon), commit $GITHUB_SHA.
+
+          - $signed
+          - First run asks for your Prism Server ("Enter your server"); no server is built in.
+          - Third-party licences: \`THIRD-PARTY-LICENSES.md\` (also in the app: Help → Acknowledgements).
+          - $update
+          - $sums Then: \`shasum -a 256 -c SHA256SUMS\`.
+          EOF
+          files=()
+          for f in "$OUT"/*; do files+=("$f"); done
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            gh release create "$TAG" "${files[@]}" --draft --target "$GITHUB_SHA" --title "Prism Client $VERSION" --notes-file "$notes"
+          fi
+
+      - name: Remove the temporary keychain and notary key
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/notary-key.p8"
+          if [[ -n "${{ steps.keychain.outputs.keychain }}" ]]; then security delete-keychain "${{ steps.keychain.outputs.keychain }}" || true; fi
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Prism Client ${{ steps.version.outputs.version }}"
+            echo "- Pinned build: ${{ steps.mode.outputs.pinned }}"
+            echo "- Developer ID signing: ${HAS_DEVELOPER_ID}"
+            echo "- Notarization: $([[ "$HAS_DEVELOPER_ID" == true && "$HAS_NOTARY" == true ]] && echo true || echo false)"
+            echo "- Updater built in: ${{ steps.mode.outputs.updater }}; signed update made: ${{ steps.mode.outputs.publish_update }}"
+            echo "- SHA256SUMS signature (minisign): ${HAS_MINISIGN}"
+          } >> "$GITHUB_STEP_SUMMARY"

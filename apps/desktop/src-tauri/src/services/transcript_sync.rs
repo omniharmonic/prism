@@ -1,0 +1,895 @@
+use std::sync::Arc;
+use chrono::Timelike;
+use tokio::sync::watch;
+use crate::clients::parachute::ParachuteClient;
+use crate::commands::config::AppConfig;
+use crate::models::note::{CreateNoteParams, UpdateNoteParams, ListNotesParams};
+use crate::services::ServiceStatus;
+use crate::services::person_linker;
+use crate::error::PrismError;
+
+const SYNC_INTERVAL_SECS: u64 = 600; // 10 minutes
+
+// Fireflies enforces a *daily* API request quota (the GraphQL API returns "too
+// many requests" until the next 00:00 UTC), and our list→detail flow is one
+// request per new transcript. Polling every 10 minutes exhausts that daily
+// budget within minutes and then 429s for the rest of the day — so we DON'T poll
+// Fireflies on the 10-minute loop. Instead we sync it at a few fixed local hours
+// (see FIREFLIES_SYNC_HOURS), once per hour-slot, keeping the run small (bounded
+// new ingests + a pause between detail calls). This deliberately leaves the rest
+// of the daily quota for the cleanup agent to verify + delete synced transcripts.
+const FIREFLIES_LIST_LIMIT: i64 = 25;
+const FIREFLIES_MAX_NEW_PER_RUN: usize = 6;
+const FIREFLIES_THROTTLE_MS: u64 = 1200;
+
+/// Local-time hours (24h) at which to actually hit the Fireflies API: 11am, 1pm,
+/// 3pm, 6pm. The 6pm slot is intentional — the daily quota resets at 00:00 UTC,
+/// which is 6pm America/Denver, so that run gets a fresh budget. Each slot fires
+/// at most once per day (on the first 10-minute tick at/after the top of the hour).
+const FIREFLIES_SYNC_HOURS: [u32; 4] = [11, 13, 15, 18];
+
+/// Heuristic: does this error look like a Fireflies rate-limit (HTTP 429 or a
+/// "too many requests" GraphQL error)? Used to back off gracefully.
+fn is_rate_limited(err: &PrismError) -> bool {
+    let m = err.to_string().to_lowercase();
+    m.contains("429") || m.contains("too many requests") || m.contains("rate limit") || m.contains("ratelimit")
+}
+
+/// Transcript sync service: pulls transcripts from configured sources
+/// (Fathom API, Fireflies GraphQL) into Parachute as
+/// tagged notes.
+pub async fn run(
+    parachute: Arc<ParachuteClient>,
+    config: AppConfig,
+    mut shutdown: watch::Receiver<bool>,
+    status: Arc<std::sync::Mutex<ServiceStatus>>,
+) {
+    log::info!("Transcript sync service starting");
+
+    {
+        let mut s = status.lock().unwrap();
+        s.running = true;
+    }
+
+    // Initial delay
+    tokio::time::sleep(tokio::time::Duration::from_secs(25)).await;
+
+    // Fireflies is gated to fixed local hours (see FIREFLIES_SYNC_HOURS). This
+    // tracks the last hour-slot we ran ("YYYY-MM-DD-HH") so each slot fires at
+    // most once per day even though the outer loop ticks every 10 minutes.
+    let mut last_fireflies_slot: Option<String> = None;
+
+    loop {
+        if *shutdown.borrow() {
+            break;
+        }
+
+        let mut total = 0u64;
+        let mut errors_str = Vec::new();
+
+        // Fathom (API) — skipped when handled server-side (disable_fathom_sync).
+        if !config.fathom_api_key.is_empty() && !config.disable_fathom_sync {
+            match sync_fathom(&parachute, &config.fathom_api_key).await {
+                Ok(count) => total += count,
+                Err(e) => {
+                    log::warn!("Fathom sync error: {}", e);
+                    errors_str.push(format!("Fathom: {}", e));
+                }
+            }
+        }
+
+        // Fireflies (GraphQL API) — only at the fixed local hours, once per slot,
+        // to stay under the daily request quota. Skipped entirely when handled
+        // server-side (disable_fireflies_sync): the Prism Server owns Fireflies —
+        // it ingests AND deletes each transcript from Fireflies once confirmed in
+        // the vault — so the desktop must NOT also sync (double-ingest / delete race).
+        if !config.fireflies_api_key.is_empty() && !config.disable_fireflies_sync {
+            let now = chrono::Local::now();
+            let hour = now.hour();
+            let slot = now.format("%Y-%m-%d-%H").to_string();
+            let due = FIREFLIES_SYNC_HOURS.contains(&hour)
+                && last_fireflies_slot.as_deref() != Some(slot.as_str());
+            if due {
+                // Claim the slot up front so we make at most one API-touching run
+                // per scheduled hour, regardless of outcome — conserving the daily
+                // quota for the cleanup agent even if this run errors or is throttled.
+                last_fireflies_slot = Some(slot.clone());
+                log::info!("Fireflies: scheduled sync for {}:00 local (slot {})", hour, slot);
+                match sync_fireflies(&parachute, &config.fireflies_api_key).await {
+                    Ok(count) => total += count,
+                    Err(e) => {
+                        log::warn!("Fireflies sync error: {}", e);
+                        errors_str.push(format!("Fireflies: {}", e));
+                    }
+                }
+            }
+        }
+
+        {
+            let mut s = status.lock().unwrap();
+            s.last_run = Some(chrono::Utc::now().to_rfc3339());
+            s.items_processed += total;
+            s.last_error = if errors_str.is_empty() { None } else { Some(errors_str.join("; ")) };
+        }
+
+        if total > 0 {
+            log::info!("Transcript sync: ingested {} transcripts", total);
+        }
+
+        tokio::select! {
+            _ = tokio::time::sleep(tokio::time::Duration::from_secs(SYNC_INTERVAL_SECS)) => {},
+            _ = shutdown.changed() => {
+                if *shutdown.borrow() { break; }
+            }
+        }
+    }
+
+    let mut s = status.lock().unwrap();
+    s.running = false;
+    log::info!("Transcript sync service stopped");
+}
+
+/// Sync transcripts from Fathom API.
+async fn sync_fathom(
+    parachute: &ParachuteClient,
+    api_key: &str,
+) -> Result<u64, PrismError> {
+    let client = reqwest::Client::new();
+
+    // Fetch meetings from last 7 days
+    let since = (chrono::Utc::now() - chrono::Duration::days(7)).to_rfc3339();
+    let url = format!("https://api.fathom.ai/external/v1/meetings?created_after={}", since);
+
+    let resp = client.get(&url)
+        .header("X-Api-Key", api_key)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|e| PrismError::Other(format!("Fathom API error: {}", e)))?;
+
+    if !resp.status().is_success() {
+        return Err(PrismError::Other(format!("Fathom API returned {}", resp.status())));
+    }
+
+    let data: serde_json::Value = resp.json().await
+        .map_err(|e| PrismError::Other(format!("Fathom parse error: {}", e)))?;
+
+    let items = data.get("items").and_then(|v| v.as_array())
+        .or_else(|| data.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    // Load existing transcript notes
+    let existing = parachute.list_notes(&ListNotesParams {
+        tag: Some("transcript".into()),
+        limit: Some(500),
+        ..Default::default()
+    }).await.unwrap_or_default();
+
+    let mut ingested = 0u64;
+
+    for meeting in &items {
+        // recording_id may be a number or string in the Fathom API
+        let recording_id = meeting.get("recording_id")
+            .map(|v| match v {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Number(n) => n.to_string(),
+                _ => String::new(),
+            })
+            .or_else(|| meeting.get("id").map(|v| match v {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Number(n) => n.to_string(),
+                _ => String::new(),
+            }))
+            .unwrap_or_default();
+
+        let title = meeting.get("title")
+            .or(meeting.get("meeting_title"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("Untitled Meeting");
+
+        let date = meeting.get("scheduled_start_time")
+            .or(meeting.get("scheduled_at"))
+            .or(meeting.get("recording_start_time"))
+            .or(meeting.get("recorded_at"))
+            .or(meeting.get("created_at"))
+            .and_then(|v| v.as_str())
+            .map(|s| if s.len() >= 10 { &s[..10] } else { s })
+            .unwrap_or("");
+
+        let share_url = meeting.get("share_url").and_then(|v| v.as_str()).unwrap_or("");
+
+        // Check if already ingested
+        let already_exists = existing.iter().any(|n| {
+            n.metadata.as_ref()
+                .and_then(|m| m.get("source_id").or_else(|| m.get("sourceId")))
+                .and_then(|v| v.as_str())
+                == Some(recording_id.as_str())
+        });
+
+        if already_exists {
+            continue;
+        }
+
+        // Fetch summary
+        let summary = if !recording_id.is_empty() {
+            fetch_fathom_summary(&client, api_key, &recording_id).await.unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        // Fetch transcript
+        let transcript = if !recording_id.is_empty() {
+            fetch_fathom_transcript(&client, api_key, &recording_id).await.unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        if summary.is_empty() && transcript.is_empty() {
+            continue;
+        }
+
+        // Build attendees list
+        let attendees: Vec<String> = meeting.get("calendar_invitees")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|a| {
+                a.get("name").or(a.get("email")).and_then(|v| v.as_str()).map(String::from)
+            }).collect())
+            .unwrap_or_default();
+
+        let slug = sanitize_path(title);
+        let path = format!("vault/_inbox/transcripts/fathom/{}-{}", date, slug);
+
+        let mut content = format!("---\ntitle: \"{}\"\ndate: {}\nsource: fathom\nrecording_id: \"{}\"\nfathom_url: \"{}\"\nattendees:\n", title, date, recording_id, share_url);
+        for att in &attendees {
+            content.push_str(&format!("  - {}\n", att));
+        }
+        content.push_str("---\n\n");
+
+        if !summary.is_empty() {
+            content.push_str(&format!("## Summary\n\n{}\n\n", summary));
+        }
+        if !transcript.is_empty() {
+            content.push_str(&format!("## Transcript\n\n{}\n", transcript));
+        }
+
+        let metadata = serde_json::json!({
+            "type": "transcript",
+            "source": "fathom",
+            "source_id": recording_id,
+            "synced_at": chrono::Utc::now().to_rfc3339(),
+            "title": title,
+            "date": date,
+            "attendees": attendees,
+            "fathom_url": share_url,
+        });
+
+        match parachute.create_note(&CreateNoteParams {
+            content,
+            path: Some(path),
+            metadata: Some(metadata),
+            tags: Some(vec!["transcript".into(), "fathom".into()]),
+        }).await {
+            Ok(note) => {
+                ingested += 1;
+                // Link to attendee person notes
+                for name in &attendees {
+                    if let Ok(person_id) = person_linker::find_or_create_person(
+                        parachute, name, None, None, None,
+                    ).await {
+                        let _ = person_linker::link_to_person(
+                            parachute, &note.id, &person_id, "transcript-of",
+                        ).await;
+                    }
+                }
+                // Link transcript to matching meeting note
+                link_transcript_to_meeting(
+                    parachute, &note.id, title, date, &attendees,
+                ).await;
+            }
+            Err(e) => log::debug!("Fathom: failed to create note for '{}': {}", title, e),
+        }
+    }
+
+    Ok(ingested)
+}
+
+async fn fetch_fathom_summary(
+    client: &reqwest::Client,
+    api_key: &str,
+    recording_id: &str,
+) -> Result<String, PrismError> {
+    let url = format!("https://api.fathom.ai/external/v1/recordings/{}/summary", recording_id);
+    let resp = client.get(&url)
+        .header("X-Api-Key", api_key)
+        .timeout(std::time::Duration::from_secs(15))
+        .send().await
+        .map_err(|e| PrismError::Other(format!("Fathom summary: {}", e)))?;
+
+    if !resp.status().is_success() {
+        return Ok(String::new());
+    }
+
+    let data: serde_json::Value = resp.json().await.unwrap_or_default();
+    // Try various response formats
+    let md = data.get("markdown")
+        .or_else(|| data.get("summary").and_then(|s| s.get("markdown_formatted")))
+        .or_else(|| data.get("summary").and_then(|s| s.get("markdown")))
+        .or_else(|| data.get("recording").and_then(|r| r.get("markdown_formatted")))
+        .or_else(|| data.get("content"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    Ok(md.to_string())
+}
+
+async fn fetch_fathom_transcript(
+    client: &reqwest::Client,
+    api_key: &str,
+    recording_id: &str,
+) -> Result<String, PrismError> {
+    let url = format!("https://api.fathom.ai/external/v1/recordings/{}/transcript", recording_id);
+    let resp = client.get(&url)
+        .header("X-Api-Key", api_key)
+        .timeout(std::time::Duration::from_secs(15))
+        .send().await
+        .map_err(|e| PrismError::Other(format!("Fathom transcript: {}", e)))?;
+
+    if !resp.status().is_success() {
+        return Ok(String::new());
+    }
+
+    let data: serde_json::Value = resp.json().await.unwrap_or_default();
+    let segments = data.get("transcript")
+        .or(data.get("items"))
+        .or(data.get("segments"))
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let lines: Vec<String> = segments.iter().filter_map(|seg| {
+        let speaker = seg.get("speaker_display_name")
+            .or(seg.get("speaker"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("Speaker");
+        let text = seg.get("text").and_then(|v| v.as_str()).unwrap_or("");
+        if text.is_empty() { return None; }
+        Some(format!("**{}**: {}", speaker, text))
+    }).collect();
+
+    Ok(lines.join("\n\n"))
+}
+
+/// Sync transcripts from the Fireflies.ai GraphQL API.
+///
+/// Fireflies exposes a single GraphQL endpoint (`https://api.fireflies.ai/graphql`,
+/// Bearer auth). We list recent transcripts (id + metadata only), then fetch the
+/// heavy body (sentences + summary) per *new* transcript — mirroring the Fathom
+/// list-then-detail pattern so already-synced meetings cost just one cheap list call.
+async fn sync_fireflies(
+    parachute: &ParachuteClient,
+    api_key: &str,
+) -> Result<u64, PrismError> {
+    let client = reqwest::Client::new();
+
+    // 1) List recent transcripts (metadata only — no sentences/summary).
+    let list_query = serde_json::json!({
+        "query": "query Transcripts($limit: Int) { transcripts(limit: $limit) { id title date duration transcript_url meeting_attendees { displayName email } } }",
+        "variables": { "limit": FIREFLIES_LIST_LIMIT },
+    });
+
+    // If even the list call is rate-limited, skip this cycle quietly and retry
+    // next interval rather than surfacing an error.
+    let list = match fireflies_graphql(&client, api_key, &list_query).await {
+        Ok(v) => v,
+        Err(e) if is_rate_limited(&e) => {
+            log::info!("Fireflies rate-limited on list query; retrying next cycle");
+            return Ok(0);
+        }
+        Err(e) => return Err(e),
+    };
+    let items = list.pointer("/data/transcripts")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    // Load existing transcript notes to avoid duplicates.
+    let existing = parachute.list_notes(&ListNotesParams {
+        tag: Some("transcript".into()),
+        limit: Some(500),
+        ..Default::default()
+    }).await.unwrap_or_default();
+
+    let mut ingested = 0u64;
+    let mut processed = 0usize; // new transcripts whose detail we've fetched this run
+
+    for meeting in &items {
+        let id = meeting.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if id.is_empty() { continue; }
+
+        let title = meeting.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled Meeting");
+
+        // Fireflies `date` is epoch milliseconds (a JSON number).
+        let date = meeting.get("date")
+            .and_then(|v| v.as_f64())
+            .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
+            .map(|dt| dt.format("%Y-%m-%d").to_string())
+            .unwrap_or_default();
+
+        let share_url = meeting.get("transcript_url").and_then(|v| v.as_str()).unwrap_or("");
+
+        // Skip if already ingested (match on source_id like Fathom/Meetily).
+        let already_exists = existing.iter().any(|n| {
+            n.metadata.as_ref()
+                .and_then(|m| m.get("source_id").or_else(|| m.get("sourceId")))
+                .and_then(|v| v.as_str())
+                == Some(id.as_str())
+        });
+        if already_exists { continue; }
+
+        // Bound new ingests per run + space out detail calls to respect the rate limit.
+        if processed >= FIREFLIES_MAX_NEW_PER_RUN {
+            log::info!("Fireflies: per-run cap ({}) reached; remaining transcripts sync next cycle", FIREFLIES_MAX_NEW_PER_RUN);
+            break;
+        }
+        if processed > 0 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(FIREFLIES_THROTTLE_MS)).await;
+        }
+        processed += 1;
+
+        // Attendees from the list payload.
+        let attendees: Vec<String> = meeting.get("meeting_attendees")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|a| {
+                a.get("displayName").or_else(|| a.get("email"))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+            }).collect())
+            .unwrap_or_default();
+
+        // 2) Fetch the heavy detail (summary + sentences) for this new transcript.
+        let detail_query = serde_json::json!({
+            "query": "query Transcript($id: String!) { transcript(id: $id) { summary { overview } sentences { speaker_name text } } }",
+            "variables": { "id": id },
+        });
+
+        let detail = match fireflies_graphql(&client, api_key, &detail_query).await {
+            Ok(v) => v,
+            Err(e) if is_rate_limited(&e) => {
+                log::warn!("Fireflies rate-limited mid-sync; stopping this run, resuming next cycle");
+                break;
+            }
+            Err(e) => {
+                log::debug!("Fireflies detail fetch failed for '{}': {}", title, e);
+                continue;
+            }
+        };
+        let t = detail.pointer("/data/transcript");
+
+        let summary = t.and_then(|t| t.pointer("/summary/overview"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let transcript = t.and_then(|t| t.get("sentences"))
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|s| {
+                let text = s.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                if text.is_empty() { return None; }
+                let speaker = s.get("speaker_name").and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("Speaker");
+                Some(format!("**{}**: {}", speaker, text))
+            }).collect::<Vec<_>>().join("\n\n"))
+            .unwrap_or_default();
+
+        if summary.is_empty() && transcript.is_empty() { continue; }
+
+        let slug = sanitize_path(title);
+        let path = format!("vault/_inbox/transcripts/fireflies/{}-{}", date, slug);
+
+        let mut content = format!(
+            "---\ntitle: \"{}\"\ndate: {}\nsource: fireflies\ntranscript_id: \"{}\"\nfireflies_url: \"{}\"\nattendees:\n",
+            title, date, id, share_url,
+        );
+        for att in &attendees {
+            content.push_str(&format!("  - {}\n", att));
+        }
+        content.push_str("---\n\n");
+
+        if !summary.is_empty() {
+            content.push_str(&format!("## Summary\n\n{}\n\n", summary));
+        }
+        if !transcript.is_empty() {
+            content.push_str(&format!("## Transcript\n\n{}\n", transcript));
+        }
+
+        // Schema-declared transcript fields: source, source_id, date, synced_at.
+        let metadata = serde_json::json!({
+            "type": "transcript",
+            "source": "fireflies",
+            "source_id": id,
+            "synced_at": chrono::Utc::now().to_rfc3339(),
+            "title": title,
+            "date": date,
+            "attendees": attendees,
+            "fireflies_url": share_url,
+        });
+
+        match parachute.create_note(&CreateNoteParams {
+            content,
+            path: Some(path),
+            metadata: Some(metadata),
+            tags: Some(vec!["transcript".into(), "fireflies".into()]),
+        }).await {
+            Ok(note) => {
+                ingested += 1;
+                // Link to attendee person notes.
+                for name in &attendees {
+                    if let Ok(person_id) = person_linker::find_or_create_person(
+                        parachute, name, None, None, None,
+                    ).await {
+                        let _ = person_linker::link_to_person(
+                            parachute, &note.id, &person_id, "transcript-of",
+                        ).await;
+                    }
+                }
+                // Link transcript to matching meeting note.
+                link_transcript_to_meeting(
+                    parachute, &note.id, title, &date, &attendees,
+                ).await;
+            }
+            Err(e) => log::debug!("Fireflies: failed to create note for '{}': {}", title, e),
+        }
+    }
+
+    Ok(ingested)
+}
+
+/// POST a GraphQL query to the Fireflies API and return the parsed JSON body.
+/// Surfaces a top-level GraphQL `errors` array as a `PrismError` so the sync
+/// loop logs a useful message instead of silently reading a null `data`.
+async fn fireflies_graphql(
+    client: &reqwest::Client,
+    api_key: &str,
+    body: &serde_json::Value,
+) -> Result<serde_json::Value, PrismError> {
+    let resp = client.post("https://api.fireflies.ai/graphql")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(body)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|e| PrismError::Other(format!("Fireflies API error: {}", e)))?;
+
+    if !resp.status().is_success() {
+        return Err(PrismError::Other(format!("Fireflies API returned {}", resp.status())));
+    }
+
+    let data: serde_json::Value = resp.json().await
+        .map_err(|e| PrismError::Other(format!("Fireflies parse error: {}", e)))?;
+
+    if let Some(errors) = data.get("errors").and_then(|v| v.as_array()) {
+        if !errors.is_empty() {
+            let msg = errors.iter()
+                .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(PrismError::Other(format!("Fireflies GraphQL error: {}", msg)));
+        }
+    }
+
+    Ok(data)
+}
+
+/// After creating a transcript note, find matching meeting notes and create
+/// bidirectional links + cross-reference metadata.
+///
+/// Matching strategy:
+/// 1. Same date (required, ±1 day for timezone tolerance)
+/// 2. Attendee name/email overlap (strong signal)
+/// 3. Title word overlap (fallback)
+async fn link_transcript_to_meeting(
+    parachute: &ParachuteClient,
+    transcript_note_id: &str,
+    transcript_title: &str,
+    transcript_date: &str,
+    transcript_attendees: &[String],
+) {
+    // List ALL meeting notes and match on metadata.date. The prior full-text
+    // search(date) ranked by content relevance and capped at 20, so the real
+    // same-day meeting could rank out below unrelated notes mentioning the date.
+    let meeting_notes = parachute.list_all_by_tag("meeting").await.unwrap_or_default();
+
+    if meeting_notes.is_empty() {
+        log::debug!("Transcript linking: no meeting notes found for date {}", transcript_date);
+        return;
+    }
+
+    let mut best_match: Option<(&crate::models::note::Note, u32)> = None;
+
+    for note in &meeting_notes {
+        let meta = match &note.metadata {
+            Some(m) => m,
+            None => continue,
+        };
+
+        // Check date match (±1 day)
+        let meeting_date = meta.get("date").and_then(|v| v.as_str()).unwrap_or("");
+        if !dates_within_one_day(transcript_date, meeting_date) {
+            continue;
+        }
+
+        let meeting_attendees: Vec<String> = meta.get("attendees")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|a| a.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+
+        // Title from metadata, falling back to the path slug.
+        let meeting_title = meta.get("title")
+            .and_then(|v| v.as_str())
+            .or_else(|| note.path.as_ref().and_then(|p| p.split('/').last()))
+            .unwrap_or("");
+
+        let score = score_transcript_meeting_match(
+            transcript_title, transcript_attendees, transcript_date,
+            meeting_title, &meeting_attendees, meeting_date,
+        );
+
+        if score > 0 && best_match.as_ref().map(|(_, s)| score > *s).unwrap_or(true) {
+            best_match = Some((note, score));
+        }
+    }
+
+    // Require minimum score of 2 (date match + at least one attendee or title word)
+    if let Some((meeting_note, score)) = best_match {
+        if score < 2 {
+            log::debug!("Transcript linking: best match score {} too low for '{}'", score, transcript_title);
+            return;
+        }
+
+        let meeting_id = &meeting_note.id;
+        log::info!(
+            "Transcript linking: linking '{}' → meeting '{}' (score: {})",
+            transcript_title,
+            meeting_note.path.as_deref().unwrap_or(meeting_id),
+            score
+        );
+
+        // Create bidirectional links
+        let _ = parachute.create_link(&crate::models::link::CreateLinkParams {
+            source_id: meeting_id.clone(),
+            target_id: transcript_note_id.to_string(),
+            relationship: "has-transcript".into(),
+            metadata: None,
+        }).await;
+
+        // Update meeting note metadata with transcript reference
+        if let Some(mut meta) = meeting_note.metadata.clone() {
+            if let Some(obj) = meta.as_object_mut() {
+                obj.insert("transcriptNoteId".into(), serde_json::json!(transcript_note_id));
+                let _ = parachute.update_note(meeting_id, &UpdateNoteParams {
+                    content: None,
+                    path: None,
+                    metadata: Some(meta.clone()),
+                    ..Default::default()
+                }).await;
+            }
+        }
+
+        // Update transcript note metadata with meeting reference
+        let _ = parachute.update_note(transcript_note_id, &UpdateNoteParams {
+            content: None,
+            path: None,
+            metadata: Some(serde_json::json!({
+                "meetingNoteId": meeting_id,
+            })),
+            ..Default::default()
+        }).await;
+    } else {
+        log::debug!("Transcript linking: no match found for '{}'", transcript_title);
+    }
+}
+
+/// Normalize a name for fuzzy matching: lowercase, strip email domains, collapse whitespace
+fn normalize_name(name: &str) -> String {
+    let s = name.trim().to_lowercase();
+    // If it looks like an email, extract the part before @
+    if let Some(at_pos) = s.find('@') {
+        let local = &s[..at_pos];
+        return local.replace('.', " ").replace('_', " ").replace('-', " ");
+    }
+    s.chars()
+        .map(|c| if c.is_alphanumeric() || c == ' ' { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Extract significant title words (skip common filler words)
+fn title_words(title: &str) -> Vec<String> {
+    let skip = ["meeting", "call", "sync", "the", "and", "with", "for", "a", "an", "of", "in", "on", "at", "to", "-", "—"];
+    title.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() > 2 && !skip.contains(w))
+        .map(String::from)
+        .collect()
+}
+
+/// Check if two date strings (YYYY-MM-DD) are within 1 day of each other
+fn dates_within_one_day(a: &str, b: &str) -> bool {
+    if a == b { return true; }
+    let parse = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok();
+    match (parse(a), parse(b)) {
+        (Some(da), Some(db)) => (da - db).num_days().unsigned_abs() <= 1,
+        _ => false,
+    }
+}
+
+fn sanitize_path(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' { c } else { '-' })
+        .collect::<String>()
+        .trim()
+        .replace(' ', "-")
+        .to_lowercase()
+}
+
+/// Pure relevance score between a transcript and a candidate meeting note.
+///
+/// Heuristic (caller pre-filters candidates to within ±1 day):
+/// - +3 per fuzzy attendee match (exact, or one name contained in the other)
+/// - +1 per shared significant title word
+/// - +1 when the dates match exactly
+///
+/// A score of ≥2 is required to create a link, i.e. an exact-date match alone
+/// (score 1) is never enough — there must be at least one attendee or title-word
+/// signal. Extracted from `link_transcript_to_meeting` so the matching logic can
+/// be unit-tested without a live vault.
+fn score_transcript_meeting_match(
+    transcript_title: &str,
+    transcript_attendees: &[String],
+    transcript_date: &str,
+    meeting_title: &str,
+    meeting_attendees: &[String],
+    meeting_date: &str,
+) -> u32 {
+    let nt: Vec<String> = transcript_attendees.iter()
+        .map(|a| normalize_name(a))
+        .filter(|a| !a.is_empty())
+        .collect();
+    let nm: Vec<String> = meeting_attendees.iter()
+        .map(|a| normalize_name(a))
+        .filter(|a| !a.is_empty())
+        .collect();
+
+    let mut score: u32 = 0;
+    for ta in &nt {
+        for ma in &nm {
+            if ta == ma || ta.contains(ma.as_str()) || ma.contains(ta.as_str()) {
+                score += 3;
+            }
+        }
+    }
+
+    let mw = title_words(meeting_title);
+    for tw in title_words(transcript_title) {
+        if mw.contains(&tw) {
+            score += 1;
+        }
+    }
+
+    if meeting_date == transcript_date {
+        score += 1;
+    }
+
+    score
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LINK_THRESHOLD: u32 = 2;
+
+    #[test]
+    fn normalize_name_strips_email_and_punctuation() {
+        assert_eq!(normalize_name("Alice Smith"), "alice smith");
+        assert_eq!(normalize_name("alice.smith@example.com"), "alice smith");
+        assert_eq!(normalize_name("  Bob_Jones-PhD  "), "bob jones phd");
+    }
+
+    #[test]
+    fn title_words_drops_filler_and_short_words() {
+        let w = title_words("Q2 Roadmap Review - Sync with the Team");
+        assert!(w.contains(&"roadmap".to_string()));
+        assert!(w.contains(&"review".to_string()));
+        assert!(w.contains(&"team".to_string()));
+        // fillers / short tokens excluded
+        assert!(!w.contains(&"sync".to_string()));
+        assert!(!w.contains(&"with".to_string()));
+        assert!(!w.contains(&"the".to_string()));
+        assert!(!w.contains(&"q2".to_string())); // len <= 2
+    }
+
+    #[test]
+    fn dates_within_one_day_tolerates_timezone_skew() {
+        assert!(dates_within_one_day("2026-05-28", "2026-05-28"));
+        assert!(dates_within_one_day("2026-05-28", "2026-05-29"));
+        assert!(dates_within_one_day("2026-05-28", "2026-05-27"));
+        assert!(!dates_within_one_day("2026-05-28", "2026-05-30"));
+        assert!(!dates_within_one_day("2026-05-28", "not-a-date"));
+    }
+
+    #[test]
+    fn strong_attendee_overlap_links() {
+        // Same day + one shared attendee → 1 (date) + 3 (attendee) = 4 ≥ threshold.
+        let score = score_transcript_meeting_match(
+            "Untitled", &["Alice Smith".into(), "Bob Jones".into()], "2026-05-28",
+            "Standup", &["alice.smith@example.com".into()], "2026-05-28",
+        );
+        assert!(score >= LINK_THRESHOLD, "expected link, got {score}");
+    }
+
+    #[test]
+    fn title_overlap_alone_links_on_same_day() {
+        // No attendees, but two shared title words + exact date = 1 + 2 = 3.
+        let score = score_transcript_meeting_match(
+            "Roadmap Review", &[], "2026-05-28",
+            "Roadmap Review", &[], "2026-05-28",
+        );
+        assert!(score >= LINK_THRESHOLD, "expected link, got {score}");
+    }
+
+    #[test]
+    fn generic_title_no_attendees_does_not_link() {
+        // The failure mode before speakers were extracted: identical
+        // generic single filler-ish word, no attendees. Only the date matches.
+        let score = score_transcript_meeting_match(
+            "Standup", &[], "2026-05-28",
+            "Standup", &[], "2026-05-28",
+        );
+        // "standup" is a single 7-char non-filler word shared → +1, plus exact
+        // date +1 = 2. It links — which is the *intended* behavior once a real
+        // title word matches. The true ambiguous case (no shared words) below:
+        assert_eq!(score, 2);
+
+        let ambiguous = score_transcript_meeting_match(
+            "Check-in", &[], "2026-05-28",
+            "Standup", &[], "2026-05-28",
+        );
+        // Different titles, no attendees → only exact date (+1). Below threshold.
+        assert!(ambiguous < LINK_THRESHOLD, "expected NO link, got {ambiguous}");
+    }
+
+    #[test]
+    fn wrong_day_scores_only_title() {
+        // Candidate one day off (passes the ±1 pre-filter) but not exact date:
+        // shared title words still score, exact-date bonus does not apply.
+        let score = score_transcript_meeting_match(
+            "Roadmap Review", &[], "2026-05-28",
+            "Roadmap Review", &[], "2026-05-29",
+        );
+        assert_eq!(score, 2); // two title words, no date bonus
+    }
+
+    #[test]
+    fn meetily_speakers_as_attendees_rescue_a_match() {
+        // Regression: a source used to pass &[] for attendees. With speakers
+        // extracted, a shared speaker now lifts a generic-title meeting over
+        // the threshold where title words alone would not.
+        let without = score_transcript_meeting_match(
+            "Weekly", &[], "2026-05-28",
+            "Weekly Team Meeting", &[], "2026-05-28",
+        );
+        let with = score_transcript_meeting_match(
+            "Weekly", &["Carla Diaz".into()], "2026-05-28",
+            "Weekly Team Meeting", &["carla.diaz@org.com".into()], "2026-05-28",
+        );
+        assert!(with > without);
+        assert!(with >= LINK_THRESHOLD);
+    }
+}

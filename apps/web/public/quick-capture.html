@@ -1,0 +1,37 @@
+<!doctype html>
+<!-- Prism Client quick-capture window (WP4.2). Static page for the native shell's
+     separate capture webview; it has no app code, no host hook and no token. Its
+     capability grants exactly one command (quick_capture). The native shell
+     loads it as tauri://localhost/quick-capture.html. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Quick capture</title>
+    <style>
+      :root { color-scheme: light dark; --bg: #f6f6f7; --fg: #1c1c1e; --field: #fff; --line: #d0d0d5; --muted: #6e6e73; --accent: #3a7bf0; }
+      @media (prefers-color-scheme: dark) { :root { --bg: #1e1e21; --fg: #f2f2f4; --field: #2a2a2e; --line: #3b3b40; --muted: #9a9aa2; } }
+      html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 13px -apple-system, system-ui, sans-serif; }
+      main { display: flex; flex-direction: column; gap: 10px; height: 100%; box-sizing: border-box; padding: 14px; }
+      textarea { flex: 1; resize: none; border: 1px solid var(--line); border-radius: 8px; background: var(--field); color: inherit; padding: 10px; font: 14px/1.45 -apple-system, system-ui, sans-serif; outline: none; }
+      textarea:focus { border-color: var(--accent); }
+      .row { display: flex; align-items: center; gap: 8px; }
+      #status { flex: 1; color: var(--muted); min-height: 1.2em; }
+      #status.err { color: #d93a3a; }
+      button { font: inherit; padding: 6px 14px; border-radius: 7px; border: 1px solid var(--line); background: var(--field); color: inherit; cursor: pointer; }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+      button:disabled { opacity: 0.5; cursor: default; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <textarea id="text" placeholder="Capture a thought…  (Cmd/Ctrl+Enter to save, Esc to dismiss)" autofocus spellcheck="true"></textarea>
+      <div class="row">
+        <div id="status"></div>
+        <button id="cancel" type="button">Cancel</button>
+        <button id="save" class="primary" type="button">Save</button>
+      </div>
+    </main>
+    <script src="quick-capture.js"></script>
+  </body>
+</html>

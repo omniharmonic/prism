@@ -1,0 +1,643 @@
+/**
+ * Source health + staleness alerts (Architecture v2, WP0.5).
+ *
+ * WHY: ingest can stop with nothing saying so. A pipeline that is broken and one
+ * that is idle look identical in the log, and the desktop-owned sources (email,
+ * calendar, skill runs) are invisible to this process entirely.
+ *
+ * Two kinds of source:
+ *   - SERVER sources (matrix, clickup, fireflies, fathom, index): the scheduler
+ *     reports each run's outcome through `recordSourceOutcome` (called from
+ *     `noteIngestOutcome`, the single writer of ingest state). This module owns
+ *     the last-success / last-error / streak registry.
+ *   - DESKTOP sources (email, calendar, skills): not observable here, so
+ *     freshness is INFERRED from the vault — the newest note of each kind
+ *     (`limit` small, `order_by=updated_at`), cached for WORKER_DESKTOP_PROBE_MS.
+ *     Caveat: this measures "newest note", so a genuinely quiet inbox reads as
+ *     stale; thresholds are therefore tunable / disableable per source.
+ *     Exception: with SKILLS_ENABLED=true "skills" is a SERVER source, reported
+ *     by worker/skills.ts through `runSkillsPass` (authoritative, not inferred).
+ *     Likewise with GMAIL_SYNC_ENABLED=true "email" is a SERVER source, reported
+ *     by the scheduler's `runGmailOnce` (worker/gmail.ts) per run. And with
+ *     CALENDAR_SYNC_ENABLED=true (not shadow) "calendar" is a SERVER source
+ *     (worker/calendar.ts). PROTON_SYNC_ENABLED or PROTON_SHADOW adds a "proton"
+ *     SERVER source (worker/proton.ts); a LIVE Proton ingest also drops the
+ *     inferred "email" source (it writes those notes itself).
+ *     CALENDAR_SHADOW adds a separate "calendar-shadow"
+ *     server source and leaves "calendar" inferred from the desktop's notes.
+ *
+ *   - `people-link` (identity + linking layer): not an ingest. It reports the
+ *     review-queue depth and the last backfill job (`detail`), appears only once
+ *     a job has run or identities are queued, and never goes stale — unless the
+ *     scheduled run is on (PEOPLE_LINK_SCHEDULE_ENABLED): then it is always listed,
+ *     says when the next run is due, and is stale after two missed intervals.
+ *
+ * Status: disabled (not configured / no data ever) | failing (streak >=
+ * WORKER_FAIL_STREAK) | stale (nothing succeeded within the threshold) | ok.
+ * Alerts fire ONCE per episode on entry to stale/failing (email to OWNER_EMAIL
+ * + a vault `alert` note) and once more on recovery. The alerted flag persists
+ * in the worker cursor table so a restart mid-episode does not re-alert.
+ * Error text is scrubbed and truncated before it leaves this module.
+ */
+import { untrustedSkillCount } from "./skills";
+import { config } from "../config";
+import { getVaultRegistry, getWorkerCursor, setWorkerCursor } from "../db";
+import { getSecret, secretsConfigured } from "../secrets";
+import { vaultClient } from "../parachute";
+import { sendEmail } from "../auth/email";
+import { calendarMode, calendarSourceName } from "./calendar";
+import { PROTON_CREDENTIAL, protonMode } from "./proton";
+import { openCandidateCounts } from "../identity-store";
+import { lastLinkJobOutcome } from "../people-link-job";
+import { lastPeopleLinkSchedule, peopleLinkScheduleBusySkips, peopleLinkScheduleNextAt } from "./people-link-schedule";
+import { collabUnsavedStats } from "../db";
+import { lastVaultLintOutcome } from "./vault-lint";
+import { lastLinkHealthOutcome } from "./link-health";
+
+/** An unsaved live document older than this makes the `collab` source stale (alerted like any other). */
+const COLLAB_UNSAVED_STALE_MS = 60 * 60_000;
+
+export type SourceStatus = "ok" | "stale" | "failing" | "disabled";
+export type SourceKind = "server" | "desktop";
+
+export interface SourceHealth {
+  /** skills only: `agent-skill` notes the scheduler refused to run last pass. */
+  untrustedSkills?: number;
+  name: string;
+  kind: SourceKind;
+  vaultId: string;
+  lastSuccessAt: string | null;
+  lastError: string | null;
+  failureStreak: number;
+  staleAfterMs: number;
+  status: SourceStatus;
+  /** Source-specific numbers (only `people-link` sets it): counts, never content. */
+  detail?: Record<string, string | number | boolean | null>;
+}
+
+interface Rec {
+  lastSuccessAt: number | null;
+  lastErrorAt: number | null;
+  lastError: string | null;
+  streak: number;
+}
+
+const BOOT_AT = Date.now();
+const records = new Map<string, Rec>();
+const key = (vaultId: string, source: string) => `${vaultId}:${source}`;
+
+/** Strip anything secret-shaped and cap the length. Errors can echo URLs/headers. */
+export function scrubError(msg: string): string {
+  return msg
+    .replace(/(bearer|basic)\s+[A-Za-z0-9._~+/=-]+/gi, "$1 [redacted]")
+    .replace(/((?:token|key|secret|password|authorization)["']?\s*[=:]\s*)["']?[^\s"',;&]+/gi, "$1[redacted]")
+    .replace(/[A-Za-z0-9_-]{32,}/g, "[redacted]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 200);
+}
+
+/** Called by the scheduler after every run of a source. */
+export function recordSourceOutcome(vaultId: string, source: string, err: Error | null, now = Date.now()): void {
+  const k = key(vaultId, source);
+  const r = records.get(k) ?? { lastSuccessAt: null, lastErrorAt: null, lastError: null, streak: 0 };
+  if (err) {
+    r.streak++;
+    r.lastErrorAt = now;
+    r.lastError = scrubError(err.message);
+  } else {
+    r.streak = 0;
+    r.lastSuccessAt = now;
+  }
+  records.set(k, r);
+}
+
+export function resetSourceHealth(): void {
+  records.clear();
+  desktopCache = null;
+  desktopProbing = null;
+}
+
+/** Pure status computation. `lastSuccessAt` null = never observed since boot. */
+export function computeStatus(o: {
+  configured: boolean;
+  lastSuccessAt: number | null;
+  streak: number;
+  staleAfterMs: number;
+  now: number;
+  baselineAt: number;
+  failStreak?: number;
+}): SourceStatus {
+  if (!o.configured) return "disabled";
+  if (o.streak >= (o.failStreak ?? config.workerFailStreak)) return "failing";
+  if (o.staleAfterMs > 0 && o.now - (o.lastSuccessAt ?? o.baselineAt) > o.staleAfterMs) return "stale";
+  return "ok";
+}
+
+// ── desktop-owned sources, inferred from the vault ──────────────────────────
+
+interface DesktopSpec {
+  name: "email" | "calendar" | "skills";
+  tag: string;
+  pathPrefix?: string;
+  accept?: (n: { metadata?: Record<string, unknown> | null }) => boolean;
+}
+const DESKTOP: DesktopSpec[] = [
+  { name: "email", tag: "email", pathPrefix: "vault/messages/email/" },
+  { name: "calendar", tag: "meeting", pathPrefix: "vault/meetings/", accept: (n) => !!n.metadata?.calendarEventId },
+  { name: "skills", tag: "agent-dispatch" },
+];
+/** Desktop sources still inferred from the vault. With SKILLS_ENABLED=true the
+ *  server runs skills itself (worker/skills.ts), so "skills" is reported as an
+ *  authoritative SERVER source instead of being guessed from dispatch notes. */
+const desktopSpecs = (): DesktopSpec[] =>
+  DESKTOP.filter(
+    (s) =>
+      !(s.name === "skills" && config.skillsEnabled) &&
+      !(s.name === "email" && config.gmailSyncEnabled) &&
+      // A LIVE server Proton ingest writes the email notes itself (WP1.2b).
+      !(s.name === "email" && protonMode() === "live") &&
+      // Only a LIVE server calendar owns the source; a shadow run leaves the desktop inferred.
+      !(s.name === "calendar" && calendarMode() === "live"),
+  );
+
+interface VaultNoteLike {
+  path?: string | null;
+  metadata?: Record<string, unknown> | null;
+  updatedAt?: string | null;
+  createdAt?: string;
+}
+interface DesktopProbe {
+  newestAt: number | null;
+  error: string | null;
+  streak: number;
+}
+let desktopCache: { at: number; byName: Map<string, DesktopProbe> } | null = null;
+let desktopProbing: Promise<void> | null = null;
+
+export type Lister = (o: { tags: string[]; pathPrefix?: string; limit: number; orderBy: "updated_at" }) => Promise<VaultNoteLike[]>;
+
+/** Newest updatedAt for one desktop source. The list params are best-effort
+ *  server-side (limit/order_by/path_prefix); results are re-filtered and re-maxed
+ *  client-side so a vault that ignores them still yields a correct answer. */
+async function newestNoteAt(spec: DesktopSpec, list: Lister): Promise<number | null> {
+  const notes = await list({ tags: [spec.tag], pathPrefix: spec.pathPrefix, limit: spec.accept ? 10 : 1, orderBy: "updated_at" });
+  let newest: number | null = null;
+  for (const n of notes) {
+    if (spec.pathPrefix && !(n.path ?? "").startsWith(spec.pathPrefix)) continue;
+    if (spec.accept && !spec.accept(n)) continue;
+    const t = Date.parse(n.updatedAt ?? n.createdAt ?? "");
+    if (Number.isFinite(t) && (newest === null || t > newest)) newest = t;
+  }
+  return newest;
+}
+
+async function probeDesktop(list: Lister, now: number): Promise<void> {
+  const prev = desktopCache?.byName;
+  const byName = new Map<string, DesktopProbe>();
+  for (const spec of desktopSpecs()) {
+    const before = prev?.get(spec.name);
+    try {
+      byName.set(spec.name, { newestAt: await newestNoteAt(spec, list), error: null, streak: 0 });
+    } catch (e) {
+      // A failed probe keeps the last known freshness; it never makes a source look fresh.
+      byName.set(spec.name, { newestAt: before?.newestAt ?? null, error: scrubError((e as Error).message), streak: (before?.streak ?? 0) + 1 });
+    }
+  }
+  desktopCache = { at: now, byName };
+}
+
+/** Refresh the desktop probe if the cache is older than WORKER_DESKTOP_PROBE_MS.
+ *  Concurrent callers share one in-flight probe. */
+async function ensureDesktop(list: Lister | undefined, now: number): Promise<void> {
+  if (desktopCache && now - desktopCache.at < config.workerDesktopProbeMs) return;
+  if (!desktopProbing) {
+    const l: Lister = list ?? ((o) => vaultClient().listNotes(o) as Promise<VaultNoteLike[]>);
+    desktopProbing = probeDesktop(l, now).finally(() => {
+      desktopProbing = null;
+    });
+  }
+  await desktopProbing;
+}
+
+// ── snapshot ─────────────────────────────────────────────────────────────────
+
+const SERVER_SOURCES = ["matrix", "clickup", "fireflies", "fathom"] as const;
+
+function iso(t: number | null): string | null {
+  return t === null ? null : new Date(t).toISOString();
+}
+
+/** Room ids under the `matrix-lost` worker cursor (written by worker/scheduler.ts; read
+ *  here straight from settings — the scheduler imports this module, not the reverse). */
+function matrixLost(vaultId: string): string[] {
+  try {
+    const v = JSON.parse(getWorkerCursor(vaultId, "matrix-lost") ?? "[]");
+    return Array.isArray(v) ? v.map((x) => (x && typeof x.roomId === "string" ? x.roomId : null)).filter((x): x is string => !!x) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** How many rooms the reconcile sweep still owes an answer about / has given up on
+ *  (worker cursors written by worker/scheduler.ts). Counts only. */
+function matrixReconcileCounts(vaultId: string): { owed: number; stuck: number } {
+  const n = (kind: string): number => {
+    try {
+      const v = JSON.parse(getWorkerCursor(vaultId, kind) || "[]");
+      return Array.isArray(v) ? v.length : 0;
+    } catch {
+      return 0;
+    }
+  };
+  return { owed: n("matrix-reconcile-retry"), stuck: n("matrix-reconcile-stuck") };
+}
+
+export async function getSourceHealth(opts: { now?: number; list?: Lister } = {}): Promise<SourceHealth[]> {
+  const now = opts.now ?? Date.now();
+  const out: SourceHealth[] = [];
+
+  for (const entry of getVaultRegistry()) {
+    for (const src of SERVER_SOURCES) {
+      const r = records.get(key(entry.id, src));
+      const configured = secretsConfigured() && !!getSecret(entry.id, config.ownerEmail, src);
+      const interval = src === "clickup" ? config.clickupIntervalMs : src === "fathom" ? config.fathomIntervalMs : 1;
+      const staleAfterMs = interval <= 0 ? 0 : config.workerStaleMs[src];
+      // Matrix rooms given up on after N failed replays (their messages from a failed
+      // pass may be missing): `failing` — durably, across restarts — until the owner
+      // has looked and cleared them (DELETE /acl/workers/matrix/lost). Ids only.
+      const lost = src === "matrix" ? matrixLost(entry.id) : [];
+      // Rooms the hourly reconcile could not answer for: `reconcileOwed` are being retried with
+      // a back-off, `reconcileStuck` failed 6 times in a row (asked about in the rotation only).
+      const rec = src === "matrix" ? matrixReconcileCounts(entry.id) : { owed: 0, stuck: 0 };
+      out.push({
+        name: entry.id === "primary" ? src : `${src}@${entry.id}`,
+        kind: "server",
+        vaultId: entry.id,
+        lastSuccessAt: iso(r?.lastSuccessAt ?? null),
+        lastError: lost.length
+          ? `${lost.length} room(s) given up on after repeated failed replays — messages may be missing (${lost.slice(0, 5).join(", ")}${lost.length > 5 ? ", …" : ""}); review, then clear with DELETE /acl/workers/matrix/lost`
+          : (r?.lastError ?? null),
+        failureStreak: r?.streak ?? 0,
+        staleAfterMs,
+        status: lost.length ? "failing" : computeStatus({ configured, lastSuccessAt: r?.lastSuccessAt ?? null, streak: r?.streak ?? 0, staleAfterMs, now, baselineAt: BOOT_AT }),
+        ...(src === "matrix" && (rec.owed || rec.stuck) ? { detail: { reconcileOwed: rec.owed, reconcileStuck: rec.stuck } } : {}),
+      });
+    }
+  }
+  {
+    const r = records.get(key("primary", "index"));
+    const staleAfterMs = config.indexIntervalMs > 0 ? config.indexIntervalMs * 3 : 0;
+    out.push({
+      name: "index",
+      kind: "server",
+      vaultId: "primary",
+      lastSuccessAt: iso(r?.lastSuccessAt ?? null),
+      lastError: r?.lastError ?? null,
+      failureStreak: r?.streak ?? 0,
+      staleAfterMs,
+      status: computeStatus({ configured: config.indexIntervalMs > 0, lastSuccessAt: r?.lastSuccessAt ?? null, streak: r?.streak ?? 0, staleAfterMs, now, baselineAt: BOOT_AT }),
+    });
+  }
+
+  if (config.gmailSyncEnabled) {
+    // Server-owned email (WP1.2): per vault, configured = a `google` credential.
+    for (const entry of getVaultRegistry()) {
+      const r = records.get(key(entry.id, "email"));
+      const configured = secretsConfigured() && !!getSecret(entry.id, config.ownerEmail, "google");
+      const staleAfterMs = config.gmailIntervalMs <= 0 ? 0 : config.workerStaleMs.email;
+      out.push({
+        name: entry.id === "primary" ? "email" : `email@${entry.id}`,
+        kind: "server",
+        vaultId: entry.id,
+        lastSuccessAt: iso(r?.lastSuccessAt ?? null),
+        lastError: r?.lastError ?? null,
+        failureStreak: r?.streak ?? 0,
+        staleAfterMs,
+        status: computeStatus({ configured, lastSuccessAt: r?.lastSuccessAt ?? null, streak: r?.streak ?? 0, staleAfterMs, now, baselineAt: BOOT_AT }),
+      });
+    }
+  }
+
+  if (calendarMode() !== "off") {
+    // Server calendar (WP1.3): "calendar" when live (authoritative — the desktop
+    // inference is dropped), "calendar-shadow" while shadowing the desktop.
+    const src = calendarSourceName();
+    for (const entry of getVaultRegistry()) {
+      const r = records.get(key(entry.id, src));
+      const configured = secretsConfigured() && !!getSecret(entry.id, config.ownerEmail, "google");
+      const staleAfterMs = config.calendarIntervalMs <= 0 ? 0 : config.workerStaleMs.calendarServer;
+      out.push({
+        name: entry.id === "primary" ? src : `${src}@${entry.id}`,
+        kind: "server",
+        vaultId: entry.id,
+        lastSuccessAt: iso(r?.lastSuccessAt ?? null),
+        lastError: r?.lastError ?? null,
+        failureStreak: r?.streak ?? 0,
+        staleAfterMs,
+        status: computeStatus({ configured, lastSuccessAt: r?.lastSuccessAt ?? null, streak: r?.streak ?? 0, staleAfterMs, now, baselineAt: BOOT_AT }),
+      });
+    }
+  }
+
+  if (protonMode() !== "off") {
+    // Server Proton Bridge ingest (WP1.2b): one "proton" source in shadow AND live
+    // (a shadow pass connects + diffs every interval too); configured = credential.
+    for (const entry of getVaultRegistry()) {
+      const r = records.get(key(entry.id, "proton"));
+      const configured = secretsConfigured() && !!getSecret(entry.id, config.ownerEmail, PROTON_CREDENTIAL);
+      const staleAfterMs = config.protonIntervalMs <= 0 ? 0 : config.workerStaleMs.proton;
+      out.push({
+        name: entry.id === "primary" ? "proton" : `proton@${entry.id}`,
+        kind: "server",
+        vaultId: entry.id,
+        lastSuccessAt: iso(r?.lastSuccessAt ?? null),
+        lastError: r?.lastError ?? null,
+        failureStreak: r?.streak ?? 0,
+        staleAfterMs,
+        status: computeStatus({ configured, lastSuccessAt: r?.lastSuccessAt ?? null, streak: r?.streak ?? 0, staleAfterMs, now, baselineAt: BOOT_AT }),
+      });
+    }
+  }
+
+  if (config.skillsEnabled) {
+    const r = records.get(key("primary", "skills"));
+    const staleAfterMs = config.workerStaleMs.skills;
+    out.push({
+      name: "skills",
+      kind: "server",
+      vaultId: "primary",
+      lastSuccessAt: iso(r?.lastSuccessAt ?? null),
+      lastError: r?.lastError ?? null,
+      failureStreak: r?.streak ?? 0,
+      staleAfterMs,
+      status: computeStatus({ configured: true, lastSuccessAt: r?.lastSuccessAt ?? null, streak: r?.streak ?? 0, staleAfterMs, now, baselineAt: BOOT_AT }),
+      // `agent-skill` notes the scheduler refused to run (wrong location / non-owner creator).
+      untrustedSkills: untrustedSkillCount(),
+    });
+  }
+
+  // Identity + linking layer: the review-queue depth and the last backfill job.
+  // Reported only once there is something to say (a job has run, or identities
+  // are waiting) and it never goes `stale` — a queue is the owner's to-do list,
+  // not an outage. Only repeated job ERRORS (WORKER_FAIL_STREAK) alert.
+  for (const entry of getVaultRegistry()) {
+    const last = lastLinkJobOutcome(entry.id);
+    const open = openCandidateCounts(entry.id);
+    // The scheduled run (primary vault only): the source is then always listed, and it
+    // goes `stale` when no job has ended without an error for two intervals.
+    const scheduled = entry.id === "primary" && config.peopleLinkScheduleEnabled && config.peopleLinkScheduleMs > 0;
+    if (!last && !open.total && !scheduled) continue;
+    const lastSuccessAt = last?.lastSuccessAt ? Date.parse(last.lastSuccessAt) : null;
+    const staleAfterMs = scheduled ? config.peopleLinkScheduleMs * 2 : 0;
+    const sched = scheduled ? lastPeopleLinkSchedule(entry.id) : null;
+    const nextAt = scheduled ? peopleLinkScheduleNextAt(entry.id) : null;
+    out.push({
+      name: entry.id === "primary" ? "people-link" : `people-link@${entry.id}`,
+      kind: "server",
+      vaultId: entry.id,
+      lastSuccessAt: iso(Number.isFinite(lastSuccessAt as number) ? lastSuccessAt : null),
+      lastError: last?.error ? scrubError(last.error) : null,
+      failureStreak: last?.failStreak ?? 0,
+      staleAfterMs,
+      status: computeStatus({ configured: true, lastSuccessAt, streak: last?.failStreak ?? 0, staleAfterMs, now, baselineAt: BOOT_AT }),
+      detail: {
+        openCandidates: open.total,
+        lastJobStatus: last?.status ?? null,
+        lastJobAt: last?.at ?? null,
+        lastJobDryRun: last?.dryRun ?? null,
+        lastJobWrites: last?.writes ?? null,
+        lastJobLinked: last?.linked ?? null,
+        lastJobQueued: last?.queued ?? null,
+        lastJobScheduled: last?.scheduled ?? null,
+        lastJobWouldLink: last?.wouldLink ?? null,
+        lastJobCapped: last?.capped ?? null,
+        ...(scheduled
+          ? {
+              scheduleEnabled: true,
+              scheduleDryRun: config.peopleLinkScheduleDryRun,
+              scheduleLastStartedAt: sched?.at ?? null,
+              scheduleLastStatus: sched?.status ?? null,
+              scheduleNextAt: nextAt === null ? null : new Date(nextAt || now).toISOString(),
+              scheduleBusySkips: peopleLinkScheduleBusySkips(),
+            }
+          : {}),
+      },
+    });
+  }
+
+  // Field-shape lint (worker/vault-lint.ts): read-only daily sample. `failing` (→ alert)
+  // when a tag's share of mis-shaped notes is over VAULT_LINT_MAX_RATE; stale when the
+  // daily run has not happened for two intervals. Counts and field names only.
+  if (config.vaultLintEnabled) {
+    const last = lastVaultLintOutcome("primary");
+    const at = last ? Date.parse(last.at) : NaN;
+    const okAt = last && last.status !== "error" && Number.isFinite(at) ? at : null;
+    const streak = last && last.status !== "ok" ? config.workerFailStreak : 0;
+    const staleAfterMs = config.vaultLintIntervalMs > 0 ? config.vaultLintIntervalMs * 2 : 0;
+    const detail: Record<string, string | number | boolean | null> = {
+      lastRunAt: last?.at ?? null,
+      over: last?.over.join(",") || null,
+      rose: last?.rose.join(",") || null,
+    };
+    for (const [tag, t] of Object.entries(last?.tags ?? {})) {
+      detail[`rate.${tag}`] = t.rate;
+      // New drift + who wrote it + declared-schema breaks: only when there is something to say.
+      if (t.fresh) detail[`fresh.${tag}`] = t.fresh;
+      if (t.declaredWarned) detail[`declared.${tag}`] = Object.entries(t.declared ?? {}).map(([f, n]) => `${f}=${n}`).join(",").slice(0, 200);
+      const w = Object.entries(t.writers ?? {});
+      if (w.length) detail[`writers.${tag}`] = w.map(([name, n]) => `${name}=${n}`).join(",").slice(0, 200);
+    }
+    detail.freshOver = last?.freshOver?.join(",") || null;
+    detail.overReportOnly = last?.overReportOnly?.join(",") || null;
+    out.push({
+      name: "vault-lint",
+      kind: "server",
+      vaultId: "primary",
+      lastSuccessAt: iso(okAt),
+      lastError: last?.error
+        ? scrubError(last.error)
+        : last?.over.length
+          ? `mis-shaped metadata above ${Math.round(config.vaultLintMaxRate * 100)}% in: ${last.over.map((t) => `${t} ${Math.round((last.tags[t]?.rate ?? 0) * 100)}%`).join(", ")}`
+          : last?.freshOver?.length
+            ? `newly written mis-shaped notes in: ${last.freshOver.map((t) => `${t} ${last.tags[t]?.fresh ?? 0} (${Object.keys(last.tags[t]?.writers ?? {}).join("/") || "unknown"})`).join(", ")}`
+            : null,
+      failureStreak: streak,
+      staleAfterMs,
+      status: computeStatus({ configured: true, lastSuccessAt: okAt, streak, staleAfterMs, now, baselineAt: BOOT_AT }),
+      detail,
+    });
+  }
+
+  // Link health (worker/link-health.ts): read-only daily shares of the newest notes that
+  // are linked to people / projects. `failing` (→ alert) when a measure is under its
+  // floor or has dropped below its running level. Measure names and numbers only.
+  if (config.linkHealthEnabled) {
+    const last = lastLinkHealthOutcome("primary");
+    const at = last ? Date.parse(last.at) : NaN;
+    const healthyAt = last?.lastSuccessAt ?? (last?.status === "ok" ? last.at : null);
+    const okAt = healthyAt && Number.isFinite(Date.parse(healthyAt)) ? Date.parse(healthyAt) : null;
+    const streak = last?.failureStreak ?? 0;
+    const staleAfterMs = config.linkHealthIntervalMs > 0 ? config.linkHealthIntervalMs * 2 : 0;
+    const detail: Record<string, string | number | boolean | null> = {
+      lastRunAt: last?.at ?? null,
+      taskCohortVersion: last?.taskCohortVersion ?? null,
+      low: last?.low.join(",") || null,
+      truncated: last?.truncated?.join(",") || null,
+    };
+    for (const [m, r] of Object.entries(last?.measures ?? {})) {
+      detail[`share.${m}`] = r.share;
+      detail[`n.${m}`] = r.n;
+      if (r.level !== null) detail[`level.${m}`] = r.level;
+    }
+    const pct = (x: number | null | undefined) => `${Math.round((x ?? 0) * 100)}%`;
+    out.push({
+      name: "link-health",
+      kind: "server",
+      vaultId: "primary",
+      lastSuccessAt: iso(okAt),
+      lastError: last?.error
+        ? scrubError(last.error)
+        : last?.low.length
+          ? `link measures off their usual level: ${last.low.map((m) => `${m} ${pct(last.measures[m]?.share)} (usual ${pct(last.measures[m]?.level)})`).join(", ")}`
+          : null,
+      failureStreak: streak,
+      staleAfterMs,
+      status: last && last.status !== "ok" ? "failing" : computeStatus({ configured: true, lastSuccessAt: Number.isFinite(at) ? at : null, streak: 0, staleAfterMs, now, baselineAt: BOOT_AT }),
+      detail,
+    });
+  }
+
+  // Live documents whose latest state has not reached the vault (collab.ts): the
+  // changes are safe in the server's document store, but the notes are behind.
+  // Reported once there is one; `stale` (→ the usual alert) when the OLDEST has been
+  // waiting for over an hour — or cannot be saved at all (`permanent`: the page is
+  // too large / the vault refuses it; its people are told on the page).
+  {
+    const unsaved = collabUnsavedStats();
+    if (unsaved.total > 0) {
+      out.push({
+        name: "collab",
+        kind: "server",
+        vaultId: "primary",
+        lastSuccessAt: iso(unsaved.oldestSince),
+        lastError: unsaved.permanent > 0 ? `${unsaved.permanent} page(s) cannot be saved to the vault (too large or refused)` : null,
+        // A page that can never be saved as it is counts as failing at once (it alerts).
+        failureStreak: unsaved.permanent > 0 ? config.workerFailStreak : 0,
+        staleAfterMs: COLLAB_UNSAVED_STALE_MS,
+        status: computeStatus({ configured: true, lastSuccessAt: unsaved.oldestSince, streak: unsaved.permanent > 0 ? config.workerFailStreak : 0, staleAfterMs: COLLAB_UNSAVED_STALE_MS, now, baselineAt: BOOT_AT }),
+        detail: { unsaved: unsaved.total, permanent: unsaved.permanent, oldestAgeMs: unsaved.oldestSince === null ? null : Math.max(0, now - unsaved.oldestSince) },
+      });
+    }
+  }
+
+  await ensureDesktop(opts.list, now);
+  for (const spec of desktopSpecs()) {
+    const p = desktopCache?.byName.get(spec.name);
+    const staleAfterMs = config.workerStaleMs[spec.name];
+    const newest = p?.newestAt ?? null;
+    out.push({
+      name: spec.name,
+      kind: "desktop",
+      vaultId: "primary",
+      lastSuccessAt: iso(newest),
+      lastError: p?.error ?? null,
+      failureStreak: p?.streak ?? 0,
+      staleAfterMs,
+      // No note of this kind ever → the source was never set up; nothing to alert on.
+      status: computeStatus({ configured: newest !== null, lastSuccessAt: newest, streak: p?.streak ?? 0, staleAfterMs, now, baselineAt: BOOT_AT }),
+    });
+  }
+  return out;
+}
+
+// ── alerts (once per episode) ────────────────────────────────────────────────
+
+export interface AlertDeps {
+  send: (to: string, subject: string, html: string, devLine?: string) => Promise<unknown>;
+  writeNote: (n: { path: string; content: string; tags: string[]; metadata: Record<string, unknown> }) => Promise<unknown>;
+  getFlag: (vaultId: string, name: string) => string | null;
+  setFlag: (vaultId: string, name: string, v: string) => void;
+}
+
+const defaultDeps: AlertDeps = {
+  send: (to, subject, html, dev) => sendEmail(to, subject, html, dev),
+  writeNote: (n) => vaultClient().createNote(n),
+  getFlag: (v, name) => getWorkerCursor(v, name),
+  setFlag: (v, name, val) => setWorkerCursor(v, name, val),
+};
+
+const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+
+function describe(h: SourceHealth, now: number): string {
+  const since = h.lastSuccessAt ? `last success ${Math.round((now - Date.parse(h.lastSuccessAt)) / 60_000)} min ago` : "no success observed since server start";
+  const err = h.lastError ? ` Last error: ${h.lastError}.` : "";
+  return `${h.name} is ${h.status} (${since}; ${h.failureStreak} consecutive failure(s); threshold ${Math.round(h.staleAfterMs / 60_000)} min).${err}`;
+}
+
+/**
+ * Evaluate transitions and alert. Safe to call every tick: the persisted flag
+ * makes it idempotent within an episode. Never throws (alerting must not break
+ * the worker). Returns what it did, for tests.
+ */
+export async function evaluateAlerts(
+  health: SourceHealth[],
+  opts: { now?: number; deps?: Partial<AlertDeps>; force?: boolean } = {},
+): Promise<{ alerted: string[]; recovered: string[] }> {
+  const res = { alerted: [] as string[], recovered: [] as string[] };
+  if (!config.workerAlertsEnabled && !opts.force) return res;
+  const now = opts.now ?? Date.now();
+  const deps = { ...defaultDeps, ...opts.deps };
+  for (const h of health) {
+    try {
+      const fk = `health-alerted:${h.name}`;
+      const alerted = deps.getFlag(h.vaultId, fk) === "1";
+      const bad = h.status === "stale" || h.status === "failing";
+      if (bad && !alerted) {
+        deps.setFlag(h.vaultId, fk, "1"); // claim first: a slow send must not double-fire
+        res.alerted.push(h.name);
+        await notify(deps, h, now, false);
+      } else if (!bad && alerted) {
+        deps.setFlag(h.vaultId, fk, "0");
+        if (h.status === "ok") {
+          res.recovered.push(h.name);
+          await notify(deps, h, now, true);
+        } // "disabled" just closes the episode silently
+      }
+    } catch (e) {
+      console.warn(`[health] alert for ${h.name} failed: ${scrubError((e as Error).message)}`);
+    }
+  }
+  return res;
+}
+
+async function notify(deps: AlertDeps, h: SourceHealth, now: number, recovered: boolean): Promise<void> {
+  const text = recovered ? `${h.name} has recovered.` : describe(h, now);
+  const subject = recovered ? `[Prism] ${h.name} recovered` : `[Prism] ${h.name} is ${h.status}`;
+  console[recovered ? "log" : "warn"](`[health] ${recovered ? "RECOVERED" : "ALERT"} ${text}`);
+  const d = new Date(now).toISOString();
+  const stamp = d.slice(0, 10) + "-" + d.slice(11, 16).replace(":", "");
+  await deps
+    .writeNote({
+      path: `vault/agent/alerts/${stamp}-${h.name.replace(/[^a-z0-9]+/gi, "-")}${recovered ? "-recovered" : ""}`,
+      content: `# ${subject}\n\n${text}\n\nSource kind: ${h.kind}. Generated by the Prism server worker health check.\n`,
+      tags: ["alert"],
+      metadata: { source: h.name, status: recovered ? "recovered" : h.status, kind: h.kind, at: d },
+    })
+    .catch((e: Error) => console.warn(`[health] alert note for ${h.name} failed: ${scrubError(e.message)}`));
+  if (config.ownerEmail) {
+    await deps
+      .send(config.ownerEmail, subject, `<p>${esc(text)}</p>`, text)
+      .catch((e: Error) => console.warn(`[health] alert email for ${h.name} failed: ${scrubError(e.message)}`));
+  }
+}
+
+/** One scheduler pass: snapshot + alerts. Isolated — never throws. */
+export async function runHealthCheckOnce(): Promise<void> {
+  if (!config.workerAlertsEnabled) return; // status stays available on demand via GET /acl/workers
+  try {
+    await evaluateAlerts(await getSourceHealth());
+  } catch (e) {
+    console.warn("[health] check failed:", scrubError((e as Error).message));
+  }
+}
