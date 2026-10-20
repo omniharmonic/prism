@@ -34,7 +34,7 @@ guard_isolation
 [ "$DRY_RUN" = 1 ] && echo "▶ DRY RUN: checks run, nothing is created, started or written"
 
 [ -x "$DEMO_BUNDLE/bin/prism" ] || die "no host bundle at $DEMO_BUNDLE (unpack prism-host-<version>-darwin-arm64.tar.gz there)"
-[ -x "$PARACHUTE_BIN" ] && [ -x "$PARACHUTE_VAULT_BIN" ] || die "stock Parachute is not installed for $DEMO_USER: curl -fsSL https://bun.sh/install | bash; ~/.bun/bin/bun add -g @openparachute/hub@0.7.19 @openparachute/vault@0.7.9"
+if [ ! -x "$PARACHUTE_BIN" ] || [ ! -x "$PARACHUTE_VAULT_BIN" ]; then die "stock Parachute is not installed for $DEMO_USER: curl -fsSL https://bun.sh/install | bash; ~/.bun/bin/bun add -g @openparachute/hub@0.7.19 @openparachute/vault@0.7.9"; fi
 [ -n "$NODE" ] || die "no node: the bundle's runtime/node/bin/node is missing"
 
 HUB="http://127.0.0.1:$DEMO_HUB_PORT"

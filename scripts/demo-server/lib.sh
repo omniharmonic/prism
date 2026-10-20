@@ -66,7 +66,7 @@ guard_isolation() {
   local p seen=""
   for p in "$DEMO_SERVER_PORT" "$DEMO_HUB_PORT" "$DEMO_VAULT_PORT"; do
     case "$p" in ''|*[!0-9]*) die "port '$p' is not a number" ;; esac
-    [ "$p" -ge 1024 ] && [ "$p" -le 65535 ] || die "port $p is out of range"
+    if [ "$p" -lt 1024 ] || [ "$p" -gt 65535 ]; then die "port $p is out of range"; fi
     case " $PRODUCTION_PORTS " in *" $p "*) die "port $p is a PRODUCTION port ($PRODUCTION_PORTS)" ;; esac
     case " $seen " in *" $p "*) die "port $p is used twice" ;; esac
     seen="$seen $p"

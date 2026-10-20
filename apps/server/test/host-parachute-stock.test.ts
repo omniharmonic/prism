@@ -552,7 +552,8 @@ test("adminExists / vaultExists read the files Parachute writes", () => {
   assert.equal(vaultExists(h, "default"), true);
 });
 
-test("the person's set-password command runs from a Terminal whose PATH has no bun (clean-VM finding)", () => {
+// The command is pasted into a Mac Terminal (zsh); Linux CI has no /bin/zsh.
+test("the person's set-password command runs from a Terminal whose PATH has no bun (clean-VM finding)", { skip: !existsSync("/bin/zsh") && "no /bin/zsh (not macOS)" }, () => {
   // A fresh Mac account has no ~/.zshrc, so bun's installer leaves ~/.bun/bin off PATH; the stock
   // CLI is `#!/usr/bin/env bun`. The command must work as pasted.
   const root = mkdtempSync(join(tmpdir(), "prism-setpw-"));

@@ -122,7 +122,8 @@ test("guards: production ports, non-loopback targets and a demo .env pointing at
   assert.match(lib.demoEnvProblem({ ...ok, PARACHUTE_HOME: "" }), /PARACHUTE_HOME/);
 });
 
-test("the kit holds no personal data: the public-snapshot patterns find nothing in it (content included)", () => {
+// The scanner is private tooling (left out of the public snapshot), so the public repo skips this.
+test("the kit holds no personal data: the public-snapshot patterns find nothing in it (content included)", { skip: !existsSync(join(ROOT, "scripts/public-snapshot/scan.mjs")) && "public-snapshot scanner not in this checkout" }, () => {
   const scan = readFileSync(join(ROOT, "scripts/public-snapshot/scan.mjs"), "utf8");
   const list = (name: string) => {
     const body = new RegExp(`const ${name} = \\[([\\s\\S]*?)\\];`).exec(scan)?.[1] ?? "";
