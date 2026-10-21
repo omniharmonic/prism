@@ -22,6 +22,9 @@ pub="$repo/apps/client/src-tauri/updater/updater.key.pub"
 [[ -d "$app/Contents" ]] || { echo "updater-archive: $app is not an app bundle" >&2; exit 2; }
 [[ -f "$pub" ]] || { echo "updater-archive: no committed public key at $pub (the updater is off)" >&2; exit 1; }
 [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]] || { echo "updater-archive: TAURI_SIGNING_PRIVATE_KEY is not set" >&2; exit 1; }
+# Absolute: the signer below runs from apps/client, where a relative <out> names another file.
+mkdir -p "$(dirname "$out")"
+out="$(cd "$(dirname "$out")" && pwd)/$(basename "$out")"
 
 rm -f "$out" "$out.sig"
 COPYFILE_DISABLE=1 /usr/bin/tar --no-mac-metadata --no-xattrs --uid 0 --gid 0 --uname "" --gname "" \
