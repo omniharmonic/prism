@@ -125,10 +125,6 @@ jobs:
       - name: Check (typecheck all workspaces + e2e specs, static guards)
         run: npm run check
 
-      - name: Client unit tests (host target)
-        working-directory: apps/client/src-tauri
-        run: cargo test --lib
-
       # ── Build (unsigned; signing is done below, inside out, by our own scripts) ─────────────────
       - name: Build the app
         working-directory: apps/client
@@ -142,6 +138,11 @@ jobs:
           if [[ "$UPDATER" == true ]]; then export PRISM_UPDATER_ENDPOINT="$ENDPOINT"; fi
           # The DMG is made by make-dmg.sh from the app AFTER it is signed, notarized and stapled.
           npm run tauri build -- --bundles app --ci
+
+      # After the build: generate_context! needs apps/web/dist-native, which `tauri build` makes.
+      - name: Client unit tests (host target)
+        working-directory: apps/client/src-tauri
+        run: cargo test --lib
 
       - name: Verify the client (CSP, capabilities, IPC lists, updater rules, the bundled native web build)
         # The web build checked here is the one `tauri build` just bundled (its beforeBuildCommand).

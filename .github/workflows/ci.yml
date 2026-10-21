@@ -41,6 +41,8 @@ jobs:
       # The public repository is a snapshot of this one; this exports it to a temp dir and fails
       # on the owner's personal data or on app identity outside the signing/config files.
       - name: Public snapshot scan
+        # The tooling is private: the public repository (the snapshot itself) has none to run.
+        if: hashFiles('scripts/public-snapshot/export.sh') != ''
         run: scripts/public-snapshot/export.sh --check
 
   e2e-shards:
