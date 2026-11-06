@@ -653,7 +653,7 @@ step) is the owner's call (launch plan Phase 1, "Version policy").
 
 `.github/workflows/release.yml`, on a tag **`prism-host-v<version>`** (it must equal the root
 `package.json` version, else the job fails) or by hand (`workflow_dispatch`; a draft release only
-when `draft_release` is ticked, otherwise a workflow artifact). Runner: `macos-14` (Apple silicon).
+when `draft_release` is ticked, otherwise a workflow artifact). Runner: `macos-15` (Apple silicon; GitHub retired `macos-14`).
 
 | Step | What it proves |
 |---|---|

@@ -87,7 +87,7 @@ token.
 `.github/workflows/release-client.yml`, on a tag **`prism-client-v<version>`** (it must equal the
 root `package.json` version — `scripts/version.mjs` keeps every place in step — else the job fails)
 or by hand (`workflow_dispatch`; a draft release only when `draft_release` is ticked, otherwise a
-workflow artifact). Runner `macos-14` (Apple silicon); the build is **arm64 only** (no Intel build).
+workflow artifact). Runner `macos-15` (Apple silicon; GitHub retired `macos-14`); the build is **arm64 only** (no Intel build).
 **Never run `tauri build`, `codesign` or `notarytool` on the Mac mini for a release** — CI holds the
 signing secrets, which also ends the over-SSH `errSecInternalComponent` problem of the manual
 runbook (`docs/runbook/mac-mini-signing.md`, kept as the fallback).
