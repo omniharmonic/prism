@@ -61,13 +61,15 @@ export const omniConfig = {
     const raw = process.env.OMNI_EXECUTOR_KINDS;
     if (raw === undefined) return true;
     const kinds = raw.split(",").map(k => k.trim());
-    const known = new Set(["email", "email-reply", "message", "calendar-rsvp", "calendar-invite", "tweet", "wallet-proposal"]);
+    const known = new Set(["email", "email-reply", "message", "calendar-rsvp", "calendar-invite", "tweet", "wallet-proposal", "action"]);
     return kinds.length > 0 && kinds.every(k => known.has(k)) && kinds.includes(kind);
   },
   executorsOff: (): boolean => (env("OMNI_EXECUTORS") ?? "").toLowerCase() === "off",
   /** `OMNI_COMMAND_APPROVALS=off`: a tool call Hermes paused for approval can never be
    *  approved (so it never runs). On by default. */
   commandApprovalsOff: (): boolean => (env("OMNI_COMMAND_APPROVALS") ?? "").toLowerCase() === "off",
+  /** `OMNI_ACTION_APPROVALS=off`: an `action` approval can never be approved (no turn starts). On by default. */
+  actionApprovalsOff: (): boolean => (env("OMNI_ACTION_APPROVALS") ?? "").toLowerCase() === "off",
   /** Absolute path to proton_send.py. Unset = approved emails are refused (executor_disabled). */
   protonSendPath: (): string | undefined => env("OMNI_PROTON_SEND"),
   /** Python used to run it (the agent repo's venv on the Mini). */

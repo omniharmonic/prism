@@ -71,7 +71,10 @@ function client(fetchFn, base, cookie) {
   return async (method, path, body) => {
     const r = await fetchFn(`${base}${path}`, {
       method,
-      headers: { ...(cookie ? { cookie } : {}), ...(body !== undefined ? { "content-type": "application/json" } : {}) },
+      // Every write says JSON, also a bodiless DELETE: Prism Server ≤ 0.9.0's cross-site write guard
+      // read a bodiless request without Content-Length as an untyped body (415), and fetch can
+      // send no Content-Length: 0 on a DELETE. A JSON type with no body passes every version.
+      headers: { ...(cookie ? { cookie } : {}), ...(body !== undefined || (method !== "GET" && method !== "HEAD") ? { "content-type": "application/json" } : {}) },
       body: body === undefined ? undefined : JSON.stringify(body),
       redirect: "manual",
     });

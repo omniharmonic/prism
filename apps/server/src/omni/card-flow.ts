@@ -16,7 +16,7 @@ import { recordProactiveOwnerTurn } from "./proactive";
 import { emit, onTurnEnded, startTurn, withNotes } from "./turns";
 import { publishNotice, pushOmni } from "./bus";
 import { ensureSourceSession } from "./source-session";
-import { ACTED_STATES, FLAGGABLE_STATES, REOPENABLE_STATES, CardError, cardVersion, cardBySource, cardForApproval, cardsByThread, cardSourceKeys, cardView, compareCardViews, finishCardAction, getCard, linkApproval, replaceCardContent, listOpenCards, parseCardInput, priorCardAction, releaseCardAction, reserveCardAction, transitionCard, upsertCard, type CardOption, type Card, type CardFact, type CardInput, type CardKind, type CardSection, type CardState } from "./cards";
+import { displayUrgency, expireStaleCards, ACTED_STATES, FLAGGABLE_STATES, REOPENABLE_STATES, CardError, cardVersion, cardBySource, cardForApproval, cardsByThread, cardSourceKeys, cardView, compareCardViews, finishCardAction, getCard, linkApproval, replaceCardContent, listOpenCards, SENDABLE_KINDS, parseCardInput, priorCardAction, releaseCardAction, reserveCardAction, transitionCard, upsertCard, type CardOption, type Card, type CardFact, type CardInput, type CardKind, type CardSection, type CardState } from "./cards";
 
 const NOTE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 export interface CardPublish extends CardInput { evidence: Array<{ sourceId: string; revision: string }> }
@@ -150,7 +150,7 @@ export function transitionalCardView(n: Nudge, now: number = Date.now()): Record
   const context = summary && summary.toLowerCase() !== c.title.trim().toLowerCase() ? [{ text: summary, source: null }] : [];
   return {
     id: n.id, sourceKey: c.sourceId, kind: nudgeCardKind(c), state: "proposed", headline: clip(c.title, 160), context, ask: null,
-    urgency: n.deadline !== null && n.deadline <= now + 86_400_000 ? "today" : "this-week", options: [], recommended: null,
+    urgency: displayUrgency(n.deadline, now), dueAt: n.deadline === null ? null : new Date(n.deadline).toISOString(), overdue: n.deadline !== null && n.deadline < now, options: [], recommended: null,
     itemRefs: c.operationalSource ? [] : [c.sourceId], threadId: n.threadId, approvalIds: [], chosenOptionId: null, outcomes: [],
     createdAt: new Date(n.createdAt).toISOString(), updatedAt: new Date(n.updatedAt).toISOString(), snoozedUntil: null,
     section: "decide", transitional: true, nudgeId: n.id,
@@ -159,6 +159,7 @@ export function transitionalCardView(n: Nudge, now: number = Date.now()): Record
 
 export function listCardViews(owner: string, now: number = Date.now()): { cards: Record<string, unknown>[]; counts: Record<CardSection, number> } {
   settleCardDrafts(owner, now);
+  expireStaleCards(owner, now);
   const carded = cardSourceKeys(owner);
   const cards = [
     ...listOpenCards(owner, now).map((c) => cardView(c, now)),
@@ -480,6 +481,17 @@ export function cardAfterTurnEnded(threadId: string, status: string): void {
       continue;
     }
     if (c.state !== "working") continue;
+    // An option Omni carried out itself (nothing it produces reaches another person) is finished when its turn ends well.
+    const option = c.options.find((o) => o.id === c.chosenOptionId);
+    if (status === "done" && option && !option.produces.some((p) => SENDABLE_KINDS.has(p))) {
+      const finished = transitionCard(owner, c.id, ["working"], "done", { action: "completed", optionId: option.id });
+      if (finished) {
+        resolveNudgeSource(owner, finished.sourceKey);
+        recordCardFeedback(owner, finished, "done", Date.now());
+        announceCard(finished, "completed", { push: false });
+      }
+      continue;
+    }
     const next = transitionCard(owner, c.id, ["working"], "proposed", { action: "turn-ended", detail: status }, { chosenOptionId: null });
     if (next) announceCard(next, "turn-ended", { push: false });
   }
@@ -544,7 +556,7 @@ export async function updateCardFromThread(owner: string, threadId: string, b: R
     sourceKey: card.sourceKey, sourceRevision: card.sourceRevision, itemRefs: card.itemRefs,
     kind: b.kind ?? card.kind, headline: b.headline ?? card.headline, context: b.context ?? card.context,
     ask: b.ask === undefined ? card.ask : b.ask, urgency: b.urgency ?? card.urgency,
-    options: b.options, recommended: b.recommended ?? null,
+    options: b.options, recommended: b.recommended ?? null, dueAt: b.dueAt,
   });
   let droppedFacts = 0;
   if (b.context !== undefined) {

@@ -1,6 +1,6 @@
 {
   "name": "@prism/client",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "license": "PolyForm-Shield-1.0.0",
   "private": true,
   "description": "Prism Client: thin Tauri 2 shell over the native web build; talks only to a Prism Server with a device token.",

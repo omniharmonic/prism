@@ -76,7 +76,15 @@ const mediaType = (c: Context): string => (c.req.header("content-type") ?? "").s
 function hasBody(c: Context): boolean {
   const len = c.req.header("content-length");
   if (len !== undefined) return Number(len) > 0;
-  return c.req.header("transfer-encoding") !== undefined || c.req.raw.body !== null;
+  if (c.req.header("transfer-encoding") !== undefined) return true;
+  // On an HTTP/1.x socket a request carries a body only with Content-Length or Transfer-Encoding
+  // (RFC 9112 §6.3). @hono/node-server nonetheless attaches the IncomingMessage as a body stream to
+  // EVERY non-GET/HEAD request, so `raw.body !== null` read every bodiless DELETE a browser sends
+  // (the Fetch spec adds Content-Length: 0 only to POST/PUT) as an untyped body → 415 for every
+  // cookie DELETE in production (found 2026-11-06). Ask the socket when the adapter gives it to us.
+  const incoming = (c.env as { incoming?: { httpVersionMajor?: number } } | undefined)?.incoming;
+  if (incoming?.httpVersionMajor === 1) return false;
+  return c.req.raw.body !== null; // in-process requests (app.request) and anything else
 }
 
 function exempt(c: Context, path: string, type: string): boolean {

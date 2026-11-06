@@ -119,6 +119,8 @@ export function approvalHeadline(a: Pick<Approval, "kind" | "payload">): string 
       return h("Tweet ready to approve");
     case "wallet-proposal":
       return h("Wallet proposal to review");
+    case "action":
+      return h(s(p.title) ? `Approve: ${s(p.title)}` : "An action needs approval");
     case "command":
       return h(s(p.title) ? `Approve: ${s(p.title)}` : s(p.tool) ? `Approve a ${s(p.tool)} call` : "A command needs approval");
   }
@@ -134,6 +136,7 @@ export function approvalBody(a: Pick<Approval, "kind" | "payload" | "summary">):
     : a.kind === "email-reply" || a.kind === "message" ? pick(a.summary, p.body)
     : a.kind === "calendar-invite" ? pick(a.summary, p.start)
     : a.kind === "command" ? pick(a.summary, p.reason)
+    : a.kind === "action" ? pick(a.summary, p.reaches)
     : pick(a.summary, p.purpose);
   return raw ? notificationText(raw, BODY_MAX) : "";
 }

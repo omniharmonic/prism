@@ -46,6 +46,25 @@ port mints tokens its own vault rejects) is handled the way the Parachute compat
 `install.sh` writes `hub/run/hub.port` = `18939` **before** any token is minted, and rotates the
 operator token once if it names another issuer.
 
+**The canonical-port rule (found on the Mini, 2026-11-05).** Stock hub 0.7.x's supervisor snaps
+every first-party module back to its compiled-in port before spawning it
+(`commands/serve-boot.ts` `reconcilePortToCanonical`) — for the vault that is **1940, production's
+port**, whatever `vault/config.yaml` says. Its only exception is another row of the *same*
+`services.json` already holding that port; it never looks at what listens on the machine. The
+first run therefore started the demo vault on 1940 (production happened to be down, see below).
+`install.sh` now writes a placeholder row `prism-demo-port-reservation` on 1940 into the demo's
+`services.json` before the hub starts (no `installDir` and an unknown name → the supervisor skips
+it, `no-spec`; **no `paths`** → the hub never proxies anything to it), keeps the vault row on
+18940, and after the start refuses — and stops the agent — if the demo user listens on any
+production port. A Parachute upgrade or `parachute doctor --fix` could remove the row: re-run
+`install.sh` after either (it checks the row every run).
+
+**Keep BOTH macOS users logged in.** Every launchd agent here and in production lives in its
+user's `gui/<uid>` domain, which exists only while that user is logged in. Switch between them
+with Fast User Switching (lock screen / menu-bar user menu → **Switch User**), never **Log Out**:
+logging the production user out stops production (pm2, the Parachute hub, the tunnels) — that
+is what happened on 2026-11-05 while this kit was installed.
+
 **How the seed signs in.** Like `prism signin`: the host key the demo server keeps in its own data
 folder (readable only by the demo user) buys a one-time owner link on loopback, spent on loopback.
 `TRUST_LOCAL` stays off; no token is copied anywhere.
@@ -102,12 +121,19 @@ two initiatives (another database) and meeting notes — all fictional. They can
 create pages, search, see history and delete the account. They do not get the agent (server
 owner only), integrations, or push notifications (none configured on the demo server).
 
-## Not verified
+## First run on the Mini (2026-11-05)
 
-None of this has been run on the Mini or as a second macOS user: the scripts were tested with
-`--dry-run`, shellcheck, and the seed against the real server code over the in-memory fake vault
-(`apps/server/test/demo-server.test.ts`). Unverified until the owner's first run: stock
-Parachute 0.7.x honouring `vault/config.yaml`'s port under the hub supervisor (the compat suite
-relies on the same), `auth set-password` writing an operator token with the right issuer once
-`hub.port` exists (the script rotates it otherwise), launchd agents of a second logged-in user on
-the Mini, and the tunnel.
+Run over SSH as `prism-demo` with the user logged in at the console (its `gui/<uid>` domain
+exists then). What it showed:
+- stock Parachute does **not** honour `vault/config.yaml`'s port under the hub supervisor (the
+  canonical-port rule above) — fixed with the placeholder row; the compat suite's own runs may
+  have hit the same and fallen back to starting the vault itself;
+- the stock CLIs need bun on the PATH, which a non-interactive shell lacks — `lib.sh` adds it;
+- `launchctl bootout` returns while the job is still stopping: `install.sh` now waits for it
+  before bootstrapping again (it used to skip the bootstrap and leave nothing running);
+- `auth set-password` wrote an operator token with the demo hub's issuer (no rotation needed),
+  `prism token mint` was accepted by the demo vault, the second user's launchd agents run;
+- the tunnel: created with the owner's Cloudflare login (`cloudflared tunnel create prism-demo`,
+  `tunnel route dns prism-demo demo.<domain>`); only the tunnel's credentials file — which can run
+  that one tunnel and nothing else — was handed to the demo user, so the demo user never needs a
+  Cloudflare login and the production tunnel's configuration is untouched.

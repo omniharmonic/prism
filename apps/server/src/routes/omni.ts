@@ -95,7 +95,10 @@ import { DIALS, type InterruptContext } from "../omni/nudge-policy";
 import { priorNudgeSources, resolveNudgeSource, nudgeWeeklyAudit, latestNudgeAudit, FRESHNESS_SUBSYSTEMS, NUDGE_KINDS, upsertNudge, listNudges, getNudge, nudgeAction, nudgeSettings, setNudgeSettings, bindNudgeThread, retireActiveNudges, NUDGE_RETIRE_MIGRATION, type Candidate } from "../omni/nudges";
 import { startNudgeDelivery } from "../omni/nudge-delivery";
 import { resolveNote, readNoteContent } from "../omni/records";
-import { CardError, cardView, cardsByThread, getCard } from "../omni/cards";
+import { CardError, cardView, cardsByThread, getCard, startOfLocalDay } from "../omni/cards";
+import { pushSummary } from "../omni/card-push";
+import { db } from "../db";
+import { actionGrants, runApprovedAction } from "../omni/action-approvals";
 import { parseCardPublish, publishCard, listCardViews, snoozeCard, dismissCard, chooseCardOption, instructCard, cardAfterProposal, cardAfterDecision, relinkApproval, resolveCardSource, settleCardDrafts, updateCardFromThread } from "../omni/card-flow";
 import { readableNudgeText } from "../omni/titles";
 import { proactiveSourceHealth } from "../omni/source-health";
@@ -849,6 +852,15 @@ async function decide(c: Context): Promise<Response> {
     if (a.threadId && getThread(a.threadId)) emit(a.threadId, null, { t: "approval", approval: approvalView(approved) });
     return c.json({ approval: approvalView(approved) });
   }
+  if (a.kind === "action") {
+    // Nothing is executed here either: a new turn in the thread does the approved steps, under the
+    // guard, with the permissions the action named (action-approvals.ts). It may queue behind a running turn.
+    const run = runApprovedAction(owner, id);
+    const approved = getApproval(owner, id)!;
+    publishNotice({ type: "approval", id, op: approved.status === "approved" ? "approved" : approved.status, threadId: a.threadId ?? undefined });
+    if (a.threadId && getThread(a.threadId)) emit(a.threadId, null, { t: "approval", approval: approvalView(approved) });
+    return c.json({ approval: approvalView(approved), turnId: run.turnId, queued: run.queued });
+  }
   let out: ExecOutcome;
   try {
     out = await executor({ kind: a.kind, payload: a.payload, approvalId: id, headers: forwardHeaders(c) });
@@ -1116,14 +1128,28 @@ omniApi.post("/hooks/propose", async (c) => {
 });
 
 /**
- * The plugin, while it holds a paused tool call: has the person decided? Only the status —
- * never the payload (the plugin has it) and nothing that would let it decide for them.
+ * Has the person decided? For the plugin holding a paused tool call, and for a caller that proposed a
+ * draft and follows it (e.g. releases calendar holds when it is rejected or expires). Only the status —
+ * never the payload (the caller has it) and nothing that would let it decide for them. Any kind.
  */
 omniApi.get("/hooks/approvals/:id", (c) => {
   expireApprovals();
   const a = getApproval(omniConfig.ownerEmail(), c.req.param("id") ?? "");
-  if (!a || a.kind !== "command") return c.json({ error: "not_found" }, 404);
+  if (!a) return c.json({ error: "not_found" }, 404);
+  // An edited draft is a new approval; the caller follows the chain to the version he decides on.
+  if (a.status === "revised") return c.json({ id: a.id, status: a.status, digest: a.digest, decidedVia: a.decidedVia, supersededBy: a.supersededBy });
   return c.json({ id: a.id, status: a.status, digest: a.digest, decidedVia: a.decidedVia });
+});
+
+/**
+ * The guard, before it would pause a call: did the owner approve an `action` whose turn is running in
+ * this thread, and which approval-tier rules did it name? Only that — never a payload, never a decision.
+ */
+omniApi.get("/hooks/threads/:threadId/action-grants", (c) => {
+  const threadId = c.req.param("threadId") ?? "";
+  if (!SESSION_ID_RE.test(threadId)) return bad(c, "threadId: a thread (Hermes session) id");
+  expireApprovals();
+  return c.json({ threadId, actions: actionGrants(threadId) });
 });
 
 /** The approved call ran: how it ended (`sent` = it ran, `failed` = it ran and failed). */
@@ -1233,7 +1259,15 @@ omniApi.post("/hooks/routine", async (c) => {
   }
 });
 
-/** The understanding step's card for one item. Proposes nothing outward; see docs/omni-module.md § Item cards. */
+/** General Omni status for the service-token holder: did card pushes go out (last 24h), and how many cards were created since the start of today (Omni zone)? */
+omniApi.get("/hooks/health-summary", (c) => {
+  const owner = omniConfig.ownerEmail(), now = Date.now();
+  const n = (db.prepare("SELECT COUNT(*) n FROM omni_item_cards WHERE owner_email = ? AND created_at >= ?").get(owner, startOfLocalDay(now)) as { n: number }).n;
+  return c.json({ pushes: pushSummary(owner, now), cards: { createdToday: n } });
+});
+
+/** The understanding step's card for one item. Proposes nothing outward; see docs/omni-module.md § Item cards.
+ *  Optional `dueAt` (epoch ms) is when the item is due; `urgency` in every card response is computed from it at read time. */
 omniApi.post("/hooks/cards", async (c) => {
   const b = await jsonBody(c);
   if (!b) return bad(c, "a JSON object body is required");
@@ -1250,6 +1284,17 @@ omniApi.get("/hooks/cards/thread/:threadId", (c) => {
   const threadId = c.req.param("threadId") ?? "";
   if (!SESSION_ID_RE.test(threadId)) return bad(c, "threadId: a thread (Hermes session) id");
   return c.json({ carded: cardsByThread(omniConfig.ownerEmail(), threadId).length > 0 });
+});
+
+/** A card's current state, for a caller that proposed something against it and must follow it (e.g. release a hold
+ *  when the card is dismissed). `outcome` is the action of the card's latest outcome (`expired`, `dismiss`, ...) or null.
+ *  `chosenOptionId` is the option he chose / approved on the card, or null. */
+omniApi.get("/hooks/cards/:cardId", (c) => {
+  const id = c.req.param("cardId") ?? "";
+  if (!CARD_ID_RE.test(id)) return bad(c, "cardId: a card id");
+  const card = getCard(omniConfig.ownerEmail(), id);
+  if (!card) return c.json({ error: "not_found" }, 404);
+  return c.json({ id: card.id, state: card.state, outcome: card.outcomes.at(-1)?.action ?? null, chosenOptionId: card.chosenOptionId ?? null, updatedAt: new Date(card.updatedAt).toISOString() });
 });
 
 /** omni_card: the card's own turn posts an updated card into Decide. */

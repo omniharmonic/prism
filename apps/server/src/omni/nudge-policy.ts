@@ -1,4 +1,5 @@
 import type { AttentionPreferences } from "./attention-preferences";
+import { omniTimeZone } from "./timezone";
 /** Pure M3 interrupt policy. Unknown calendar holds; unknown Focus uses standard OS-controlled notifications. */
 export const DIALS = ["off", "conservative", "balanced", "eager"] as const;
 export type Dial = typeof DIALS[number];
@@ -13,9 +14,10 @@ export const CONTEXT_TTL = 5 * 60_000;
 export const BARS: Record<Dial, number> = { off: Infinity, conservative: .6, balanced: .5, eager: .4 };
 export const CAPS: Record<Dial, number> = { off: 0, conservative: 1, balanced: 2, eager: 4 };
 // Quiet hours and "today" are the owner's: OMNI_TZ when set, otherwise the zone of the machine the server runs on.
-const zone = new Intl.DateTimeFormat("en-CA", { timeZone: process.env.OMNI_TZ || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", weekday:"short", hourCycle: "h23" });
+const zones = new Map<string, Intl.DateTimeFormat>();
+const zoneFormat = (): Intl.DateTimeFormat => { const timeZone = omniTimeZone(); let f = zones.get(timeZone); if (!f) zones.set(timeZone, f = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", weekday:"short", hourCycle: "h23" })); return f; };
 export function localClock(ts: number): { date: string; hour: number; minute: number;weekday:string } {
-  const p = Object.fromEntries(zone.formatToParts(ts).map(x => [x.type, x.value]));
+  const p = Object.fromEntries(zoneFormat().formatToParts(ts).map(x => [x.type, x.value]));
   return { date: `${p.year}-${p.month}-${p.day}`, hour: Number(p.hour), minute: Number(p.minute),weekday:p.weekday??"" };
 }
 /** "HH:MM-HH:MM" in the owner's zone; an overnight range wraps; equal ends mean all day. */

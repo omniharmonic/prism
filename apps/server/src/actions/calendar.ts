@@ -10,7 +10,7 @@
  * argv (gog v0.25 — `gog calendar respond|create|update|delete --help`):
  *   rsvp:   calendar respond primary <eventId> --status=<accepted|declined|tentative> --account=<a> --json --no-input
  *   create: calendar create primary --summary=… --from=<RFC3339> --to=<RFC3339>
- *           [--attendees=a,b] [--location=…] [--description=…] [--send-updates=all|none]
+ *           [--attendees=a,b] [--location=…] [--description=…] [--with-meet] [--send-updates=all|none]
  *           --account=<a> --json --no-input
  *   update: calendar update primary <eventId> [--summary=…] [--from=… --to=…] [--location=…]
  *           [--description=…] [--attendees=a,b] --send-updates=all|none --account=<a> --json --no-input
@@ -57,6 +57,8 @@ export interface CreateInput {
   attendees: string[];
   location?: string;
   description?: string;
+  /** Attach a Google Meet link (`gog --with-meet`). Absent = no link. */
+  withMeet?: boolean;
   notify: boolean;
 }
 
@@ -75,7 +77,9 @@ export function validateCreateInput(b: Record<string, unknown>): CreateInput {
   const raw = b.attendees === undefined || b.attendees === null ? [] : Array.isArray(b.attendees) ? b.attendees : [b.attendees];
   if (raw.length > CAL_LIMITS.maxAttendees) throw new ActionInputError(`attendees: at most ${CAL_LIMITS.maxAttendees}`);
   const attendees = [...new Set(raw.map((a, i) => validateAddress(`attendees[${i}]`, a)))];
+  if (b.withMeet !== undefined && b.withMeet !== null && typeof b.withMeet !== "boolean") throw new ActionInputError("withMeet: true or false");
   const out: CreateInput = { title, start, end, attendees, notify: b.notify !== false };
+  if (b.withMeet === true) out.withMeet = true;
   if (b.location !== undefined && b.location !== null && b.location !== "") {
     if (typeof b.location !== "string") throw new ActionInputError("location: must be a string");
     noCtl("location", b.location);
@@ -96,6 +100,7 @@ export function createArgs(account: string, c: CreateInput): string[] {
   if (c.attendees.length) args.push(`--attendees=${c.attendees.join(",")}`);
   if (c.location) args.push(`--location=${c.location}`);
   if (c.description) args.push(`--description=${c.description}`);
+  if (c.withMeet) args.push("--with-meet");
   if (c.attendees.length) args.push(`--send-updates=${c.notify ? "all" : "none"}`);
   args.push(`--account=${account}`, "--json", "--no-input");
   return args;

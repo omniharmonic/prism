@@ -32,7 +32,55 @@ load_demo_env() {
   : "${DEMO_PARACHUTE_HOME:?}" "${DEMO_BUNDLE:?}" "${PARACHUTE_BIN:?}" "${PARACHUTE_VAULT_BIN:?}"
   NODE="$DEMO_BUNDLE/runtime/node/bin/node"
   [ -x "$NODE" ] || NODE="$(command -v node || true)"
-  export DEMO_REVIEWER_EMAIL DEMO_REVIEWER_NAME
+  # The stock Parachute CLIs start with `#!/usr/bin/env bun`. Bun's installer puts ~/.bun/bin on
+  # the PATH only in ~/.zshrc, which a non-interactive shell (ssh host 'cmd') never reads.
+  PATH="$(dirname "$PARACHUTE_BIN"):$PATH"
+  export PATH DEMO_REVIEWER_EMAIL DEMO_REVIEWER_NAME
+}
+
+# Stock hub 0.7.x snaps every first-party module back to its compiled-in "canonical" port
+# before spawning it (serve-boot.ts reconcilePortToCanonical, channel#41) — for the vault that is
+# 1940, PRODUCTION's port — unless ANOTHER row of the same services.json already holds that port.
+# It never looks at what is listening on the machine. So the demo's services.json carries a
+# placeholder row on the canonical vault port: no installDir and no first-party name (the
+# supervisor skips it, "no-spec"), and NO paths (the hub never proxies anything to it).
+# Prints "changed" when it had to write the file.
+CANONICAL_VAULT_PORT=1940
+RESERVATION_ROW=prism-demo-port-reservation
+reserve_canonical_vault_port() {
+  local manifest="$DEMO_PARACHUTE_HOME/services.json"
+  if [ "$DRY_RUN" = 1 ]; then
+    echo "+ ensure $manifest reserves the canonical vault port ($CANONICAL_VAULT_PORT, row '$RESERVATION_ROW': no paths, nothing started there) and keeps parachute-vault on :$DEMO_VAULT_PORT" >&3
+    return 0
+  fi
+  "$NODE" -e '
+    const fs = require("fs");
+    const [path, row, canon, vaultPort] = process.argv.slice(1);
+    let m = { services: [] };
+    if (fs.existsSync(path)) m = JSON.parse(fs.readFileSync(path, "utf8"));
+    if (!Array.isArray(m.services)) throw new Error(path + ": no services array");
+    const before = JSON.stringify(m);
+    // Anything else on the canonical port would be the vault itself, snapped there earlier.
+    m.services = m.services.filter((s) => s.name === row || s.port !== Number(canon) || s.name === "parachute-vault");
+    for (const s of m.services) if (s.name === "parachute-vault") s.port = Number(vaultPort);
+    const reservation = { name: row, port: Number(canon), paths: [], health: "/__" + row, version: "0",
+      displayName: "Reserved: the canonical vault port, so the demo vault stays on its own (Prism demo kit)" };
+    m.services = m.services.filter((s) => s.name !== row).concat([reservation]);
+    if (JSON.stringify(m) === before) process.exit(0);
+    fs.writeFileSync(path + ".tmp", JSON.stringify(m, null, 2) + "\n", { mode: 0o600 });
+    fs.renameSync(path + ".tmp", path);
+    console.log("changed");
+  ' "$manifest" "$RESERVATION_ROW" "$CANONICAL_VAULT_PORT" "$DEMO_VAULT_PORT"
+}
+
+# True when THIS user listens on a production port (the check `lsof -u` alone would not make:
+# without -a, lsof ORs its filters).
+listens_on_production_port() {
+  local p
+  for p in $PRODUCTION_PORTS; do
+    lsof -a -nP -u "$(id -un)" -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1 && return 0
+  done
+  return 1
 }
 
 # The guards every script runs before it changes anything.

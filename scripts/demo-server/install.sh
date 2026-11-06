@@ -89,17 +89,43 @@ fi
 PLIST="$HOME/Library/LaunchAgents/$DEMO_PARACHUTE_LABEL.plist"
 RENDERED="$(sed -e "s#{{LABEL}}#$DEMO_PARACHUTE_LABEL#g" -e "s#{{PARACHUTE_BIN}}#$PARACHUTE_BIN#g" -e "s#{{PARACHUTE_HOME}}#$PH#g" \
   -e "s#{{HUB_PORT}}#$DEMO_HUB_PORT#g" -e "s#{{VAULT_PORT}}#$DEMO_VAULT_PORT#g" -e "s#{{HOME}}#$HOME#g" -e "s#{{LOG_DIR}}#$PH/logs#g" "$KIT/parachute.plist.in")"
+RESTART=0
 if [ "$(cat "$PLIST" 2>/dev/null || true)" != "$RENDERED" ]; then
   if [ "$DRY_RUN" = 1 ]; then echo "+ write $PLIST (0644, from parachute.plist.in)"
   else mkdir -p "$HOME/Library/LaunchAgents"; printf '%s\n' "$RENDERED" > "$PLIST"; chmod 644 "$PLIST"; fi
-  if agent_loaded; then run launchctl bootout "gui/$(id -u)/$DEMO_PARACHUTE_LABEL"; fi
+  RESTART=1
+fi
+# Before the hub ever starts: keep its supervisor from moving the vault onto production's 1940
+# (lib.sh reserve_canonical_vault_port). The hub reads services.json at boot, so a change means
+# a restart.
+RESERVED="$(reserve_canonical_vault_port)"   # an assignment, so a failure stops the script (set -e)
+[ "$RESERVED" = changed ] && RESTART=1
+if [ "$RESTART" = 1 ] && agent_loaded; then
+  run launchctl bootout "gui/$(id -u)/$DEMO_PARACHUTE_LABEL"
+  # bootout returns while the job is still stopping (ExitTimeOut 20 s); bootstrapping before it is
+  # gone is skipped by the check below and leaves nothing running.
+  if [ "$DRY_RUN" = 0 ]; then
+    for _ in $(seq 1 30); do agent_loaded || break; sleep 1; done
+    agent_loaded && die "the demo Parachute agent did not stop within 30 s ($DEMO_PARACHUTE_LABEL)"
+  fi
 fi
 agent_loaded || run launchctl bootstrap "gui/$(id -u)" "$PLIST"
 if [ "$DRY_RUN" = 0 ]; then
   echo "▶ waiting for the demo hub and vault…"
-  for _ in $(seq 1 60); do answers "$HUB/health" && answers "$VAULT/health" && break; sleep 1; done
+  for _ in $(seq 1 60); do
+    if listens_on_production_port; then
+      launchctl bootout "gui/$(id -u)/$DEMO_PARACHUTE_LABEL" 2>/dev/null || true
+      die "the demo Parachute bound a PRODUCTION port ($PRODUCTION_PORTS) — stopped it. See $PH/logs/demo-parachute.log and $PH/services.json"
+    fi
+    answers "$HUB/health" && answers "$VAULT/health" && break
+    sleep 1
+  done
   answers "$HUB/health" || die "the demo hub does not answer on $HUB (see $PH/logs/demo-parachute.log)"
   answers "$VAULT/health" || die "the demo vault does not answer on $VAULT (see $PH/logs/demo-parachute.log)"
+  if listens_on_production_port; then
+    launchctl bootout "gui/$(id -u)/$DEMO_PARACHUTE_LABEL" 2>/dev/null || true
+    die "the demo Parachute bound a PRODUCTION port ($PRODUCTION_PORTS) — stopped it"
+  fi
 fi
 
 # ── 5. Prism, from the host bundle, against that Parachute ───────────────────

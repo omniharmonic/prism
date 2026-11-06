@@ -112,6 +112,50 @@ test("an untyped body (fetch with a Blob) is refused too; a bodiless, untyped DE
   assert.notEqual(r.status, 415);
 });
 
+// The in-process requests above have `body === null` when nothing is sent. Behind @hono/node-server
+// every non-GET/HEAD request gets the socket as a body stream, so the guard must decide "has a
+// body" the HTTP/1 way (Content-Length / Transfer-Encoding). Before 2026-11-06 every bodiless
+// cookie DELETE a browser sent (no Content-Length per the Fetch spec) was refused 415 in
+// production while the test above passed. Same requests, over a real socket:
+test("over a real HTTP/1 socket: a bodiless cookie DELETE reaches the route; an untyped body is still refused", async () => {
+  const { createAdaptorServer } = await import("@hono/node-server");
+  const server = createAdaptorServer({ fetch: app.fetch });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as { port: number };
+  const base = `http://127.0.0.1:${port}`;
+  const cookie = sessionCookie(makeSession(config.ownerEmail));
+  // node:http, not fetch: installFakeVault() replaces globalThis.fetch (a fetch here would never
+  // leave the process), and node:http sends exactly the headers named — nothing added.
+  const { request } = await import("node:http");
+  const wire = (method: string, path: string, headers: Record<string, string>, body?: string) =>
+    new Promise<number>((resolve, reject) => {
+      const req = request(`${base}${path}`, { method, headers }, (res) => {
+        res.resume();
+        res.on("end", () => resolve(res.statusCode ?? 0));
+      });
+      req.on("error", reject);
+      req.end(body);
+    });
+  try {
+    // What a browser's fetch(url, {method: "DELETE"}) sends: no body, no Content-Length, no Content-Type.
+    // (node:http adds no Content-Length to a DELETE ended without a body.)
+    const del = await wire("DELETE", concrete("/auth/devices/:id"), { cookie });
+    assert.notEqual(del, 415, "a bodiless DELETE is not an untyped body");
+    const delNote = await wire("DELETE", "/api/notes/abc", { cookie });
+    assert.notEqual(delNote, 415, "a bodiless DELETE is not an untyped body");
+    // An untyped body over the socket (Content-Length, no Content-Type) → 415, nothing written.
+    const before = fv.calls.length;
+    const untyped = await wire("POST", "/api/notes", { cookie, "content-length": "2" }, "{}");
+    assert.equal(untyped, 415);
+    // Chunked, untyped → 415 as well.
+    const chunked = await wire("POST", "/api/notes", { cookie, "transfer-encoding": "chunked" }, "{}");
+    assert.equal(chunked, 415);
+    assert.equal(fv.calls.slice(before).filter((c) => c.method !== "GET" && c.method !== "HEAD").length, 0);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("a same-site attacker (sibling subdomain Origin, Sec-Fetch-Site: same-site) with a JSON body → 403 on every mutating route", async () => {
   const accepted: string[] = [];
   for (const r of routes.filter((r) => guarded(r.path))) {

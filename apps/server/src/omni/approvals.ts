@@ -22,6 +22,15 @@
  * that exact call and polls the hook — lets it run, then reports how it ended (`sent` =
  * it ran, `failed` = it ran and failed). Deny, expiry and the end of the turn all leave
  * the call un-run. It cannot be edited: the person approves the call as written or not at all.
+ *
+ * KIND `action` fills the gap between the two: an outward action that has no draft kind of
+ * its own (a booking page's Confirm, a web form, a sign-up). The proposer describes it
+ * exactly — what, whom it reaches, the steps with every value it will enter — and names the
+ * guard permissions it needs. Approving it any time before it expires starts a NEW turn in
+ * its thread that carries the approved text (action-approvals.ts); while that turn runs the
+ * approval is `approved` and the omni-bridge guard lets exactly the named permissions through
+ * without asking again. The turn's end closes it (`sent` = the turn finished, `failed` = it
+ * did not). Nothing here acts on the web: Hermes does, under the guard.
  */
 import { createHash } from "node:crypto";
 import { db } from "../db";
@@ -33,7 +42,7 @@ import { buildReply } from "../actions/email";
 import { protonSendConfigured } from "./proton-send";
 import { tweetSendConfigured } from "./tweet-send";
 
-export const APPROVAL_KINDS = ["email", "email-reply", "message", "calendar-rsvp", "calendar-invite", "tweet", "wallet-proposal", "command", "device-sign-in"] as const;
+export const APPROVAL_KINDS = ["email", "email-reply", "message", "calendar-rsvp", "calendar-invite", "tweet", "wallet-proposal", "action", "command", "device-sign-in"] as const;
 /** Kinds only Prism itself creates (never proposable through the hook, never editable). */
 export const SERVER_ONLY_KINDS: readonly string[] = ["device-sign-in"];
 export type ApprovalKind = (typeof APPROVAL_KINDS)[number];
@@ -44,6 +53,7 @@ export class ApprovalInputError extends Error {}
 const MAX_PAYLOAD_BYTES = 256 * 1024;
 const MAX_COMMAND_INPUT_BYTES = 64 * 1024;
 const MAX_SUMMARY = 300;
+const GRANT_RE = /^[a-z][a-z0-9-]*(\.[a-z0-9-]+)+$/;
 
 /** Stable JSON: object keys sorted at every depth (the digest must not depend on key order). */
 export function canonicalJson(v: unknown): string {
@@ -77,6 +87,11 @@ const strList = (v: unknown, field: string, max: number, required = false): stri
   if (!Array.isArray(v) || v.some((x) => typeof x !== "string" || x.length > 320) || v.length > max) throw new ApprovalInputError(`${field}: a list of at most ${max} strings`);
   if (required && v.length === 0) throw new ApprovalInputError(`${field}: at least one entry`);
   return v as string[];
+};
+const bool = (v: unknown, field: string): boolean | undefined => {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "boolean") throw new ApprovalInputError(`${field}: must be true or false`);
+  return v;
 };
 const pick = (o: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined));
 
@@ -115,6 +130,7 @@ export function validatePayload(kind: unknown, raw: unknown): { kind: ApprovalKi
         attendees: strList(b.attendees, "attendees", 50),
         location: str(b.location, "location", 1024, false),
         description: str(b.description, "description", 8192, false),
+        withMeet: bool(b.withMeet, "withMeet"),
       });
       break;
     case "tweet":
@@ -143,6 +159,21 @@ export function validatePayload(kind: unknown, raw: unknown): { kind: ApprovalKi
         userAgentHint: str(b.userAgentHint, "userAgentHint", 200, false),
       });
       break;
+    case "action": {
+      // grants: the guard rule ids the resumed turn may use without asking (the plugin checks each
+      // is grantable and adds `permissions`, their titles, for the card). Prism only checks shape.
+      const grants = strList(b.grants, "grants", 20);
+      if (grants?.some((g) => !GRANT_RE.test(g))) throw new ApprovalInputError("grants: guard rule ids (e.g. tool.browser-act)");
+      payload = pick({
+        title: str(b.title, "title", MAX_SUMMARY),
+        reaches: str(b.reaches, "reaches", 1000),
+        url: str(b.url, "url", 2000, false),
+        steps: str(b.steps, "steps", 20_000),
+        grants: grants?.length ? grants : undefined,
+        permissions: strList(b.permissions, "permissions", 20),
+      });
+      break;
+    }
     case "command": {
       // One paused tool call, exactly as it would run. A shell command carries `command`
       // (+ where); any other tool its whole `input`. Neither is ever shortened: what is
@@ -229,10 +260,15 @@ const q = {
   ),
   unclaim: db.prepare("UPDATE omni_approvals SET status = 'pending', decided_at = NULL, decided_via = NULL, decided_device = NULL, idem_key = NULL WHERE id = ? AND status = 'approved'"),
   finish: db.prepare("UPDATE omni_approvals SET status = ?, result = ? WHERE id = ? AND status = 'approved'"),
+  note: db.prepare("UPDATE omni_approvals SET result = ? WHERE id = ? AND status = 'approved'"),
+  approvedActions: db.prepare("SELECT * FROM omni_approvals WHERE thread_id = ? AND kind = 'action' AND status = 'approved' ORDER BY decided_at ASC"),
   close: db.prepare("UPDATE omni_approvals SET status = ?, decided_at = ?, decided_via = ?, decided_device = ?, idem_key = ?, superseded_by = ? WHERE id = ? AND status = 'pending'"),
   attachThread: db.prepare("UPDATE omni_approvals SET thread_id = ? WHERE id = ? AND thread_id IS NULL"),
   pendingCommands: db.prepare("SELECT * FROM omni_approvals WHERE thread_id = ? AND kind = 'command' AND status = 'pending' AND created_at >= ?"),
   staleCommands: db.prepare("UPDATE omni_approvals SET status = 'unknown', result = ? WHERE kind = 'command' AND status = 'approved' AND decided_at <= ?"),
+  // An approved action whose turn never ended in our books (the server restarted under it): after
+  // the same window it stops granting anything and reads `unknown` — it may have acted.
+  staleActions: db.prepare("UPDATE omni_approvals SET status = 'unknown', result = ? WHERE kind = 'action' AND status = 'approved' AND decided_at <= ?"),
 };
 
 export function createApproval(o: { owner: string; threadId: string | null; kind: ApprovalKind; payload: Record<string, unknown>; summary?: string | null; ttlMs: number; revises?: string | null }): Approval {
@@ -246,6 +282,7 @@ export function createApproval(o: { owner: string; threadId: string | null; kind
  *  command whose call never reported back (Hermes died mid-call) becomes `unknown`. */
 export const expireApprovals = (): number => {
   q.staleCommands.run(JSON.stringify({ error: "no_report", executor: "hermes-turn" }), Date.now() - COMMAND_REPORT_MS);
+  q.staleActions.run(JSON.stringify({ error: "turn_lost", executor: "hermes-action-turn" }), Date.now() - COMMAND_REPORT_MS);
   return q.expire.run(Date.now(), Date.now()).changes;
 };
 /** How long an approved command may run before the lack of a report means "unknown". */
@@ -273,6 +310,10 @@ export const claimApproval = (id: string, digest: string, via: string, device: s
 export const unclaimApproval = (id: string): void => void q.unclaim.run(id);
 export const finishApproval = (id: string, status: "sent" | "failed" | "unknown", result: Record<string, unknown>): void =>
   void q.finish.run(status, JSON.stringify(result), id);
+/** Record progress on a claimed (still `approved`) approval, e.g. the turn an action runs in. */
+export const noteApprovalResult = (id: string, result: Record<string, unknown>): boolean => q.note.run(JSON.stringify(result), id).changes > 0;
+/** A thread's approved actions, oldest decision first (action-approvals.ts). */
+export const approvedThreadActions = (threadId: string): Approval[] => (q.approvedActions.all(threadId) as Raw[]).map(toApproval);
 export const closeApproval = (id: string, status: "cancelled" | "revised", via: string, device: string | null, key: string | null, supersededBy: string | null = null): boolean =>
   q.close.run(status, Date.now(), via, device, key, supersededBy, id).changes > 0;
 
@@ -322,6 +363,9 @@ function executorOf(kind: ApprovalKind): { name: string; available: boolean; ena
       // Not a sender: Hermes itself runs the call it paused. OMNI_COMMAND_APPROVALS=off
       // makes every such call un-approvable (it then never runs).
       return { name: "hermes-turn", available: true, enabled: !omniConfig.commandApprovalsOff() };
+    case "action":
+      // Not a sender either: approving starts a turn that does the approved steps (action-approvals.ts).
+      return { name: "hermes-action-turn", available: true, enabled: !omniConfig.actionApprovalsOff() };
     case "email":
     case "email-reply":
       return omniConfig.emailExecutor() === "proton-send"
@@ -356,7 +400,7 @@ export function liveActionRequest(kind: ApprovalKind, p: Record<string, unknown>
     case "calendar-rsvp":
       return { path: "/api/actions/calendar/rsvp", body: { eventId: p.eventId, response: p.response } };
     case "calendar-invite":
-      return { path: "/api/actions/calendar/create", body: pick({ title: p.title, start: p.start, end: p.end, attendees: p.attendees, location: p.location, description: p.description }) };
+      return { path: "/api/actions/calendar/create", body: pick({ title: p.title, start: p.start, end: p.end, attendees: p.attendees, location: p.location, description: p.description, withMeet: p.withMeet }) };
     default:
       return null;
   }

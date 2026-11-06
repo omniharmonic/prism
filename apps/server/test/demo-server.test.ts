@@ -201,6 +201,12 @@ test("install.sh --dry-run: the whole plan on its own ports and prefix, nothing 
   assert.match(r.out, /launchctl bootstrap gui\/\d+ \S+test\.prism-demo\.parachute\.plist/);
   assert.match(r.out, /prism install --prefix \S+PrismDemo\/Host --owner-email demo-owner@example\.com --port 28787 --app-origin https:\/\/demo\.example\.com --parachute external --parachute-url http:\/\/127\.0\.0\.1:28940 /);
   assert.match(r.out, /token mint --prefix/);
+  // Stock hub 0.7.x snaps the vault to its canonical 1940 unless another services.json row holds
+  // it (found on the Mini, 2026-11-05): the placeholder is planned BEFORE the hub agent starts.
+  const reserve = r.out.indexOf("reserves the canonical vault port (1940");
+  assert.ok(reserve >= 0, "the canonical vault port is reserved in services.json");
+  assert.match(r.out, /keeps parachute-vault on :28940/);
+  assert.ok(reserve < r.out.indexOf("launchctl bootstrap"), "reserved before the hub starts");
   assert.doesNotMatch(r.out, /:(1939|1940|8787)\b/);
   assert.ok(!existsSync(join(r.home, "PrismDemo")), "a dry run creates nothing");
 });

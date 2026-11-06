@@ -6,6 +6,7 @@
  */
 import { db } from "../db";
 import { newId, sha256 } from "./store";
+import { omniTimeZone } from "./timezone";
 import { ApprovalInputError, canonicalJson, validatePayload, type ApprovalKind } from "./approvals";
 import { looksLikeSlug, plainInline } from "./titles";
 
@@ -31,6 +32,10 @@ CREATE TABLE IF NOT EXISTS omni_card_actions (
 // the owner's draft or turn was under way (the card keeps the draft; the app warns before Send).
 if (!(db.prepare("PRAGMA table_info(omni_item_cards)").all() as Array<{ name: string }>).some((c) => c.name === "source_changed")) {
   db.exec("ALTER TABLE omni_item_cards ADD COLUMN source_changed INTEGER NOT NULL DEFAULT 0");
+}
+// When the item is due (epoch ms, null = no date). `urgency` shown to the app is computed from it at read time.
+if (!(db.prepare("PRAGMA table_info(omni_item_cards)").all() as Array<{ name: string }>).some((c) => c.name === "due_at")) {
+  db.exec("ALTER TABLE omni_item_cards ADD COLUMN due_at INTEGER");
 }
 
 export const CARD_KINDS = ["email", "message", "invite", "task", "scheduling", "other"] as const;
@@ -59,12 +64,52 @@ export interface CardOutcome { at: number; action: string; optionId?: string; ap
 export interface CardInput {
   sourceKey: string; sourceRevision: string | null; kind: CardKind; headline: string; context: CardFact[]; ask: string | null;
   urgency: CardUrgency; options: CardOption[]; recommended: string | null; itemRefs: string[];
+  /** Epoch ms the item is due; null = the agent gave none (the create default then applies, see defaultDueAt). */
+  dueAt: number | null;
 }
 export interface Card extends CardInput {
   id: string; owner: string; state: CardState; threadId: string | null; approvalIds: string[]; chosenOptionId: string | null;
   outcomes: CardOutcome[]; digest: string; snoozedUntil: number | null; createdAt: number; updatedAt: number;
   /** A new message arrived on the item after the owner chose (draft-ready or working). */
   sourceChanged: boolean;
+}
+
+// ── due dates (days are Omni-zone days: OMNI_TZ, default the host zone) ─────────────────────────────────
+
+const DAY_MS = 86_400_000;
+const zoneFormats = new Map<string, Intl.DateTimeFormat>();
+function zoneFormat(): Intl.DateTimeFormat {
+  const timeZone = omniTimeZone();
+  let f = zoneFormats.get(timeZone);
+  if (!f) zoneFormats.set(timeZone, f = new Intl.DateTimeFormat("en-US", { timeZone, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric" }));
+  return f;
+}
+/** The Omni zone's offset from UTC at an instant, in ms. */
+function zoneOffset(t: number): number {
+  const p = Object.fromEntries(zoneFormat().formatToParts(new Date(t)).map((x) => [x.type, Number(x.value)]));
+  return Date.UTC(p.year!, p.month! - 1, p.day!, p.hour!, p.minute!, p.second!) - Math.floor(t / 1000) * 1000;
+}
+/** The last millisecond (23:59:59.999) of the Omni-zone day containing `t`. */
+export function endOfLocalDay(t: number): number {
+  const local = new Date(t + zoneOffset(t));
+  const nextMidnightLocal = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + 1);
+  let utc = nextMidnightLocal - zoneOffset(t);
+  utc = nextMidnightLocal - zoneOffset(utc - 1); // the offset at the boundary itself (a 23/25-hour day)
+  return utc - 1;
+}
+/** The first millisecond (00:00:00.000) of the Omni-zone day containing `t`. */
+export function startOfLocalDay(t: number): number {
+  return endOfLocalDay(endOfLocalDay(t) - 25 * 3_600_000) + 1; // the previous day's end, whatever the day's length
+}
+/** The due date a card gets when the agent gave none: today = end of the creation day, this-week = +7d. */
+export function defaultDueAt(urgency: CardUrgency, createdAt: number): number | null {
+  return urgency === "today" ? endOfLocalDay(createdAt) : urgency === "this-week" ? createdAt + 7 * DAY_MS : null;
+}
+/** What the app shows, computed at read time so yesterday's "today" card does not claim to be today forever. */
+export function displayUrgency(dueAt: number | null, now: number): CardUrgency {
+  if (dueAt === null) return "whenever";
+  if (dueAt <= endOfLocalDay(now)) return "today";
+  return dueAt <= now + 7 * DAY_MS ? "this-week" : "whenever";
 }
 
 export class CardError extends Error {
@@ -136,6 +181,8 @@ export function parseCardInput(b: Record<string, unknown>): CardInput {
     return { text: line(o.text, `context[${i}].text`, 200)!, source: line(o.source, `context[${i}].source`, 200, false) };
   });
   const ask = line(b.ask, "ask", 300, false);
+  if (b.dueAt !== undefined && b.dueAt !== null && (typeof b.dueAt !== "number" || !Number.isFinite(b.dueAt) || b.dueAt <= 0)) throw new CardError("invalid_card", 400, "dueAt: epoch milliseconds");
+  const dueAt = typeof b.dueAt === "number" ? Math.trunc(b.dueAt) : null;
   if (!has(CARD_URGENCIES, b.urgency)) throw new CardError("invalid_card", 400, `urgency: ${CARD_URGENCIES.join("|")}`);
   if (!Array.isArray(b.itemRefs) || b.itemRefs.length < 1 || b.itemRefs.length > 10 || b.itemRefs.some((x) => typeof x !== "string" || !NOTE_ID.test(x)) || !b.itemRefs.includes(b.sourceKey)) {
     throw new CardError("invalid_card", 400, "itemRefs: 1–10 note ids including sourceKey");
@@ -149,26 +196,27 @@ export function parseCardInput(b: Record<string, unknown>): CardInput {
   if (recommended !== null && !seen.has(recommended)) throw new CardError("invalid_options", 400, "recommended: one of the option ids");
   const rec = options.find((o) => o.id === recommended);
   if (rec && rec.produces.some((p) => SENDABLE_KINDS.has(p)) && !rec.draft) throw new CardError("invalid_options", 400, "recommended: an option that sends needs its draft");
-  return { sourceKey: b.sourceKey, sourceRevision, kind: b.kind, headline, context, ask, urgency: b.urgency, options, recommended, itemRefs };
+  return { sourceKey: b.sourceKey, sourceRevision, kind: b.kind, headline, context, ask, urgency: b.urgency, options, recommended, itemRefs, dueAt };
 }
 
 type Raw = {
   id: string; owner_email: string; source_key: string; source_revision: string | null; kind: string; state: string; headline: string;
   context: string; ask: string | null; urgency: string; options: string; recommended: string | null; item_refs: string; thread_id: string | null;
   approval_ids: string; chosen_option_id: string | null; outcomes: string; digest: string; snoozed_until: number | null; created_at: number; updated_at: number;
-  source_changed: number;
+  source_changed: number; due_at: number | null;
 };
 const toCard = (r: Raw): Card => ({
   id: r.id, owner: r.owner_email, sourceKey: r.source_key, sourceRevision: r.source_revision, kind: r.kind as CardKind, state: r.state as CardState,
   headline: r.headline, context: JSON.parse(r.context) as CardFact[], ask: r.ask, urgency: r.urgency as CardUrgency, options: JSON.parse(r.options) as CardOption[],
   recommended: r.recommended, itemRefs: JSON.parse(r.item_refs) as string[], threadId: r.thread_id, approvalIds: JSON.parse(r.approval_ids) as string[],
   chosenOptionId: r.chosen_option_id, outcomes: JSON.parse(r.outcomes) as CardOutcome[], digest: r.digest, snoozedUntil: r.snoozed_until,
-  createdAt: r.created_at, updatedAt: r.updated_at, sourceChanged: !!r.source_changed,
+  createdAt: r.created_at, updatedAt: r.updated_at, sourceChanged: !!r.source_changed, dueAt: r.due_at,
 });
-const contentDigest = (input: CardInput): string => sha256(canonicalJson(input));
+// dueAt is left out: it is not content the owner decides on, and `version` (a digest prefix) must not shift for cards that predate it.
+const contentDigest = ({ dueAt: _dueAt, ...content }: CardInput): string => sha256(canonicalJson(content));
 const inputOf = (c: Card): CardInput => ({
   sourceKey: c.sourceKey, sourceRevision: c.sourceRevision, kind: c.kind, headline: c.headline, context: c.context, ask: c.ask,
-  urgency: c.urgency, options: c.options, recommended: c.recommended, itemRefs: c.itemRefs,
+  urgency: c.urgency, options: c.options, recommended: c.recommended, itemRefs: c.itemRefs, dueAt: c.dueAt,
 });
 /** What the owner's device saw: choose / instruct carry it back, and a card whose content changed since
  *  (new options, a new message on the item) answers 409 card_changed. State changes alone keep it. */
@@ -201,17 +249,17 @@ export const upsertCard = db.transaction((owner: string, input: CardInput, threa
   const old = cardBySource(owner, input.sourceKey);
   if (!old) {
     const id = newId("card");
-    db.prepare(`INSERT INTO omni_item_cards (id, owner_email, source_key, source_revision, kind, state, headline, context, ask, urgency, options, recommended, item_refs, thread_id, outcomes, digest, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    db.prepare(`INSERT INTO omni_item_cards (id, owner_email, source_key, source_revision, kind, state, headline, context, ask, urgency, options, recommended, item_refs, thread_id, outcomes, digest, due_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       id, owner, input.sourceKey, input.sourceRevision, input.kind, input.headline, JSON.stringify(input.context), input.ask, input.urgency,
-      JSON.stringify(input.options), input.recommended, JSON.stringify(input.itemRefs), threadId, JSON.stringify([{ at: now, action: "proposed" }]), digest, now, now);
+      JSON.stringify(input.options), input.recommended, JSON.stringify(input.itemRefs), threadId, JSON.stringify([{ at: now, action: "proposed" }]), digest, input.dueAt ?? defaultDueAt(input.urgency, now), now, now);
     return { card: getCard(owner, id)!, created: true, changed: true };
   }
   if (REOPENABLE_STATES.has(old.state) && input.sourceRevision !== null && input.sourceRevision !== old.sourceRevision) {
     const outcomes = [...old.outcomes, { at: now, action: "reopened", detail: `${old.sourceRevision ?? "none"} -> ${input.sourceRevision}` }].slice(-50);
-    db.prepare(`UPDATE omni_item_cards SET state='proposed', source_revision=?, kind=?, headline=?, context=?, ask=?, urgency=?, options=?, recommended=?, item_refs=?, digest=?, chosen_option_id=NULL, snoozed_until=NULL, source_changed=0, outcomes=?, thread_id=COALESCE(thread_id, ?), updated_at=? WHERE id=?`).run(
+    db.prepare(`UPDATE omni_item_cards SET state='proposed', source_revision=?, kind=?, headline=?, context=?, ask=?, urgency=?, options=?, recommended=?, item_refs=?, digest=?, chosen_option_id=NULL, snoozed_until=NULL, source_changed=0, outcomes=?, thread_id=COALESCE(thread_id, ?), due_at=?, updated_at=? WHERE id=?`).run(
       input.sourceRevision, input.kind, input.headline, JSON.stringify(input.context), input.ask, input.urgency, JSON.stringify(input.options), input.recommended,
-      JSON.stringify(input.itemRefs), digest, JSON.stringify(outcomes), threadId, now, old.id);
+      JSON.stringify(input.itemRefs), digest, JSON.stringify(outcomes), threadId, input.dueAt ?? defaultDueAt(input.urgency, now), now, old.id); // a reopened card is a new question: due from now
     return { card: getCard(owner, old.id)!, created: false, changed: true };
   }
   if (FLAGGABLE_STATES.has(old.state) && input.sourceRevision !== null && input.sourceRevision !== old.sourceRevision) {
@@ -224,11 +272,13 @@ export const upsertCard = db.transaction((owner: string, input: CardInput, threa
     return { card: getCard(owner, old.id)!, created: false, changed: true, flagged: "source_changed" };
   }
   if (ACTED_STATES.has(old.state)) return { card: old, created: false, changed: false, ignored: "owner_acted" };
-  if (old.digest === digest) return { card: old, created: false, changed: false };
+  // An explicit dueAt wins; a new urgency without one re-derives it from creation; otherwise the date stands.
+  const dueAt = input.dueAt ?? (input.urgency !== old.urgency ? defaultDueAt(input.urgency, old.createdAt) : old.dueAt);
+  if (old.digest === digest && old.dueAt === dueAt) return { card: old, created: false, changed: false };
   const outcomes = [...old.outcomes, { at: now, action: "updated" }].slice(-50);
-  db.prepare(`UPDATE omni_item_cards SET source_revision=?, kind=?, headline=?, context=?, ask=?, urgency=?, options=?, recommended=?, item_refs=?, digest=?, outcomes=?, source_changed=0, thread_id=COALESCE(thread_id, ?), updated_at=? WHERE id=?`).run(
+  db.prepare(`UPDATE omni_item_cards SET source_revision=?, kind=?, headline=?, context=?, ask=?, urgency=?, options=?, recommended=?, item_refs=?, digest=?, outcomes=?, source_changed=0, thread_id=COALESCE(thread_id, ?), due_at=?, updated_at=? WHERE id=?`).run(
     input.sourceRevision, input.kind, input.headline, JSON.stringify(input.context), input.ask, input.urgency, JSON.stringify(input.options), input.recommended,
-    JSON.stringify(input.itemRefs), digest, JSON.stringify(outcomes), threadId, now, old.id);
+    JSON.stringify(input.itemRefs), digest, JSON.stringify(outcomes), threadId, dueAt, now, old.id);
   return { card: getCard(owner, old.id)!, created: false, changed: true };
 });
 
@@ -258,8 +308,8 @@ export function replaceCardContent(owner: string, id: string, input: CardInput, 
     const c = getCard(owner, id);
     if (!c || !from.includes(c.state) || input.sourceKey !== c.sourceKey) return null;
     const outcomes = [...c.outcomes, { at: now, action: "agent-update" }].slice(-50);
-    db.prepare(`UPDATE omni_item_cards SET state='proposed', source_revision=?, item_refs=?, kind=?, headline=?, context=?, ask=?, urgency=?, options=?, recommended=?, digest=?, chosen_option_id=NULL, snoozed_until=NULL, source_changed=0, outcomes=?, updated_at=? WHERE id=?`).run(
-      input.sourceRevision, JSON.stringify(input.itemRefs), input.kind, input.headline, JSON.stringify(input.context), input.ask, input.urgency, JSON.stringify(input.options), input.recommended, contentDigest(input), JSON.stringify(outcomes), now, id);
+    db.prepare(`UPDATE omni_item_cards SET state='proposed', source_revision=?, item_refs=?, kind=?, headline=?, context=?, ask=?, urgency=?, options=?, recommended=?, digest=?, chosen_option_id=NULL, snoozed_until=NULL, source_changed=0, outcomes=?, due_at=?, updated_at=? WHERE id=?`).run(
+      input.sourceRevision, JSON.stringify(input.itemRefs), input.kind, input.headline, JSON.stringify(input.context), input.ask, input.urgency, JSON.stringify(input.options), input.recommended, contentDigest(input), JSON.stringify(outcomes), input.dueAt ?? (input.urgency !== c.urgency ? defaultDueAt(input.urgency, c.createdAt) : c.dueAt), now, id);
     return getCard(owner, id);
   })();
 }
@@ -286,7 +336,9 @@ const iso = (v: number | null): string | null => (v === null ? null : new Date(v
 /** The wire shape (docs/omni-module.md § Item cards). Never carries the owner or the digest. */
 export function cardView(c: Card, now: number = Date.now()): Record<string, unknown> {
   return {
-    id: c.id, sourceKey: c.sourceKey, kind: c.kind, state: c.state, headline: c.headline, context: c.context, ask: c.ask, urgency: c.urgency,
+    id: c.id, sourceKey: c.sourceKey, kind: c.kind, state: c.state, headline: c.headline, context: c.context, ask: c.ask,
+    // Computed now, not the word the agent stamped at creation (which would say "today" for ever).
+    urgency: displayUrgency(c.dueAt, now), dueAt: iso(c.dueAt), overdue: c.dueAt !== null && c.dueAt < now,
     options: c.options.map((o) => ({ id: o.id, label: o.label, plan: o.plan, produces: o.produces, draft: o.draft })),
     recommended: c.recommended, itemRefs: c.itemRefs, threadId: c.threadId, approvalIds: c.approvalIds, chosenOptionId: c.chosenOptionId,
     outcomes: c.outcomes.map((o) => ({ ...o, at: iso(o.at) })),
@@ -299,8 +351,40 @@ export function cardView(c: Card, now: number = Date.now()): Record<string, unkn
 export function compareCardViews(a: Record<string, unknown>, b: Record<string, unknown>): number {
   const ra = URGENCY_RANK[a.urgency as CardUrgency] ?? 2, rb = URGENCY_RANK[b.urgency as CardUrgency] ?? 2;
   if (ra !== rb) return ra - rb;
+  // Same urgency: the earlier due date first (no date last), then the one waiting longest.
+  const da = typeof a.dueAt === "string" ? a.dueAt : null, db_ = typeof b.dueAt === "string" ? b.dueAt : null;
+  if (da !== db_) return da === null ? 1 : db_ === null ? -1 : da < db_ ? -1 : 1;
   return String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? ""));
 }
+
+// ── expiry and backfill ──────────────────────────────────────────────────────
+
+/** An untouched `proposed` card goes away on its own: 3 days after the later of its due date and its last
+ *  change (so a card published for an already-overdue item gets its 3 days of visibility), or (no date) 14 days
+ *  after it was last touched. `dismissed` with outcome `expired`, not a new state: the shipped app decodes `state`
+ *  as an enum. Cards the owner moved (working, draft-ready, snoozed, waiting) are never expired. */
+export function expireStaleCards(owner: string, now: number): number {
+  const rows = db.prepare("SELECT id FROM omni_item_cards WHERE owner_email=? AND state='proposed' AND ((due_at IS NOT NULL AND ? > MAX(due_at, updated_at) + ?) OR (due_at IS NULL AND ? - updated_at > ?))")
+    .all(owner, now, 3 * DAY_MS, now, 14 * DAY_MS) as Array<{ id: string }>;
+  return rows.filter((r) => transitionCard(owner, r.id, ["proposed"], "dismissed", { action: "expired" }, {}, now) !== null).length;
+}
+
+/** Give cards that predate `due_at` the date their urgency implied at creation. Idempotent (only null rows).
+ *  `updated_at` of open cards moves to `now` so the first expiry pass after a deploy measures from the deploy, not from
+ *  the card's old age; `whenever` cards keep a null date. */
+export function backfillCardDueDates(now: number): number {
+  return db.transaction((): number => {
+    const rows = db.prepare("SELECT id, urgency, created_at FROM omni_item_cards WHERE due_at IS NULL AND urgency != 'whenever'").all() as Array<{ id: string; urgency: string; created_at: number }>;
+    const set = db.prepare(`UPDATE omni_item_cards SET due_at=?, updated_at=CASE WHEN state IN ${OPEN} THEN ? ELSE updated_at END WHERE id=? AND due_at IS NULL`);
+    let n = 0;
+    for (const r of rows) {
+      const due = defaultDueAt(r.urgency as CardUrgency, r.created_at);
+      if (due !== null) n += set.run(due, now, r.id).changes;
+    }
+    return n;
+  })();
+}
+backfillCardDueDates(Date.now());
 
 // ── idempotent owner actions (choose / instruct) ────────────────────────────
 

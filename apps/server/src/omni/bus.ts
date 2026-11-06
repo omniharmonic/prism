@@ -9,7 +9,7 @@ import { getThread } from "./store";
 import { getApproval } from "./approvals";
 import { approvalBody, approvalHeadline } from "./push-text";
 import { getCard } from "./cards";
-import { cardNotification, cardPushAllowed } from "./card-push";
+import { cardNotification, cardPushAllowed, logCardPush } from "./card-push";
 import { attentionNotificationBody } from "./attention-preferences";
 import { omniConfig } from "./config";
 import type { OmniEvent } from "./stream";
@@ -116,14 +116,16 @@ export function omniNotification(kind: OmniPushKind, id: string, preference: Not
   };
 }
 const defaultPusher: OmniPusher = async (owner, kind, id, completedReply) => {
-  if (!apnsEnabled("omni")) return;
   if (kind === "OMNI_CARD") {
+    if (!apnsEnabled("omni")) return logCardPush(owner, id, null, "apns-disabled");
     const card = getCard(owner, id);
-    if (!card || !cardPushAllowed(owner)) return;
+    if (!card) return logCardPush(owner, id, null, "card-missing");
+    if (!cardPushAllowed(owner)) return logCardPush(owner, id, null, "not-allowed");
     const generic = attentionNotificationBody(owner);
-    await sendApnsToOwner(owner, (row) => cardNotification(card, row.preview, generic), "omni");
+    logCardPush(owner, id, await sendApnsToOwner(owner, (row) => cardNotification(card, row.preview, generic), "omni"), null);
     return;
   }
+  if (!apnsEnabled("omni")) return;
   if (kind === "OMNI_APPROVAL") {
     const a = getApproval(owner, id);
     const headline = a ? approvalHeadline(a) : undefined;
