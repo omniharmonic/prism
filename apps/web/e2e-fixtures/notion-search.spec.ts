@@ -117,7 +117,8 @@ test("created by me and edited by me are separate filters that combine; the date
   await expect(results.getByRole("option")).toHaveCount(within(365));
   await panel.getByRole("combobox", { name: "Date" }).selectOption("month");
   await expect(results.getByRole("option")).toHaveCount(within(30));
-  await expect(results).not.toContainText("Workshop agenda");
+  // Once every page is older than the range, the Notes group is not drawn at all: assert on the row.
+  await expect(results.getByRole("option", { name: /Workshop agenda/ })).toHaveCount(0);
   const monthAgo = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
   expect((await page.evaluate(() => (window as any).prismShell.searches as string[])).at(-1)).toContain(`after=${monthAgo}`);
 });
