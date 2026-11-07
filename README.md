@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/status-pre--release-orange" alt="Pre-release" />
+  <img src="https://img.shields.io/badge/status-public%20preview-orange" alt="Public preview" />
   <img src="https://img.shields.io/badge/host-Apple%20silicon%20Mac-black?logo=apple" alt="Apple-silicon Mac" />
   <img src="https://img.shields.io/badge/License-PolyForm%20Shield%201.0.0-blue" alt="PolyForm Shield License 1.0.0" />
 </p>
@@ -28,34 +28,43 @@ vault on your Mac; Prism is the server and apps on top of it.
 
 ## Status
 
-Prism is **pre-release**. The first public release (v1) is for people who are comfortable
-installing things but don't write code, and it is set up **by an agent**: you run
+Prism is a **public preview** (v0.9.1). It is for people who are comfortable installing
+things but don't write code, and it is set up **by an agent**: you run
 [Claude Code](https://claude.com/claude-code), and it walks you through every step while
 Prism's in-app setup checklist ticks off what's done.
 
 - **Host:** a Mac with Apple silicon, macOS 14 or newer. Intel, Linux and Windows come later.
-- **Apps:** the web app, the Prism Client for Mac, and Prism for iPhone and iPad
-  (TestFlight first, then the App Store).
+- **Apps:** the web app, [Prism Client for Mac](https://github.com/omniharmonic/prism/releases/latest)
+  (signed and notarized), and Prism for iPhone and iPad (TestFlight first, then the App Store).
 
-A one-step installer is in progress. Until it ships, setup runs from this repository.
+## Get started
 
-## Set it up (today, from source)
+You need **Claude Code** and git. The host bundle brings its own Node.js.
 
-You need **Node.js 22.18+**, **Claude Code**, and git.
+1. **Download** the [Mac app](https://github.com/omniharmonic/prism/releases/latest) (`Prism-Client_*.dmg`)
+   and the [host bundle](https://github.com/omniharmonic/prism/releases/tag/prism-host-v0.9.1)
+   (`prism-host-*-darwin-arm64.tar.gz` and `SHA256SUMS`).
+2. **Get the setup skills and unpack the bundle beside them:**
 
-```bash
-git clone https://github.com/omniharmonic/prism.git
-cd prism
-npm install
-claude            # then ask: "set up Prism"
-```
+   ```bash
+   git clone https://github.com/omniharmonic/prism.git
+   cd prism
+   tar xzf ~/Downloads/prism-host-0.9.1-darwin-arm64.tar.gz
+   ```
 
-The `prism-setup` skill takes it from there: the vault, the server's secrets, the vault's
-tag schemas, starting the server, your first sign-in, the Mac and phone apps, and
-(optionally) reaching Prism from outside your Mac and connecting your inboxes. Each step
-checks before it acts, so you can stop and resume at any time. Today you install
-[Parachute](https://parachute.computer) yourself when the skill asks; in v1 the agent
-installs it for you. The manual equivalent is in [`docs/onboarding.md`](docs/onboarding.md).
+   To check the download first: `cd ~/Downloads && shasum -a 256 -c SHA256SUMS --ignore-missing`.
+3. **Let the agent set it up:** run `claude` in that folder and ask it to *"set up Prism"*.
+
+The `prism-setup` skill runs `prism setup`, one resumable command: the vault, the server's
+secrets, the vault's tag schemas, starting the server under launchd, your first sign-in, the
+Mac and phone apps, and (optionally) reaching Prism from outside your Mac and connecting your
+inboxes. Each step checks before it acts, so you can stop and resume at any time. Prism runs on
+a [Parachute](https://parachute.computer) vault; the agent installs Parachute with your
+permission when the setup asks for it. The details are in
+[`docs/host-bundle.md`](docs/host-bundle.md) and [`docs/onboarding.md`](docs/onboarding.md).
+
+Updates are signed: `prism update` verifies the release's minisign signature and checksum,
+keeps a backup, and rolls back if the new version does not come up healthy.
 
 ## For developers
 

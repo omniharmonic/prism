@@ -294,6 +294,24 @@ export const isEmptySourceStub = (n: Note | null | undefined): boolean =>
   n?.metadata?.fireflies_status === "empty-source-recovered";
 
 /**
+ * Is the empty recording `t` a copy of one we ALREADY re-submitted (stub still
+ * waiting for its replacement)? Every `uploadAudio` makes a NEW Fireflies
+ * recording with a new id; while the minutes cap is exhausted that copy comes
+ * back empty too, and recovering it again re-uploads the same audio forever
+ * (2026-11: ~8 junk recordings a day). Matched on title, and on duration when
+ * both sides record it (so a later meeting with the same name is not mistaken
+ * for a copy). A stub without a recorded duration matches on title alone —
+ * the conservative side: it can only stop an upload, never cause one.
+ */
+export function isRepeatOfRecovered(t: FirefliesTranscript, stub: Note): boolean {
+  const md = stub.metadata ?? {};
+  if (md.source_id === t.id) return false;
+  const was = typeof md.fireflies_duration === "number" ? md.fireflies_duration : null;
+  if (was === null || typeof t.duration !== "number") return true;
+  return Math.abs(was - t.duration) <= 1;
+}
+
+/**
  * Does this vault note PROVE we already copied this exact Fireflies transcript?
  * The sole authority for deleting from Fireflies. Fails closed on every doubt.
  *
@@ -373,6 +391,7 @@ export type FirefliesEvent =
   | { kind: "not-owner"; id: string; title: string; owner: string } // can never delete
   | { kind: "false-delete"; id: string; title: string } // note said deleted, still live
   | { kind: "recovered"; id: string; title: string } // empty source re-uploaded for transcription
+  | { kind: "recovery-repeat"; id: string; title: string; of: string } // our own re-upload came back empty: not re-submitted
   | { kind: "quota-warning"; minutesConsumed: number; cap: number }
   | { kind: "undeletable"; id: string; title: string; reason: string };
 
@@ -380,7 +399,7 @@ export type FirefliesEvent =
  *  and we handed its audio back for transcription. Its presence is what stops us
  *  re-uploading the same recording on every run. `fireflies_verbatim_chars: 0`
  *  guarantees the delete gate never authorizes removing the empty original. */
-export function emptySourceStub(t: FirefliesTranscript): {
+export function emptySourceStub(t: FirefliesTranscript, repeatOf?: string): {
   content: string;
   path: string;
   tags: string[];
@@ -388,6 +407,31 @@ export function emptySourceStub(t: FirefliesTranscript): {
 } {
   const title = titleOf(t);
   const date = dateOf(t);
+  if (repeatOf) {
+    // A copy we made ourselves (or the same audio again): NOT re-submitted. The
+    // stub only makes this id known, so later runs neither fetch nor upload it.
+    return {
+      content:
+        `---\ntitle: "${title}"\ndate: ${date}\nsource: fireflies\ntranscript_id: "${t.id}"\n---\n\n` +
+        `## Summary\n\nAn empty Fireflies recording that repeats one already re-submitted for transcription ` +
+        `(${repeatOf}). It was not submitted again.\n`,
+      path: `vault/_inbox/transcripts/fireflies/${date}-${sanitizePath(title)}-empty-${t.id.slice(-6).toLowerCase()}`,
+      tags: ["transcript", "fireflies", "fireflies-empty-source"],
+      metadata: {
+        type: "transcript",
+        source: "fireflies",
+        source_id: t.id,
+        synced_at: new Date().toISOString(),
+        title,
+        date,
+        fireflies_url: t.transcript_url ?? "",
+        fireflies_status: "empty-source-repeat",
+        fireflies_repeat_of: repeatOf,
+        fireflies_duration: typeof t.duration === "number" ? t.duration : null,
+        fireflies_verbatim_chars: 0,
+      },
+    };
+  }
   return {
     content:
       `---\ntitle: "${title}"\ndate: ${date}\nsource: fireflies\ntranscript_id: "${t.id}"\n---\n\n` +
@@ -407,6 +451,7 @@ export function emptySourceStub(t: FirefliesTranscript): {
       fireflies_status: "empty-source-recovered",
       fireflies_recovery_uploaded_at: new Date().toISOString(),
       fireflies_audio_url: t.audio_url ?? "",
+      fireflies_duration: typeof t.duration === "number" ? t.duration : null,
       // Zero verbatim → isIngestConfirmed() can never authorize deleting the original.
       fireflies_verbatim_chars: 0,
     },
@@ -554,10 +599,13 @@ export async function ingestAndCleanupFireflies(
 
   // Early warning on the condition that starts the whole deadlock: once storage
   // crosses the plan cap, Fireflies quietly stops transcribing new meetings.
+  // Over the cap, a re-upload comes back empty too — so recovery waits.
+  let quotaFull = false;
   if (client.usage && budget.remaining() > 0) {
     budget.spend(1);
     try {
       const u = await client.usage();
+      quotaFull = u.minutesConsumed >= quotaCap;
       if (u.minutesConsumed >= quotaCap * 0.8) {
         emit({ kind: "quota-warning", minutesConsumed: u.minutesConsumed, cap: quotaCap });
       }
@@ -700,8 +748,21 @@ export async function ingestAndCleanupFireflies(
         out.skipped++;
         const upload = client.uploadAudio?.bind(client);
         const audioUrl = t.audio_url;
+        const prior = awaitingReplacement.get(normTitle(title));
+        if (recoverEmpty && prior && isRepeatOfRecovered(t, prior)) {
+          // Never re-submit our own copy. Record it so it isn't fetched again.
+          try {
+            const created = await vault.createNote(emptySourceStub(t, String(prior.metadata?.source_id ?? "")));
+            candidates.set(id, [created.id]);
+          } catch {
+            /* retried next run; still never uploaded */
+          }
+          emit({ kind: "recovery-repeat", id, title, of: String(prior.metadata?.source_id ?? "") });
+          continue;
+        }
         const canRecover =
           recoverEmpty &&
+          !quotaFull &&
           !!audioUrl &&
           !!upload &&
           !!ownerEmail &&
@@ -723,7 +784,13 @@ export async function ingestAndCleanupFireflies(
         // vault note, so it takes the delete branch (and is refused there,
         // because the stub records zero verbatim) rather than re-uploading.
         try {
-          await vault.createNote(emptySourceStub(t));
+          const stub = emptySourceStub(t);
+          const made = await vault.createNote(stub);
+          candidates.set(id, [made.id]);
+          // A copy of this one later in the same list must not be re-submitted either.
+          if (!awaitingReplacement.has(normTitle(title))) {
+            awaitingReplacement.set(normTitle(title), { ...made, metadata: { ...(made.metadata ?? {}), ...stub.metadata } });
+          }
         } catch {
           /* if the stub fails we may retry the upload next run — safe, not destructive */
         }

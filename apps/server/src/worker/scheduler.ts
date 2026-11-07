@@ -824,6 +824,7 @@ async function runFirefliesPass(entry: VaultEntry, opts: { force?: boolean }): P
       else if (e.kind === "not-owner") console.warn(`${p} NOT YOURS ${e.id} "${e.title}" — owned by ${e.owner}; cannot delete`);
       else if (e.kind === "false-delete") console.error(`${p} FALSE DELETE ${e.id} "${e.title}" — vault claimed deleted but it is still live; relabeled blocked`);
       else if (e.kind === "recovered") console.log(`${p} RECOVERED ${e.id} "${e.title}" — empty transcript; audio re-submitted for transcription`);
+      else if (e.kind === "recovery-repeat") console.log(`${p} not re-submitted ${e.id} "${e.title}" — empty copy of ${e.of}, already re-submitted`);
       else if (e.kind === "quota-warning") console.warn(`${p} QUOTA ${e.minutesConsumed.toFixed(0)}/${e.cap} min — Fireflies stops transcribing at the cap; delete ingested transcripts now`);
       else if (e.kind === "undeletable") console.warn(`${p} cannot delete ${e.id} "${e.title}" — ${e.reason}`);
     },

@@ -78,3 +78,6 @@ packaging/host/out/
 
 # Native web build module list (apps/web/scripts/bundled-modules.ts; read by apps/client/scripts/licenses/)
 apps/web/dist-native.modules.json
+
+# A host bundle unpacked into the checkout for setup (README "Get started")
+/prism-host-*/

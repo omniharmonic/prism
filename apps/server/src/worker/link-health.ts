@@ -243,6 +243,9 @@ export function measureLinks(samples: Readonly<Record<string, readonly LinkRow[]
   }
   for (const row of samples.transcript ?? []) {
     const md = row.metadata ?? {};
+    // A Fireflies empty-source stub records a recording with NO transcript; it
+    // has no meeting to tie to, so it is not a transcript for this measure.
+    if ((row.tags ?? []).includes("fireflies-empty-source")) continue;
     const tied =
       (row.tags ?? []).includes("meeting") ||
       (typeof md.meetingNoteId === "string" && md.meetingNoteId.trim() !== "") ||

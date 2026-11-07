@@ -463,6 +463,66 @@ test("recovery is skipped for a meeting we don't own, and when disabled", async 
   assert.equal(r2.recovered, 0);
 });
 
+test("an empty copy of a recording we already re-submitted is NOT re-submitted (the 2026-11 loop)", async () => {
+  // Our re-upload of "sync" came back as a NEW recording, empty again (cap full).
+  const stub: Note = {
+    id: "s1", content: "", path: null,
+    metadata: { source: "fireflies", source_id: "orig", title: "sync", fireflies_verbatim_chars: 0, fireflies_status: "empty-source-recovered" },
+    tags: ["transcript", "fireflies", "fireflies-empty-source"], createdAt: "", updatedAt: "",
+  };
+  const fv = fakeVault([stub]);
+  const fc = fakeClient([{ id: "copy1", title: "Sync", date: 0, duration: 30, host_email: ME, audio_url: "https://cdn/a.mp3" }], { empty: new Set(["copy1"]) });
+  const res = await ingestAndCleanupFireflies(fc.client, fv.vault, {
+    budget: bigBudget(), sleep: noSleep, deleteEnabled: true, ownerEmail: ME, recoverEmptySources: true,
+  });
+  assert.deepEqual(fc.uploaded, [], "never re-submit our own copy");
+  assert.equal(res.recovered, 0);
+  assert.equal(fv.creates.length, 1, "the copy is recorded so it is not fetched again");
+  assert.equal(fv.creates[0]!.metadata?.fireflies_status, "empty-source-repeat");
+  assert.equal(fv.creates[0]!.metadata?.fireflies_repeat_of, "orig");
+  assert.deepEqual(fc.deleted, []);
+});
+
+test("two empty copies in ONE list: only the first is re-submitted", async () => {
+  const fv = fakeVault([]);
+  const fc = fakeClient(
+    [
+      { id: "a", title: "Sync", date: 0, duration: 30, host_email: ME, audio_url: "https://cdn/a.mp3" },
+      { id: "b", title: "sync", date: 0, duration: 30, host_email: ME, audio_url: "https://cdn/b.mp3" },
+    ],
+    { empty: new Set(["a", "b"]) },
+  );
+  await ingestAndCleanupFireflies(fc.client, fv.vault, {
+    budget: bigBudget(), sleep: noSleep, ownerEmail: ME, recoverEmptySources: true,
+  });
+  assert.deepEqual(fc.uploaded, ["reprocess-a"]);
+});
+
+test("a same-named meeting of a DIFFERENT length is still recovered", async () => {
+  const stub: Note = {
+    id: "s1", content: "", path: null,
+    metadata: { source: "fireflies", source_id: "orig", title: "sync", fireflies_duration: 30, fireflies_verbatim_chars: 0, fireflies_status: "empty-source-recovered" },
+    tags: ["transcript", "fireflies", "fireflies-empty-source"], createdAt: "", updatedAt: "",
+  };
+  const fc = fakeClient([{ id: "new", title: "Sync", date: 0, duration: 55, host_email: ME, audio_url: "https://cdn/a.mp3" }], { empty: new Set(["new"]) });
+  await ingestAndCleanupFireflies(fc.client, fakeVault([stub]).vault, {
+    budget: bigBudget(), sleep: noSleep, ownerEmail: ME, recoverEmptySources: true,
+  });
+  assert.deepEqual(fc.uploaded, ["reprocess-new"]);
+});
+
+test("recovery waits while the minutes cap is full (a re-upload would come back empty)", async () => {
+  const fc = fakeClient([{ id: "t1", title: "Mine", date: 0, host_email: ME, audio_url: "https://cdn/a.mp3" }], { empty: new Set(["t1"]) });
+  const client = { ...fc.client, usage: async () => ({ minutesConsumed: 450, numTranscripts: 10 }) };
+  const fv = fakeVault([]);
+  const res = await ingestAndCleanupFireflies(client, fv.vault, {
+    budget: bigBudget(), sleep: noSleep, ownerEmail: ME, recoverEmptySources: true, quotaMinutesCap: 400,
+  });
+  assert.deepEqual(fc.uploaded, []);
+  assert.equal(res.recovered, 0);
+  assert.equal(fv.creates.length, 0, "nothing recorded — it is tried again once there is room");
+});
+
 test("an empty original is deleted ONLY once its recovered replacement is confirmed stored", async () => {
   const replacement = noteWith({ id: "rep", sourceId: "t2" }); // full body, passes the gate
   const stub: Note = {

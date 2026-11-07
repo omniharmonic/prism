@@ -54,6 +54,8 @@ test("link-health: every measure from sampled rows (pure)", () => {
         { id: "t2", tags: ["transcript"], metadata: { meetingNoteId: "m1" }, links: [] },
         { id: "t3", tags: ["transcript"], metadata: {}, links: [link("m2", "t3", "has-transcript")] },
         { id: "t4", tags: ["transcript"], metadata: {}, links: [link("t4", "p1", "attended-by")] },
+        // A Fireflies empty-source stub is not a transcript for this measure.
+        { id: "t5", tags: ["transcript", "fireflies", "fireflies-empty-source"], metadata: {}, links: [] },
       ],
       task: [
         { id: "k1", tags: ["task"], metadata: { project: "openworks" }, links: [] },

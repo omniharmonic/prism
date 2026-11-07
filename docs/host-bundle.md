@@ -1,9 +1,9 @@
 # The host bundle and the `prism` CLI
 
-**Status:** v1 Phase 1 (docs/distribution/LAUNCH-PLAN.md § Phase 1). Built and smoke-tested on an
-Apple-silicon Mac. A tag-triggered CI release job exists ([Release](#release)) with Developer ID
-signing, notarization and a signed `SHA256SUMS` that run once their secrets are set — it has not
-run on GitHub yet. No Parachute payload yet: Prism runs agent-installed **stock Parachute** under
+**Status:** released. Built by the tag-triggered CI release job ([Release](#release)) with
+Developer ID signing, notarization and a minisign-signed `SHA256SUMS`; current release
+[`prism-host-v0.9.1`](https://github.com/omniharmonic/prism/releases/tag/prism-host-v0.9.1).
+No Parachute payload yet: Prism runs agent-installed **stock Parachute** under
 its own hub agent instead ([Stock Parachute](#stock-parachute-the-fallback)).
 
 The host bundle is how Prism Server gets onto a person's Mac for v1: one tarball,
@@ -641,11 +641,6 @@ step) is the owner's call (launch plan Phase 1, "Version policy").
   `parachute.bundled` is false, and `--parachute embedded` is refused. The vault plist template is
   for when it lands (launch plan §3, E1–E10). Until then: stock Parachute under Prism's hub agent
   (`stock`), or a Parachute run by Parachute's own unit (`external`).
-- **The release job has not run on GitHub**, and no signing secret is set yet: everything in
-  [Release](#release) is scripted and linted, not yet proven on a runner (see "Not verified" there).
-- **No release key is committed yet** (`packaging/host/release/minisign.pub`): until it is, every
-  build refuses `prism update` without `--allow-unsigned` (see [Update and rollback](#update-and-rollback)).
-  The smoke test updates with `--allow-unsigned` and checks that the update is refused without it.
 - The Mac's `claude`, `gog` and similar tools are found through the agent's `PATH`
   (`~/.local/bin`, `~/.bun/bin`, Homebrew, `/usr/local/bin`, system).
 
