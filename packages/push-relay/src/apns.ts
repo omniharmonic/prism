@@ -18,9 +18,9 @@
  *
  * TRANSPORT. `fetch()` to https://api.push.apple.com (or the sandbox host). APNs
  * accepts HTTP/2 only. Cloudflare does not document which HTTP version a Worker's
- * outbound `fetch()` negotiates; this has NOT been verified against Apple from a
- * deployed Worker (no test here reaches Apple). The deploy checklist in README.md
- * ends with a real test notification for exactly this reason. The fetch function
+ * outbound `fetch()` negotiates. Verified from a deployed Worker on 2026-11-07:
+ * a made-up token got Apple's own `400 BadDeviceToken` in both environments
+ * (docs/push.md § Relay). No test here reaches Apple. The fetch function
  * is injected so the tests use a fake APNs.
  */
 import { b64url, fromB64url, sha256Hex } from "./auth";

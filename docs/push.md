@@ -232,7 +232,10 @@ It cannot send text, and it cannot learn other servers' tokens.
 **What Apple sees:** the same as with direct sending — the publisher's key, the topic, the token
 and the generic body.
 
-**Not verified yet:** delivery from a deployed Worker to APNs (HTTP/2; see the relay README,
+**Reaching APNs from the Worker: verified 2026-11-07.** The deployed relay
+(`https://prism-push-relay.benjamin-7c2.workers.dev`) sent to a made-up device token in both
+environments and Apple answered `400 BadDeviceToken` — the Worker's `fetch()` speaks to APNs and
+the provider token is accepted. Still to see: one real notification on a device (relay README,
 step 4). Tests: `apps/server/test/push-relay.test.ts` runs the server's sender against the real
 relay handler with a fake APNs, and `packages/push-relay/test/relay.test.ts` covers the relay
 alone.
