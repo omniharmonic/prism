@@ -50,8 +50,8 @@ jobs:
       APP_DIR: apps/client/src-tauri/target/release/bundle/macos
       OUT: apps/client/release-out
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -63,7 +63,7 @@ jobs:
           rustc --version
           cargo --version
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index
@@ -289,7 +289,7 @@ jobs:
           rm -f "$key"
 
       - name: Upload the workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.mode.outputs.name }}
           path: ${{ env.OUT }}/*
