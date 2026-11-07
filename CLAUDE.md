@@ -24,8 +24,11 @@ Server** (`apps/server`, Hono + SQLite) is the single trust boundary.
 - **Any editor schema change bumps `COLLAB_SCHEMA_VERSION`.**
 - **Never `git stash`** (the stash is shared by every worktree of the clone).
 - **Restart the server after a server change** — it does not hot-reload.
-- Licence: PolyForm Shield 1.0.0 (`LICENSE.md`, `NOTICE.md`). Prism contains no
-  Parachute (AGPL) code; keep it that way — talk to Parachute over HTTP or its CLIs.
+- Licence: GNU AGPL-3.0-only (`LICENSE.md`, `NOTICE.md`). New dependencies must be
+  AGPL-compatible (no SSPL, BUSL, non-commercial or proprietary licences). Prism still talks
+  to Parachute over HTTP or its CLIs (a separate program), not by vendoring its code.
+- **AGPL §13:** every server offers its source to its users — `/api/version` `source`
+  (`PRISM_SOURCE_URL`) and Settings → Advanced → About. Don't remove either.
 
 ## Where things are
 

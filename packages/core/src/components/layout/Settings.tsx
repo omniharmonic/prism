@@ -14,6 +14,7 @@ import { useVaultClient } from "../../data/VaultClientContext";
 import { ServerAiModels } from "./ServerAiModels";
 import { SearchIndexSettings } from "./SearchIndexSettings";
 import { ServiceHealth } from "./ServiceHealth";
+import { AboutPrism } from "./AboutPrism";
 import { PushSettings } from "./PushSettings";
 import { NotificationSettingsPanel } from "../inbox/NotificationSettingsPanel";
 import { IntegrationsOverview } from "./IntegrationsOverview";
@@ -571,6 +572,7 @@ export function Settings({ open, onClose }: SettingsProps) {
           {activeTab === "search" && host?.searchIndex && <SearchIndexSettings host={host} />}
 
           {activeTab === "advanced" && <ServiceHealth />}
+          {activeTab === "advanced" && <AboutPrism />}
           {activeTab === "advanced" && (
             <>
               <Section title="Start-up">

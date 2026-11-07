@@ -4,6 +4,21 @@
  * it is never sent to a client.
  */
 import { assertModelsConfig, getModelsConfig, setEnvModelSettings } from "./providers/config";
+export const DEFAULT_SOURCE_URL = "https://github.com/omniharmonic/prism";
+
+/** An https URL, else the public repository (never a value that could be a script or a relative path). */
+export function sourceUrlFrom(raw: string | undefined): string {
+  const v = (raw ?? "").trim();
+  if (!v) return DEFAULT_SOURCE_URL;
+  try {
+    const u = new URL(v);
+    if (u.protocol === "https:" && !u.username && !u.password) return u.toString().replace(/\/$/, "");
+  } catch {
+    /* fall through */
+  }
+  return DEFAULT_SOURCE_URL;
+}
+
 export const config = {
   port: Number(process.env.PORT ?? 8787),
   // Loopback by default. The public entrypoint is the Cloudflare tunnel, which
@@ -15,6 +30,9 @@ export const config = {
   // exposed surface, not open data.) Set BIND_HOST=0.0.0.0 to opt back in.
   bindHost: process.env.BIND_HOST ?? "127.0.0.1",
   appOrigin: (process.env.APP_ORIGIN ?? "http://localhost:8787").replace(/\/+$/, ""),
+  // Where this server's source code is (AGPL-3.0 §13: users of a modified copy over a network
+  // must be offered its source). Someone running a changed copy sets PRISM_SOURCE_URL to theirs.
+  sourceUrl: sourceUrlFrom(process.env.PRISM_SOURCE_URL),
 
   // Trust the "local owner" path (a headerless, presumed-loopback request may
   // present the COLLAB/vault token as the owner). This is ONLY safe when the

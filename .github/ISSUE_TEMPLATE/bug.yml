@@ -1,0 +1,35 @@
+name: Bug report
+description: Something in Prism doesn't work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. **Never paste tokens, passwords, `.env` contents or private notes** — the output of `prism doctor` and `prism status` is safe to share.
+        Security problems: please use **Report a vulnerability** on the Security tab instead of an issue.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      multiple: true
+      options: [Mac app (Prism Client), iPhone or iPad app, Web app, Host setup (prism CLI), Server]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`prism version`, or the app's About window."
+      placeholder: "0.9.1"
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`prism doctor` / `prism status` output (optional)"
+      render: text

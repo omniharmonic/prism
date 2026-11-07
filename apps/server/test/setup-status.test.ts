@@ -64,10 +64,10 @@ test("ready is the core alone; a phone needs an https address that is not this m
     assert.equal(reachableOrigin(origin), ok, origin);
 });
 
-test("GET /api/version answers anyone with the release and the wire version, and nothing else", async () => {
+test("GET /api/version answers anyone with the release, the wire version and the AGPL source offer, and nothing else", async () => {
   const r = await createApp().request("/api/version");
   assert.equal(r.status, 200);
-  assert.deepEqual(await r.json(), { version: SERVER_VERSION, api: API_VERSION });
+  assert.deepEqual(await r.json(), { version: SERVER_VERSION, api: API_VERSION, license: "AGPL-3.0-only", source: config.sourceUrl });
   assert.match(SERVER_VERSION, /^\d+\.\d+\.\d+/);
 });
 

@@ -212,7 +212,8 @@ export function createApp(): Hono {
   // Which server this is, for a client to tell when it is talking to an older or newer one
   // Registered before the signed-in API so it answers anyone.
   // (a release number and the wire version; nothing about the machine or its configuration).
-  app.get("/api/version", (c) => c.json({ version: SERVER_VERSION, api: API_VERSION }));
+  // `license` + `source`: the AGPL's offer of the source to everyone using this server over the network.
+  app.get("/api/version", (c) => c.json({ version: SERVER_VERSION, api: API_VERSION, license: "AGPL-3.0-only", source: config.sourceUrl }));
 
   app.route("/api/p", publish);
   app.route("/api/federation", federation);

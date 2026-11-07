@@ -4,6 +4,15 @@ Prism puts your entire knowledge vault behind a single, auditable trust boundary
 and exposes only what you explicitly share. This document is the threat model, the
 results of the security audit, and the checklist to deploy it safely.
 
+## Reporting a vulnerability
+
+Please report security problems **privately** through GitHub:
+[Report a vulnerability](https://github.com/omniharmonic/prism/security/advisories/new)
+(the Security tab of this repository). Don't open a public issue. Include the version
+(`prism version`), what an attacker can do, and the steps to reproduce. You'll get a reply
+as soon as possible; fixes ship as a signed release, and reporters are credited unless they
+ask not to be.
+
 ## The one rule
 
 **The Parachute vault token never leaves the home server.** No browser, no phone,

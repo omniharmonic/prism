@@ -1,7 +1,7 @@
 [package]
 name = "tauri-plugin-prism-ios"
 version = "0.9.1"
-license = "PolyForm-Shield-1.0.0"
+license = "AGPL-3.0-only"
 description = "Prism Client's iOS glue (WP5): ASWebAuthenticationSession sign-in, native confirmations, APNs registration, Face ID app lock. Rust-only API: no webview-callable commands."
 edition = "2021"
 publish = false

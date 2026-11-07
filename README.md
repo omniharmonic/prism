@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/status-public%20preview-orange" alt="Public preview" />
   <img src="https://img.shields.io/badge/host-Apple%20silicon%20Mac-black?logo=apple" alt="Apple-silicon Mac" />
-  <img src="https://img.shields.io/badge/License-PolyForm%20Shield%201.0.0-blue" alt="PolyForm Shield License 1.0.0" />
+  <img src="https://img.shields.io/badge/License-AGPL--3.0-blue" alt="License: AGPL-3.0" />
 </p>
 
 <h1 align="center">Prism</h1>
@@ -87,11 +87,11 @@ How it all fits together, and the rules every change follows:
 
 ## Licence
 
-Prism is licensed under the [PolyForm Shield License 1.0.0](./LICENSE.md): use it for
-anything, including your work, and change it; don't sell it, host it as a service, or build
-a competing product from it. See [NOTICE.md](./NOTICE.md) for the required notice, earlier
-versions, and how Prism works with [Parachute](https://github.com/ParachuteComputer)
-(AGPL-3.0, a separate program).
+Prism is free and open-source software under the [GNU Affero General Public License v3.0](./LICENSE.md)
+(`AGPL-3.0-only`). Use it, study it, change it and share it. If you run a changed copy for other
+people over a network, offer them its source too: set `PRISM_SOURCE_URL` and every server links to
+it. See [NOTICE.md](./NOTICE.md) for the copyright notice, earlier versions, and how Prism works
+with [Parachute](https://github.com/ParachuteComputer) (also AGPL-3.0, a separate program).
 
 ## Credits
 

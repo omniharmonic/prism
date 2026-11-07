@@ -1,0 +1,526 @@
+<!doctype html>
+<html lang="en" class="no-js">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Prism — Notion's power, Obsidian's soul</title>
+  <meta name="description" content="Prism is the workspace you actually own: blocks, databases, live collaboration and publishing — over a vault on your own Mac, linked with [[wikilinks]], backlinks and a living graph. Self-hosted, free and open source (AGPL-3.0).">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#0b0c10" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f7f8fa" media="(prefers-color-scheme: light)">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Prism">
+  <meta property="og:title" content="Prism — Notion's power, Obsidian's soul">
+  <meta property="og:description" content="The workspace you actually own. Blocks, databases and live collaboration over your own vault, with [[wikilinks]], backlinks and a living graph. Self-hosted, free and open source.">
+  <meta property="og:url" content="https://omniharmonic.github.io/prism/">
+  <meta property="og:image" content="https://omniharmonic.github.io/prism/assets/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Prism: Notion's power, Obsidian's soul. The workspace you actually own.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Prism — Notion's power, Obsidian's soul">
+  <meta name="twitter:description" content="The workspace you actually own. Self-hosted and open source (AGPL-3.0), for Mac, iPhone, iPad and the web.">
+  <meta name="twitter:image" content="https://omniharmonic.github.io/prism/assets/og.png">
+
+  <link rel="icon" href="assets/img/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png">
+  <link rel="stylesheet" href="assets/css/site.css">
+  <script src="assets/js/site.js" defer></script>
+  <script src="assets/js/hero-demo.js" defer></script>
+  <script src="assets/js/graph.js" defer></script>
+  <script src="assets/js/views.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="top-sentinel" aria-hidden="true"></div>
+
+  <header class="site-header" data-header>
+    <div class="wrap header-row">
+      <a class="brand" href="./" aria-label="Prism home">
+        <img src="assets/img/mark.svg" alt="" width="26" height="28">
+        <span>Prism</span>
+      </a>
+      <nav class="nav" aria-label="Sections">
+        <a href="#why">Why Prism</a>
+        <a href="#graph">Graph</a>
+        <a href="#views">Databases</a>
+        <a href="#compare">Compare</a>
+        <a href="#vault">Your data</a>
+        <a href="#start">Get started</a>
+      </nav>
+      <a class="nav-gh" href="https://github.com/omniharmonic/prism" aria-label="Source on GitHub">
+        <svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 2a10 10 0 0 0-3.2 19.5c.5.1.7-.2.7-.5v-1.7c-2.8.6-3.4-1.3-3.4-1.3-.4-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.6 2.4 1.1 3 .9.1-.7.4-1.1.6-1.4-2.2-.3-4.6-1.1-4.6-5 0-1.1.4-2 1-2.7-.1-.3-.4-1.3.1-2.7 0 0 .8-.3 2.7 1a9.4 9.4 0 0 1 5 0c1.9-1.3 2.7-1 2.7-1 .5 1.4.2 2.4.1 2.7.6.7 1 1.6 1 2.7 0 3.9-2.4 4.7-4.6 5 .4.3.7.9.7 1.9V21c0 .3.2.6.7.5A10 10 0 0 0 12 2Z"/></svg>
+      </a>
+      <a class="btn btn-small btn-primary" href="https://github.com/omniharmonic/prism/releases/latest">Download</a>
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- ───────────── Hero ───────────── -->
+    <section class="hero" aria-labelledby="hero-title" data-hero>
+      <div class="mesh" aria-hidden="true"><span class="blob b1"></span><span class="blob b2"></span><span class="blob b3"></span><span class="blob follow" data-follow></span></div>
+      <div class="grid-lines" aria-hidden="true"></div>
+      <div class="wrap hero-inner">
+        <p class="eyebrow"><span class="dot" aria-hidden="true"></span><span>Open source · The workspace you actually own</span></p>
+        <h1 id="hero-title"><span class="h1-line">Notion's power.</span> <span class="h1-line grad">Obsidian's soul.</span></h1>
+        <p class="lede">Blocks, databases, live collaboration and publishing — over a vault on <em>your</em> Mac, stitched together with <span class="wl">[[wikilinks]]</span>, backlinks and a living graph. Self-hosted. Free and open source. No Prism cloud account, ever.</p>
+        <div class="cta-row">
+          <a class="btn btn-primary btn-shine" href="https://github.com/omniharmonic/prism/releases/latest">
+            <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M16.4 12.6c0-2.4 2-3.6 2.1-3.7-1.1-1.7-2.9-1.9-3.5-1.9-1.5-.2-2.9.9-3.7.9-.8 0-1.9-.9-3.2-.8-1.6 0-3.1 1-4 2.4-1.7 3-.4 7.4 1.2 9.8.8 1.2 1.8 2.5 3 2.4 1.2 0 1.7-.8 3.1-.8 1.5 0 1.9.8 3.2.8 1.3 0 2.1-1.2 2.9-2.4.9-1.4 1.3-2.7 1.3-2.8 0 0-2.4-1-2.4-3.9ZM14 5.4c.7-.8 1.1-1.9 1-3-1 0-2.1.7-2.8 1.5-.6.7-1.2 1.8-1 2.9 1 .1 2.1-.6 2.8-1.4Z"/></svg>
+            Download for Mac
+          </a>
+          <a class="btn btn-ghost" href="https://github.com/omniharmonic/prism/blob/main/docs/onboarding.md">Set up your server</a>
+          <a class="link-arrow" href="https://github.com/omniharmonic/prism">Read the source <span aria-hidden="true">→</span></a>
+        </div>
+        <ul class="keys" aria-label="Keyboard-first" role="list" data-keys>
+          <li data-key="k"><kbd>⌘K</kbd><span>find anything</span></li>
+          <li data-key="["><kbd>[[</kbd><span>link any page</span></li>
+          <li data-key="/"><kbd>/</kbd><span>insert any block</span></li>
+        </ul>
+      </div>
+
+      <!-- The live product moment. Static HTML = the finished page (what reduced motion shows);
+           hero-demo.js replays it: typing, slash menu, [[ link, a collaborator, a comment,
+           then a board and a calendar. -->
+      <div class="wrap">
+        <figure class="stage" data-stage>
+          <div class="app" data-demo aria-hidden="true">
+            <div class="app-bar">
+              <span class="lights"><i></i><i></i><i></i></span>
+              <div class="app-tabs">
+                <span class="app-tab is-on" data-tab="page"><b class="ico doc"></b>Launch plan</span>
+                <span class="app-tab" data-tab="db"><b class="ico db"></b>Launch tracker</span>
+              </div>
+              <span class="app-sync"><i></i>Saved</span>
+            </div>
+            <div class="app-body">
+              <aside class="app-side">
+                <div class="side-search"><span>Search</span><kbd>⌘K</kbd></div>
+                <p class="side-h">Favorites</p>
+                <span class="side-i is-on" data-side="page"><b class="ico doc"></b>Launch plan</span>
+                <span class="side-i" data-side="db"><b class="ico db"></b>Launch tracker</span>
+                <p class="side-h">Pages</p>
+                <span class="side-i"><b class="ico doc"></b>Landing page</span>
+                <span class="side-i"><b class="ico doc"></b>Release notes</span>
+                <span class="side-i"><b class="ico doc"></b>Meetings</span>
+                <span class="side-i"><b class="ico doc"></b>People</span>
+                <span class="side-i"><b class="ico graph"></b>Graph</span>
+              </aside>
+              <div class="app-main">
+                <div class="app-head">
+                  <span class="crumb" data-crumb>Projects / <b>Launch plan</b></span>
+                  <span class="presence"><i class="av av-me">A</i><i class="av av-maya" data-maya-av>M</i></span>
+                  <span class="share">Share</span>
+                </div>
+
+                <!-- Scene 1: the page -->
+                <div class="scene scene-page is-on" data-scene="page">
+                  <div class="doc">
+                    <h3 class="doc-title" data-t="title">Launch plan</h3>
+                    <p class="doc-p" data-t="lede">Ship v1 to everyone who wants Notion's power and Obsidian's soul.</p>
+                    <ul class="todos" data-todos>
+                      <li class="todo is-done" data-todo1><span class="box"></span><span class="todo-t"><span class="hl" data-hl>Record the launch video</span></span></li>
+                      <li class="todo" data-todo2><span class="box"></span><span class="todo-t" data-t="todo2">Write release notes</span></li>
+                    </ul>
+                    <p class="doc-p" data-linkline><span data-t="link-pre">Copy lives in </span><span class="wikichip" data-chip>Landing page</span><span data-t="link-post">.</span></p>
+                    <span class="caret" data-caret></span>
+                    <span class="caret caret-maya" data-maya><span class="flag">Maya</span></span>
+
+                    <div class="pop slash" data-slash>
+                      <p class="pop-h">Basic blocks</p>
+                      <span class="pop-i" data-opt="text"><b class="gly">T</b>Text</span>
+                      <span class="pop-i" data-opt="h2"><b class="gly">H2</b>Heading 2</span>
+                      <span class="pop-i" data-opt="todo"><b class="gly">☑</b>To-do list</span>
+                      <span class="pop-i" data-opt="toggle"><b class="gly">▸</b>Toggle</span>
+                      <span class="pop-i" data-opt="table"><b class="gly">▦</b>Table view</span>
+                    </div>
+                    <div class="pop links" data-links>
+                      <p class="pop-h">Link to page</p>
+                      <span class="pop-i" data-lopt="landing"><b class="ico doc"></b>Landing page</span>
+                      <span class="pop-i" data-lopt="tracker"><b class="ico db"></b>Launch tracker</span>
+                      <span class="pop-i" data-lopt="video"><b class="ico doc"></b>Launch video script</span>
+                    </div>
+                  </div>
+                  <aside class="comment" data-comment>
+                    <span class="av av-maya">M</span>
+                    <div><b>Maya</b><span>just now</span><p>Love this cut. Ship it Friday?</p></div>
+                  </aside>
+                </div>
+
+                <!-- Scene 2: the database as a board -->
+                <div class="scene scene-db" data-scene="db">
+                  <div class="db-top">
+                    <h3 class="doc-title">Launch tracker</h3>
+                    <div class="db-tabs"><span class="is-on" data-dbtab="board">Board</span><span data-dbtab="cal">Calendar</span><span>Table</span></div>
+                  </div>
+                  <div class="dbv board is-on" data-dbv="board">
+                    <div class="col"><p class="col-h"><i class="st st-todo"></i>To do <em>2</em></p>
+                      <div class="kcard"><b>Write release notes</b><span class="who mm">M</span></div>
+                      <div class="kcard"><b>Pair the iPhone app</b><span class="who aa">A</span></div>
+                    </div>
+                    <div class="col" data-col-doing><p class="col-h"><i class="st st-doing"></i>In progress <em data-n-doing>2</em></p>
+                      <div class="kcard" data-glide><b>Record the launch video</b><span class="who aa">A</span></div>
+                      <div class="kcard"><b>Landing page</b><span class="who mm">M</span></div>
+                    </div>
+                    <div class="col" data-col-done><p class="col-h"><i class="st st-done"></i>Done <em data-n-done>1</em></p>
+                      <div class="kcard"><b>Seed tag schemas</b><span class="who aa">A</span></div>
+                    </div>
+                  </div>
+                  <div class="dbv cal" data-dbv="cal">
+                    <div class="cal-grid" data-cal></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <figcaption class="stage-cap">
+            <span class="stage-note">A live replay of Prism's editor, drawn in HTML.</span>
+            <button class="btn btn-glass" type="button" data-open-film hidden>
+              <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M8 5.5v13l11-6.5z"/></svg>
+              Watch the launch video
+            </button>
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <!-- ───────────── Ticker ───────────── -->
+    <div class="ticker" aria-label="What's inside">
+      <div class="ticker-track" data-ticker>
+        <ul role="list">
+          <li>Block editor</li><li>Live cursors</li><li>Comments &amp; suggested edits</li><li>[[Wikilinks]]</li><li>Backlinks</li><li>Graph view</li><li>Table · Board · Calendar · Gallery</li><li>Version history</li><li>Works offline</li><li>⌘K search</li><li>Markdown in &amp; out</li><li>Notion import</li><li>Publish a wiki</li><li>Email &amp; chat inbox</li><li>Agents with your permissions</li><li>Mac · iPhone · iPad · Web</li><li>Open source · AGPL-3.0</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- ───────────── Why: two halves ───────────── -->
+    <section class="section" id="why" aria-labelledby="why-title">
+      <div class="wrap">
+        <div class="section-head reveal">
+          <p class="kicker">Why Prism</p>
+          <h2 id="why-title" class="section-title">You shouldn't have to choose<br class="br-wide"> between polish and ownership.</h2>
+          <p class="section-lede">Notion made workspaces beautiful and collaborative. Obsidian made them yours. Prism is what happens when you refuse to pick one.</p>
+        </div>
+        <div class="halves">
+          <article class="half spot reveal">
+            <p class="half-k">The power</p>
+            <h3>Everything you'd miss from Notion</h3>
+            <ul class="feat-list" role="list">
+              <li><b>Blocks for everything.</b> Headings, to-dos, toggles, columns, tables, callouts, embeds — from one <kbd>/</kbd> menu.</li>
+              <li><b>Real databases.</b> Typed properties, filters, sorts, totals; table, board, calendar, gallery and list views.</li>
+              <li><b>Live together.</b> Cursors, comments, and suggested edits someone else accepts.</li>
+              <li><b>Share precisely.</b> A page, a folder or a tag — as viewer, commenter, suggester or editor. Or publish a tag as a public wiki.</li>
+            </ul>
+          </article>
+          <article class="half half-soul spot reveal">
+            <p class="half-k">The soul</p>
+            <h3>Everything you love about Obsidian</h3>
+            <ul class="feat-list" role="list">
+              <li><b>Your vault, your machine.</b> Notes live in a Parachute vault — a knowledge graph on your own Mac.</li>
+              <li><b><span class="wl">[[Wikilinks]]</span> that autocomplete.</b> Backlinks on every page, and a graph that grows with you.</li>
+              <li><b>Keyboard-first.</b> <kbd>⌘K</kbd> to go anywhere, <kbd>[[</kbd> to link, shortcuts for the rest.</li>
+              <li><b>Markdown in and out. Offline.</b> Import Markdown or a Notion export; export a page or the whole workspace. Edit offline; it syncs when you're back.</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───────────── Graph ───────────── -->
+    <section class="section graph-section" id="graph" aria-labelledby="graph-title">
+      <div class="wrap graph-grid">
+        <div class="graph-copy reveal">
+          <p class="kicker">For people who love Obsidian</p>
+          <h2 id="graph-title" class="section-title">Your notes, as a living graph.</h2>
+          <p class="section-lede">Every <span class="wl">[[link]]</span> and mention becomes an edge. Meetings connect to people, people to projects, projects to the pages that matter. Open any page and see what points back at it.</p>
+          <p class="hint"><span class="hint-dot" aria-hidden="true"></span>Hover a note to light up its neighbours. Drag one to pull the web.</p>
+        </div>
+        <figure class="graph-card reveal" data-graph-wrap>
+          <canvas class="graph" data-graph role="img" aria-label="An interactive graph of about forty example notes — projects, people, meetings and ideas — connected by their links."></canvas>
+          <figcaption class="graph-legend" aria-hidden="true">
+            <span><i class="lg-project"></i>Projects</span><span><i class="lg-person"></i>People</span><span><i class="lg-meeting"></i>Meetings</span><span><i class="lg-idea"></i>Ideas</span>
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <!-- ───────────── Views ───────────── -->
+    <section class="section" id="views" aria-labelledby="views-title">
+      <div class="wrap">
+        <div class="section-head center reveal">
+          <p class="kicker">Databases</p>
+          <h2 id="views-title" class="section-title">One set of pages. Every view.</h2>
+          <p class="section-lede">Any tag becomes a database, and its rows are ordinary pages — nothing is copied. Flip between views and the same pages move with you.</p>
+        </div>
+        <div class="views reveal" data-views>
+          <div class="views-bar">
+            <div class="views-tabs" role="tablist" aria-label="Database view">
+              <button role="tab" type="button" aria-selected="true" data-view="table">Table</button>
+              <button role="tab" type="button" aria-selected="false" data-view="board">Board</button>
+              <button role="tab" type="button" aria-selected="false" data-view="calendar">Calendar</button>
+              <button role="tab" type="button" aria-selected="false" data-view="gallery">Gallery</button>
+            </div>
+            <span class="views-meta">#launch · 8 pages</span>
+          </div>
+          <div class="views-stage" role="tabpanel" aria-label="Launch pages" data-views-stage>
+            <!-- Rendered by views.js; this static table is the no-JS fallback. -->
+            <table class="vt-fallback">
+              <thead><tr><th scope="col">Page</th><th scope="col">Status</th><th scope="col">Owner</th><th scope="col">Date</th></tr></thead>
+              <tbody>
+                <tr><td>Record the launch video</td><td>In progress</td><td>Ana</td><td>Nov 12</td></tr>
+                <tr><td>Write release notes</td><td>To do</td><td>Maya</td><td>Nov 13</td></tr>
+                <tr><td>Landing page</td><td>In progress</td><td>Maya</td><td>Nov 10</td></tr>
+                <tr><td>Pair the iPhone app</td><td>To do</td><td>Theo</td><td>Nov 14</td></tr>
+                <tr><td>Seed tag schemas</td><td>Done</td><td>Ana</td><td>Nov 9</td></tr>
+                <tr><td>Import the old wiki</td><td>Done</td><td>Theo</td><td>Nov 11</td></tr>
+                <tr><td>Publish the docs site</td><td>To do</td><td>Ana</td><td>Nov 15</td></tr>
+                <tr><td>Invite the team</td><td>In progress</td><td>Theo</td><td>Nov 13</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───────────── Bento ───────────── -->
+    <section class="section bento-section" aria-labelledby="more-title">
+      <div class="wrap">
+        <div class="section-head reveal">
+          <p class="kicker">And the rest of your work</p>
+          <h2 id="more-title" class="section-title">Pages, people, inbox and calendar — finally on speaking terms.</h2>
+        </div>
+        <ul class="bento" role="list">
+          <li class="tile tile-wide spot reveal">
+            <div class="tile-art art-inbox" aria-hidden="true"><span class="msg m1"><i></i>Email · <b>Release date?</b></span><span class="msg m2"><i></i>Chat · <b>Video is rendering</b></span><span class="msg m3"><i></i>Meeting · <b>Launch sync notes</b></span></div>
+            <h3>An inbox that knows your work</h3>
+            <p>Email and chat arrive in your vault, threaded and linked to the people involved — so every person's page shows every conversation.</p>
+          </li>
+          <li class="tile spot reveal">
+            <div class="tile-art art-history" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+            <h3>Version history</h3>
+            <p>Step back through every save and restore any version. Restoring is undoable too.</p>
+          </li>
+          <li class="tile spot reveal">
+            <div class="tile-art art-agent" aria-hidden="true"><span>Claude</span><em>edit · your permissions</em></div>
+            <h3>Agents, on a leash</h3>
+            <p>Claude can read and edit your workspace — with exactly the permissions of the account it acts for.</p>
+          </li>
+          <li class="tile spot reveal">
+            <div class="tile-art art-publish" aria-hidden="true"><span>#handbook</span><b>→</b><span>public wiki</span></div>
+            <h3>Publish a tag</h3>
+            <p>Turn a tag into a public, read-only site, optionally behind a password. New pages appear on their own.</p>
+          </li>
+          <li class="tile spot reveal">
+            <div class="tile-art art-cal" aria-hidden="true"><i></i><i class="on"></i><i></i><i></i><i class="on2"></i><i></i><i></i></div>
+            <h3>Calendar, with notes</h3>
+            <p>Agenda, day, week and month. Each meeting gets a page for its notes and its people.</p>
+          </li>
+          <li class="tile spot reveal">
+            <div class="tile-art art-search" aria-hidden="true"><span class="q"><kbd>⌘K</kbd>launch</span><span class="r on">Launch plan</span><span class="r">Launch tracker</span></div>
+            <h3>Find anything with ⌘K</h3>
+            <p>One search across pages, messages and meetings, with filters for type, date and who wrote it.</p>
+          </li>
+          <li class="tile tile-wide spot reveal">
+            <div class="tile-art art-io" aria-hidden="true"><span>Notion export.zip</span><b>⇄</b><span>Prism</span><b>⇄</b><span>Markdown · HTML</span></div>
+            <h3>Come in from Notion. Leave whenever you like.</h3>
+            <p>Import Markdown, HTML, CSV or a Notion export with its nesting and links intact. Export one page or the whole workspace as Markdown or HTML.</p>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ───────────── Compare ───────────── -->
+    <section class="section" id="compare" aria-labelledby="compare-title">
+      <div class="wrap">
+        <div class="section-head center reveal">
+          <p class="kicker">Side by side</p>
+          <h2 id="compare-title" class="section-title">How it stacks up.</h2>
+          <p class="section-lede">We love both of these tools — that's why we built the thing in between.</p>
+        </div>
+        <div class="compare-wrap reveal" tabindex="0" role="region" aria-label="Comparison table">
+          <table class="compare">
+            <caption class="visually-hidden">Prism compared with Notion and Obsidian</caption>
+            <thead>
+              <tr><th scope="col"><span class="visually-hidden">Feature</span></th><th scope="col" class="c-prism">Prism</th><th scope="col">Notion</th><th scope="col">Obsidian</th></tr>
+            </thead>
+            <tbody>
+              <tr><th scope="row">Your data lives</th><td class="c-prism"><span class="y">In your vault, on your Mac</span></td><td><span class="n">In Notion's cloud</span></td><td><span class="y">In files on your device</span></td></tr>
+              <tr><th scope="row">Real-time collaboration</th><td class="c-prism"><span class="y">✓</span> Live cursors, comments, suggestions</td><td><span class="y">✓</span></td><td><span class="n">—</span> Not built in</td></tr>
+              <tr><th scope="row">Databases with board, table and calendar views</th><td class="c-prism"><span class="y">✓</span></td><td><span class="y">✓</span></td><td><span class="p">Partial</span> Bases: table and card views</td></tr>
+              <tr><th scope="row">[[Wikilinks]], backlinks and a graph</th><td class="c-prism"><span class="y">✓</span></td><td><span class="p">Partial</span> Links and backlinks, no graph</td><td><span class="y">✓</span></td></tr>
+              <tr><th scope="row">Works offline</th><td class="c-prism"><span class="y">✓</span> Edits sync when you're back</td><td><span class="p">Partial</span> Pages you make available offline</td><td><span class="y">✓</span></td></tr>
+              <tr><th scope="row">Publish to the web</th><td class="c-prism"><span class="y">✓</span> From your own server</td><td><span class="y">✓</span></td><td><span class="p">Partial</span> Paid add-on</td></tr>
+              <tr><th scope="row">Self-hosted</th><td class="c-prism"><span class="y">✓</span> Server and vault on your Mac</td><td><span class="n">—</span></td><td><span class="p">Partial</span> Local app; sync is a service or DIY</td></tr>
+              <tr><th scope="row">Open source</th><td class="c-prism"><span class="y">✓</span> AGPL-3.0</td><td><span class="n">—</span></td><td><span class="n">—</span> Closed-source app</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="swipe-hint" aria-hidden="true">Swipe the table sideways to compare →</p>
+        <p class="footnote">Our own reading of each product as of November 2026 — features change, so check before you choose. Notion and Obsidian are trademarks of their respective owners; Prism is not affiliated with either.</p>
+      </div>
+    </section>
+
+    <!-- ───────────── Your data ───────────── -->
+    <section class="section vault" id="vault" aria-labelledby="vault-title">
+      <div class="wrap">
+        <div class="section-head center reveal">
+          <p class="kicker">Your data, your vault</p>
+          <h2 id="vault-title" class="section-title">The key never leaves your server.</h2>
+          <p class="section-lede">Prism has no cloud of its own. Your apps talk to Prism Server on your Mac; only the server holds the key to your Parachute vault, and it checks every request against your permissions first.</p>
+        </div>
+        <figure class="flow reveal" aria-labelledby="flow-cap">
+          <div class="flow-col flow-devices">
+            <span class="node dev"><i class="d-ico d-mac"></i>Mac</span>
+            <span class="node dev"><i class="d-ico d-phone"></i>iPhone &amp; iPad</span>
+            <span class="node dev"><i class="d-ico d-web"></i>Browser</span>
+            <span class="flow-label">Each with its own revocable device token</span>
+          </div>
+          <div class="wire w1" aria-hidden="true"><span class="pk"></span><span class="pk"></span><span class="pk"></span></div>
+          <div class="flow-col">
+            <div class="node server">
+              <b>Prism Server</b>
+              <span>checks every read and write</span>
+              <span class="keychip"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="12" r="4"/><path d="M12 12h9M18 12v3M21 12v2"/></svg>vault key stays here</span>
+            </div>
+          </div>
+          <div class="wire w2" aria-hidden="true"><span class="pk"></span><span class="pk"></span></div>
+          <div class="flow-col">
+            <div class="node vaultnode">
+              <svg class="lock" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2.5"/><path d="M8 10V7.5a4 4 0 0 1 8 0V10"/></svg>
+              <b>Your Parachute vault</b>
+              <span>a knowledge graph on your Mac</span>
+            </div>
+          </div>
+          <figcaption id="flow-cap" class="visually-hidden">Your Mac, iPhone, iPad and browser connect only to Prism Server, each with its own revocable device token. Prism Server alone holds the vault key; it checks every request before anything reaches your Parachute vault.</figcaption>
+        </figure>
+        <ul class="vault-points" role="list">
+          <li class="reveal"><b>Self-hosted.</b> Your server and your vault run on hardware you own.</li>
+          <li class="reveal"><b>Apps never hold the vault key.</b> Revoke any device from Settings at any time.</li>
+          <li class="reveal"><b>Permissions on every request.</b> Shared pages, private pages and links are checked by the server, not trusted from a client.</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ───────────── Devices ───────────── -->
+    <section class="section" id="devices" aria-labelledby="devices-title">
+      <div class="wrap">
+        <div class="section-head center reveal">
+          <p class="kicker">Every device</p>
+          <h2 id="devices-title" class="section-title">Same page. Every screen.</h2>
+          <p class="section-lede">A native Mac app, an iPhone and iPad app, and any browser — all talking to your server.</p>
+        </div>
+        <div class="devices reveal" aria-hidden="true">
+          <div class="mac">
+            <div class="mac-screen">
+              <div class="mini-side"><i></i><i class="on"></i><i></i><i></i><i></i></div>
+              <div class="mini-page">
+                <b class="mini-title">Launch plan</b>
+                <span class="mini-props"><em>In progress</em><em>Nov 14</em></span>
+                <i></i><i class="s"></i>
+                <span class="mini-todo done">Record the launch video</span>
+                <span class="mini-todo">Write release notes</span>
+                <span class="mini-link">Landing page</span>
+              </div>
+            </div>
+            <div class="mac-base"></div>
+          </div>
+          <div class="phone">
+            <div class="phone-screen">
+              <span class="notch"></span>
+              <div class="mini-page">
+                <b class="mini-title">Launch plan</b>
+                <span class="mini-props"><em>In progress</em></span>
+                <i></i><i class="s"></i>
+                <span class="mini-todo done">Record the launch video</span>
+                <span class="mini-todo">Write release notes</span>
+                <span class="mini-link">Landing page</span>
+              </div>
+              <span class="phone-bar"><i></i><i></i><i></i><i></i></span>
+            </div>
+          </div>
+        </div>
+        <ul class="device-notes" role="list">
+          <li class="reveal"><h3>Mac</h3><p>Prism Client for Apple-silicon Macs. Signed, notarized, updates in place, keeps its sign-in in your Keychain. Quick capture with <kbd>⌘⇧Space</kbd>.</p></li>
+          <li class="reveal"><h3>iPhone &amp; iPad</h3><p>A real app with notifications, Face ID app lock and a keyboard toolbar made for writing. On TestFlight now; the App Store later.</p></li>
+          <li class="reveal"><h3>Web</h3><p>Your server serves Prism to any browser. Install it as an app, keep working offline, share pages with people who don't use Prism yet.</p></li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ───────────── Get started ───────────── -->
+    <section class="section start" id="start" aria-labelledby="start-title">
+      <div class="wrap">
+        <div class="section-head center reveal">
+          <p class="kicker">Get started</p>
+          <h2 id="start-title" class="section-title">Your own server in an afternoon.</h2>
+          <p class="section-lede">Setup is done by an agent: run <a href="https://claude.com/claude-code">Claude Code</a>, ask it to “set up Prism”, and it walks you through each step while Prism's own checklist ticks them off. Stop and resume any time.</p>
+        </div>
+        <ol class="steps" role="list">
+          <li class="step spot reveal">
+            <span class="step-n" aria-hidden="true">01</span>
+            <h3>Run the host bundle</h3>
+            <p>On an Apple-silicon Mac with macOS 14 or newer, unpack the host bundle and start the setup run.</p>
+            <pre><code>./prism-host-*/bin/prism setup</code></pre>
+          </li>
+          <li class="step spot reveal">
+            <span class="step-n" aria-hidden="true">02</span>
+            <h3>Connect your vault</h3>
+            <p>Setup finds your Parachute vault — or installs it with your yes — and hands the server its key directly. You never see it, so it never lands in a chat.</p>
+          </li>
+          <li class="step spot reveal">
+            <span class="step-n" aria-hidden="true">03</span>
+            <h3>Sign in everywhere</h3>
+            <p>Sign in as the owner, install Prism for Mac, sign in your phone. Add mail, calendar, chat and transcripts when you're ready.</p>
+          </li>
+        </ol>
+      </div>
+    </section>
+
+    <!-- ───────────── Final CTA ───────────── -->
+    <section class="final" aria-labelledby="final-title">
+      <div class="final-glow" aria-hidden="true"></div>
+      <div class="wrap final-inner reveal">
+        <img class="final-mark" src="assets/img/mark.svg" alt="" width="64" height="68">
+        <h2 id="final-title">Stop renting your second brain.</h2>
+        <p>Prism v1 is here — free and open source — for Apple-silicon Macs, with the iPhone and iPad app on TestFlight.</p>
+        <div class="cta-row">
+          <a class="btn btn-primary btn-lg btn-shine" href="https://github.com/omniharmonic/prism/releases/latest">Download for Mac</a>
+          <a class="btn btn-ghost btn-lg" href="https://github.com/omniharmonic/prism/blob/main/docs/onboarding.md">Read the setup guide</a>
+        </div>
+        <p class="final-fine"><b>Free and open source</b> under the <a href="https://github.com/omniharmonic/prism/blob/main/LICENSE.md">GNU AGPL-3.0</a> (<a href="https://www.gnu.org/licenses/agpl-3.0.html">about the licence</a>). Use it for anything, including your business. If you run a changed copy for others over a network, share your changes under the same licence. Read, change and self-host every line on <a href="https://github.com/omniharmonic/prism">GitHub</a>.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap footer-row">
+      <a class="brand" href="./" aria-label="Prism home">
+        <img src="assets/img/mark.svg" alt="" width="22" height="24">
+        <span>Prism</span>
+      </a>
+      <nav aria-label="Footer">
+        <a href="https://github.com/omniharmonic/prism/releases/latest">Download</a>
+        <a href="https://github.com/omniharmonic/prism/releases">All releases</a>
+        <a href="https://github.com/omniharmonic/prism/blob/main/docs/onboarding.md">Setup guide</a>
+        <a href="https://github.com/omniharmonic/prism">Source</a>
+        <a href="https://github.com/omniharmonic/prism/blob/main/LICENSE.md">Licence (AGPL-3.0)</a>
+        <a href="https://github.com/omniharmonic/prism/blob/main/NOTICE.md">Notice</a>
+        <a href="https://github.com/omniharmonic/prism/blob/main/SECURITY.md">Security</a>
+        <a href="https://parachute.computer">Parachute</a>
+      </nav>
+      <p class="fine">Prism talks to Parachute, a separate program under its own licence, over HTTP. This page sets no cookies and loads nothing from anywhere else.</p>
+    </div>
+  </footer>
+
+  <dialog class="film" data-film aria-label="Prism launch video">
+    <div class="film-inner">
+      <button class="film-close" type="button" data-close-film aria-label="Close video">
+        <svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+      <video controls playsinline preload="none" data-film-video></video>
+    </div>
+  </dialog>
+</body>
+</html>

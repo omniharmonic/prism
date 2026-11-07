@@ -45,7 +45,7 @@ function fakeCargo() {
     id: `${name} ${version}`, name, version, license, license_file: null, manifest_path: manifest, source, repository: `https://example.com/${name}`,
   });
   const packages = [
-    pkg("app", "1.0.0", "PolyForm-Shield-1.0.0", join(reg, "app/Cargo.toml"), null),
+    pkg("app", "1.0.0", "AGPL-3.0-only", join(reg, "app/Cargo.toml"), null),
     pkg("a", "1.2.0", "MIT OR Apache-2.0", crate("a", "1.2.0", { "LICENSE-MIT": MIT("Alice"), "LICENSE-APACHE": APACHE, NOTICE: "a NOTICE: includes software from Example" })),
     pkg("b", "0.3.0", "MPL-2.0", crate("b", "0.3.0", { LICENSE: "Mozilla Public License Version 2.0 ..." })),
     pkg("local", "0.1.0", "MIT", join(reg, "local/Cargo.toml"), null),

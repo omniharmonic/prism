@@ -1,9 +1,10 @@
 /**
  * Hub-issued JWT validation — Prism's own implementation of the Parachute hub's
  * PUBLIC token contract, on `jose` (MIT). It replaces `@openparachute/scope-guard`
- * (AGPL-3.0), which Prism used to link in-process: Prism is PolyForm Shield, and
- * the AGPL does not allow linking it into a program under added restrictions.
- * Written from the contract, not from scope-guard's source:
+ * (AGPL-3.0), which Prism used to link in-process while Prism was under PolyForm
+ * Shield (the AGPL does not allow linking into a program under added restrictions).
+ * Prism is AGPL-3.0 itself since 2026-11-07. Written from the contract, not from
+ * scope-guard's source:
  *
  *   - keys:        GET <hub>/.well-known/jwks.json (RS256, `kid` in the header)
  *   - revocation:  GET <hub>/.well-known/parachute-revocation.json → {jtis: [...]}

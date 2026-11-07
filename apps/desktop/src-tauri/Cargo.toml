@@ -1,7 +1,7 @@
 [package]
 name = "prism-app"
 version = "0.9.1"
-license = "PolyForm-Shield-1.0.0"
+license = "AGPL-3.0-only"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"

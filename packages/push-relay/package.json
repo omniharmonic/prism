@@ -1,7 +1,7 @@
 {
   "name": "@prism/push-relay",
   "version": "0.9.1",
-  "license": "PolyForm-Shield-1.0.0",
+  "license": "AGPL-3.0-only",
   "private": true,
   "type": "module",
   "main": "./src/index.ts",

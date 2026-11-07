@@ -1,23 +1,29 @@
 # Notices
 
-Prism is licensed under the [PolyForm Shield License 1.0.0](LICENSE.md).
-Anyone who passes on a copy of any part of Prism must include that licence (or its
-URL) and the two lines below.
+Copyright (C) 2026 Benjamin Gleason Ross (https://github.com/omniharmonic/prism)
 
-Required Notice: Copyright 2026 Benjamin Gleason Ross (https://github.com/omniharmonic/prism)
+Prism is free software: you can redistribute it and/or modify it under the terms of the
+[GNU Affero General Public License](LICENSE.md) as published by the Free Software
+Foundation, version 3 (`AGPL-3.0-only`).
 
-Licensor Line of Business: Prism, a workspace for documents, messages, tasks, calendar and knowledge over a Parachute vault, as a self-hosted server, web app, Mac app and iPhone/iPad app (https://github.com/omniharmonic/prism)
+Prism is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without
+even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
 
 ## In plain words (not a substitute for the licence)
 
-- You may use Prism for anything, including your own work and your business, and change it.
-- You may not sell Prism, offer it as a hosted service, or build a product that competes with it.
+- You may use, study, change and share Prism, including for your work and your business.
+- If you share a changed copy, or **let people use a changed copy over a network** (for
+  example by hosting it for them), you must offer them its complete source under the same
+  licence. Prism helps with that: set `PRISM_SOURCE_URL` to where your source is, and every
+  server links to it (`/api/version` and Settings → Advanced → About).
 
 ## Earlier versions
 
 Until 2026-10-19 the README said "MIT License", but there was no licence file. Copies
-obtained before that date keep whatever rights that statement gave. Versions from that
-date on are under the PolyForm Shield License 1.0.0.
+obtained before that date keep whatever rights that statement gave. Versions from
+2026-10-19 up to 0.9.1 were published under the PolyForm Shield License 1.0.0; copies of
+those keep that licence. From 2026-11-07 on, Prism is licensed under the GNU AGPL-3.0.
 
 Two commits from April 2026 (`12aeadf6`, `2af5bfe4`, legacy desktop vault client) were
 contributed by Aaron Gabriel while the project said MIT. Those contributions are used
@@ -52,8 +58,7 @@ Prism's own `apps/server/src/auth/hub-jwt.ts` replaced it.)
 
 When a Prism host bundle includes Parachute, it ships the unmodified Parachute release
 with its own licence and a link to the exact source of that release, as the AGPL
-requires. Parachute's licence covers Parachute; it does not change Prism's licence, and
-Prism's licence places no restriction on Parachute.
+requires. Prism and Parachute are both under the AGPL-3.0.
 
 ## Other components
 
