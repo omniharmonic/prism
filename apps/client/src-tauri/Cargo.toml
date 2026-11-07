@@ -1,6 +1,6 @@
 [package]
 name = "prism-client"
-version = "0.9.1"
+version = "0.9.2"
 license = "AGPL-3.0-only"
 description = "Prism Client: a thin Tauri shell that talks only to a Prism Server"
 edition = "2021"

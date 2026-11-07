@@ -1,6 +1,6 @@
 [package]
 name = "tauri-plugin-prism-ios"
-version = "0.9.1"
+version = "0.9.2"
 license = "AGPL-3.0-only"
 description = "Prism Client's iOS glue (WP5): ASWebAuthenticationSession sign-in, native confirmations, APNs registration, Face ID app lock. Rust-only API: no webview-callable commands."
 edition = "2021"

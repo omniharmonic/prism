@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Prism — Privacy</title>
+  <meta name="description" content="Prism collects no data. Your notes live on a server you run.">
+  <meta name="color-scheme" content="dark light">
+  <link rel="canonical" href="https://prism.pub/privacy.html">
+  <link rel="icon" href="assets/img/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/site.css">
+</head>
+<body>
+  <header class="site-header site-header-static">
+    <div class="wrap header-row">
+      <a class="brand" href="./" aria-label="Prism home">
+        <img src="assets/img/mark.svg" alt="" width="26" height="28">
+        <span>Prism</span>
+      </a>
+      <a class="btn btn-small btn-ghost" href="./">Back to Prism</a>
+    </div>
+  </header>
+  <main id="main" class="wrap legal">
+    <h1>Privacy</h1>
+    <p class="legal-date">Last updated 7 November 2026</p>
+    <p><b>The short version:</b> Prism does not collect your data. Your notes, messages, files and account live on a server <em>you</em> run (Prism Server, on your own Mac or computer). The Prism apps for Mac, iPhone and iPad talk only to the server you point them at. We, the people who make Prism, never receive your content and run no analytics, advertising or tracking of any kind.</p>
+
+    <h2>What the apps store</h2>
+    <ul>
+      <li><b>The address of your server</b>, saved on the device.</li>
+      <li><b>A sign-in token</b> for that server, kept in the device's Keychain. It is sent only to your server.</li>
+      <li><b>Copies of pages you opened</b> and changes not yet sent, kept on the device so Prism works offline. Signing out deletes them.</li>
+    </ul>
+    <p>None of this is sent to us.</p>
+
+    <h2>Your server</h2>
+    <p>Everything you put in Prism is stored by your Prism Server and its Parachute vault, on hardware you control. Whoever runs a server (you, or the person who invited you) is responsible for it. If someone else runs the server you use, their own privacy terms apply to what you store there.</p>
+
+    <h2>Notifications</h2>
+    <p>If you turn on notifications in the iPhone or iPad app, your device gets a push token from Apple, and the app gives it to <em>your</em> server. To reach Apple, a self-hosted server sends the token, plus a notification kind and an ID number, through the Prism push relay that we run. The relay never receives any content (no titles, names or text), and it does not store your token. It writes a generic message ("You have a new notification") and hands it to Apple. Like any web service, the relay and its host (Cloudflare) see the time of each request and your server's IP address. Turn notifications off at any time in Settings.</p>
+
+    <h2>What we never do</h2>
+    <ul>
+      <li>No accounts with us: there is nothing to sign up for.</li>
+      <li>No analytics, crash reporting, advertising identifiers or third-party trackers in the apps.</li>
+      <li>No selling or sharing of data, because we don't have any.</li>
+    </ul>
+
+    <h2>This website</h2>
+    <p>prism.pub is a static page served by GitHub Pages. It sets no cookies and loads nothing from other sites. GitHub may keep standard server logs, such as IP addresses, under <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">its own privacy statement</a>.</p>
+
+    <h2>Children</h2>
+    <p>Prism is not directed at children and collects no data from anyone.</p>
+
+    <h2>Changes and questions</h2>
+    <p>If this policy changes, the new version will be published on this page, with a new date. The page's full history is <a href="https://github.com/omniharmonic/prism/commits/main/site/privacy.html">public on GitHub</a>. For questions, see <a href="support.html">Support</a>.</p>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap footer-row">
+      <nav aria-label="Footer">
+        <a href="./">Home</a>
+        <a href="privacy.html">Privacy</a>
+        <a href="support.html">Support</a>
+        <a href="https://github.com/omniharmonic/prism">Source</a>
+        <a href="https://github.com/omniharmonic/prism/blob/main/LICENSE.md">Licence (AGPL-3.0)</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

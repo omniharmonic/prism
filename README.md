@@ -28,7 +28,7 @@ vault on your Mac; Prism is the server and apps on top of it.
 
 ## Status
 
-Prism is a **public preview** (v0.9.1). It is for people who are comfortable installing
+Prism is a **public preview** (v0.9.2). It is for people who are comfortable installing
 things but don't write code, and it is set up **by an agent**: you run
 [Claude Code](https://claude.com/claude-code), and it walks you through every step while
 Prism's in-app setup checklist ticks off what's done.
@@ -42,14 +42,14 @@ Prism's in-app setup checklist ticks off what's done.
 You need **Claude Code** and git. The host bundle brings its own Node.js.
 
 1. **Download** the [Mac app](https://github.com/omniharmonic/prism/releases/latest) (`Prism-Client_*.dmg`)
-   and the [host bundle](https://github.com/omniharmonic/prism/releases/tag/prism-host-v0.9.1)
+   and the [host bundle](https://github.com/omniharmonic/prism/releases/tag/prism-host-v0.9.2)
    (`prism-host-*-darwin-arm64.tar.gz` and `SHA256SUMS`).
 2. **Get the setup skills and unpack the bundle beside them:**
 
    ```bash
    git clone https://github.com/omniharmonic/prism.git
    cd prism
-   tar xzf ~/Downloads/prism-host-0.9.1-darwin-arm64.tar.gz
+   tar xzf ~/Downloads/prism-host-0.9.2-darwin-arm64.tar.gz
    ```
 
    To check the download first: `cd ~/Downloads && shasum -a 256 -c SHA256SUMS --ignore-missing`.

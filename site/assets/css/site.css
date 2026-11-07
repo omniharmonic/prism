@@ -720,3 +720,14 @@ h1 {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition-duration: 0.01ms !important; }
 }
+
+/* Privacy and support pages */
+.site-header-static { position: static; }
+.legal { max-width: 46rem; padding-top: 48px; padding-bottom: 80px; line-height: 1.65; color: var(--text-2); }
+.legal h1 { font-size: clamp(2rem, 5vw, 2.8rem); margin-bottom: 8px; }
+.legal h2 { font-size: 1.3rem; margin: 40px 0 8px; }
+.legal h3 { font-size: 1.05rem; margin: 28px 0 4px; }
+.legal b, .legal em { color: var(--text); }
+.legal ul { padding-left: 1.2em; }
+.legal li { margin: 8px 0; }
+.legal-date { color: var(--text-3); font-size: 0.9rem; margin-top: 0; }

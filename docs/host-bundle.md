@@ -2,7 +2,7 @@
 
 **Status:** released. Built by the tag-triggered CI release job ([Release](#release)) with
 Developer ID signing, notarization and a minisign-signed `SHA256SUMS`; current release
-[`prism-host-v0.9.1`](https://github.com/omniharmonic/prism/releases/tag/prism-host-v0.9.1).
+[`prism-host-v0.9.2`](https://github.com/omniharmonic/prism/releases/tag/prism-host-v0.9.2).
 No Parachute payload yet: Prism runs agent-installed **stock Parachute** under
 its own hub agent instead ([Stock Parachute](#stock-parachute-the-fallback)).
 
