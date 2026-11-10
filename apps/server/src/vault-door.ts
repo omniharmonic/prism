@@ -43,7 +43,8 @@ const NOTES_TTL_MS = 60 * 60_000;
 /** A probe that could not decide (network, 5xx, 401) is asked again this soon. */
 const DOOR_RETRY_MS = 30_000;
 const PROBE_TIMEOUT_MS = 3_000;
-const TYPES_TTL_MS = 60_000;
+/** Short: a type removed elsewhere must not be recreated by a write that still names it in `types`. */
+const TYPES_TTL_MS = 15_000;
 
 /** A caller's own deadline: it ends that caller's wait, never the shared probe or read. */
 export interface Bound {
@@ -388,7 +389,9 @@ async function readNames(t: Target, path: string, onlyTypes: boolean): Promise<S
         if (!onlyTypes) out.add(row);
       } else if (isObj(row)) {
         const name = typeof row.name === "string" ? row.name : typeof row.tag === "string" ? row.tag : null;
-        if (name && (!onlyTypes || row.kind === "type")) out.add(name);
+        // A row that says what it is counts only as a type; `/types` rows that say nothing
+        // are types. (One list of types AND tags, each with its `kind`, is list-types' shape.)
+        if (name && (row.kind === "type" || (!onlyTypes && row.kind === undefined))) out.add(name);
       }
     }
     return out;

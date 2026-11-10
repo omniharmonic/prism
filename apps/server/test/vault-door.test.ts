@@ -168,7 +168,7 @@ interface Rec {
 }
 
 /** A record door per SPEC v2 §2.1/§5.1, strict about its words. */
-function installRecordDoor(typeNames: string[], opts: { typesDown?: boolean; probeDelayMs?: number; typesDelayMs?: number } = {}) {
+function installRecordDoor(typeNames: string[], opts: { typesDown?: boolean; probeDelayMs?: number; typesDelayMs?: number; typesRows?: unknown } = {}) {
   const recs = new Map<string, Rec>();
   const seen: Array<{ method: string; path: string; search: string; body: unknown }> = [];
   let seq = 0;
@@ -184,6 +184,7 @@ function installRecordDoor(typeNames: string[], opts: { typesDown?: boolean; pro
     const body = typeof init?.body === "string" && init.body ? (JSON.parse(init.body) as Record<string, unknown>) : undefined;
     seen.push({ method, path: sub, search: u.search, body });
     if (sub.startsWith("/notes")) return json({ error: "this test's vault has only the record door" }, 500);
+    if (sub === "/types" && opts.typesRows) return json(opts.typesRows);
     if (sub === "/types" && opts.typesDelayMs) {
       const snapshot = [...typeNames];
       await new Promise((r) => setTimeout(r, opts.typesDelayMs));
@@ -386,4 +387,18 @@ test("record door: a type list read while a schema write lands is not kept", asy
   forgetTypeNames(t); // …and says so while that read is still out
   assert.deepEqual([...(await before)!], ["task"]);
   assert.deepEqual([...(await vaultTypeNames(t))!].sort(), ["project", "task"], "read again, not the stale list");
+});
+
+test("record door: a type list that also lists plain tags (each row with its kind) keeps the tags as tags", async () => {
+  setDoor("records");
+  const t = { url: "http://vault.test", vault: "default", token: "test-vault-token" };
+  installRecordDoor(["meeting"], { typesRows: [{ name: "meeting", kind: "type" }, { name: "pinned", kind: "tag" }] });
+  const names = (await vaultTypeNames(t))!;
+  assert.ok(names.has("meeting") && !names.has("pinned"));
+  resetVaultDoors();
+  installRecordDoor(["meeting"], { typesRows: { types: [{ name: "meeting" }], tags: [{ name: "pinned" }] } });
+  assert.deepEqual([...(await vaultTypeNames(t))!], ["meeting"], "the {types, tags} shape");
+  const sent = toRecordItem({ content: "x", tags: ["meeting", "pinned"] }, names) as Record<string, unknown>;
+  assert.deepEqual(sent.types, ["meeting"]);
+  assert.deepEqual(sent.tags, ["pinned"]);
 });
