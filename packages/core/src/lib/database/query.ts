@@ -16,6 +16,7 @@
 import { dateRange, dayDiff } from "./dates";
 import { TEMPLATE_TAG, isTemplateNote, pageTitle } from "../pages/model";
 import { scalarText } from "./structured";
+import { hasName } from "../schemas/names";
 
 export const QUERY_OPS = [
   "eq", "ne", "in", "nin", "contains", "not_contains",
@@ -142,6 +143,8 @@ export interface QueryInput {
   id: string;
   path: string | null;
   tags: string[] | null;
+  /** Parachute ≥0.9 (see Note.types): membership reads types and tags (`hasName`). */
+  types?: string[] | null;
   createdAt: string;
   updatedAt: string | null;
   metadata: Record<string, unknown> | null;
@@ -973,8 +976,8 @@ export function projectRow(n: QueryInput, fields: string[] | undefined): QueryRo
 }
 
 /** Task inventory source, shared by server pre-scan narrowing and the pure engine. */
-export function isTaskQueryNote(note: { tags?: string[] | null; metadata?: Record<string, unknown> | null }): boolean {
-  return (note.tags ?? []).includes("task") || note.metadata?.type === "task" || note.metadata?.prism_type === "task";
+export function isTaskQueryNote(note: { tags?: string[] | null; types?: string[] | null; metadata?: Record<string, unknown> | null }): boolean {
+  return hasName(note, "task") || note.metadata?.type === "task" || note.metadata?.prism_type === "task";
 }
 
 /**
@@ -1003,7 +1006,7 @@ export function runQuery(
   const matched = notes.filter(
     (n) =>
       (wantsTemplates || !isTemplateNote(n)) &&
-      (spec.includeTypedTasks ? isTaskQueryNote(n) : spec.tags.every((t) => (n.tags ?? []).includes(t))) &&
+      (spec.includeTypedTasks ? isTaskQueryNote(n) : spec.tags.every((t) => hasName(n, t))) &&
       matchesFilter(n, spec.filter, now, spec.tzOffset ?? 0, opts.me) &&
       (!needle || matchesSearch(n, needle, spec.fields)),
   );

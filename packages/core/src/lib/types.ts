@@ -33,6 +33,13 @@ export interface Note {
   updatedAt: string | null;
   tags: string[] | null;
   /**
+   * Parachute ≥0.9: which of the note's names are the vault's TYPES (names with
+   * fields: a database, a task, a meeting). Absent on a 0.8 vault. Through 0.9 they
+   * are in `tags` too; read kind and membership with `noteNames` / `typeFirst`
+   * (lib/schemas/names.ts), which work either way.
+   */
+  types?: string[] | null;
+  /**
    * GATEWAY-ONLY annotations, added by the Prism Server for a NON-OWNER actor
    * (apps/server/src/routes/api.ts). They describe what the signed-in person may
    * do with this note: `_level` on the old ladder, `_caps` as the composable

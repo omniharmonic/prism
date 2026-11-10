@@ -3,6 +3,7 @@
  */
 import { scalarText } from "../database/structured";
 import type { Note } from "../types";
+import { hasName } from "../schemas/names";
 
 // ── Data source / config types ──────────────────────────────────────
 
@@ -215,10 +216,8 @@ export function filterNotes(notes: Note[], source: DataSource): Note[] {
 
   // Tags — AND semantics: note must have ALL specified tags
   if (source.tags && source.tags.length > 0) {
-    result = result.filter((n) => {
-      if (!n.tags) return false;
-      return source.tags!.every((t) => n.tags!.includes(t));
-    });
+    // A name counts as a type (Parachute ≥0.9 `types`) or a tag.
+    result = result.filter((n) => source.tags!.every((t) => hasName(n, t)));
   }
 
   // Path prefix
