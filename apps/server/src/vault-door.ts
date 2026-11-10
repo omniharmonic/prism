@@ -19,10 +19,13 @@
  *   (`types` is kept on the note, so views can read it: `noteNames` in core).
  *
  * Which door: `PRISM_VAULT_DOOR` = `auto` (default) | `notes` | `records`. `auto` asks
- * the vault once (`GET /records?limit=1&include_body=false`, the answer cached): only a
- * 2xx JSON list means the record door; a 404 or anything else means the note door. On
- * the note door every function here returns its input untouched, so a 0.8 vault sees
- * exactly the requests it saw before (plus that one probe).
+ * the vault (`GET /records?limit=1&include_body=false`): only a 2xx JSON array means the
+ * record door; a 404/405 means the note door. Only the first call to a vault waits for
+ * that answer. After it the known door is used at once and asked again in the background
+ * (a note door hourly, a record door every 10 min, an undecided answer after 30 s), so a
+ * vault upgraded or rolled back while Prism runs is followed without blocking anyone.
+ * On the note door every request and answer is untouched: a 0.8 vault sees exactly the
+ * requests it saw before, plus that probe once an hour.
  *
  * `/api/tags`, storage, attachments' own routes, `subscribe`, `history` are unchanged:
  * they keep answering through 0.9. `/api/types` replaces `/api/tags/<type>` in 0.9.1
@@ -33,9 +36,10 @@ import { config, type VaultEntry } from "./config";
 export type Door = "notes" | "records";
 type Target = Pick<VaultEntry, "url" | "vault" | "token">;
 
-/** How long a probe's answer is trusted. A vault upgraded (or rolled back) while Prism
- *  runs is seen within this time; translation is per request, so switching is safe. */
-const DOOR_TTL_MS = 10 * 60_000;
+/** When a known door is asked again (in the background; nobody waits for it). Translation
+ *  is per request, so switching doors mid-run is safe. */
+const RECORDS_TTL_MS = 10 * 60_000;
+const NOTES_TTL_MS = 60 * 60_000;
 /** A probe that could not decide (network, 5xx, 401) is asked again this soon. */
 const DOOR_RETRY_MS = 30_000;
 const PROBE_TIMEOUT_MS = 3_000;
@@ -53,6 +57,10 @@ const typeNamesCache = new Map<string, { names: Set<string>; until: number }>();
 const readingTypes = new Map<string, Promise<Set<string> | null>>();
 /** Bumped by `resetVaultDoors`: an answer started before it is never remembered. */
 let generation = 0;
+/** Per vault, bumped by `forgetTypeNames`: a type list read before a schema write is not kept. */
+const typesGeneration = new Map<string, number>();
+/** A note route (relative to `/api`): the only routes the door translates. */
+const NOTE_ROUTE = /^\/notes(?=$|[/?#])/;
 
 const keyOf = (t: Target) => `${t.url}/vault/${t.vault}`;
 
@@ -68,7 +76,7 @@ export function expireVaultDoors(): void {
   for (const v of typeNamesCache.values()) v.until = 0;
 }
 
-/** Forget every cached door and type list (tests; a vault registry change). */
+/** Forget every cached door and type list (tests). */
 export function resetVaultDoors(): void {
   generation++;
   known.clear();
@@ -78,18 +86,32 @@ export function resetVaultDoors(): void {
 }
 
 /**
- * The door to use for this vault right now. Never throws. One probe per vault is in
- * flight at a time, with its own 3 s deadline; a caller with a shorter deadline (or an
- * abort) stops waiting at it and uses the last known door (none known: the note door),
- * without changing what the probe will find. An answer that decides nothing (401, 5xx,
- * network) keeps the last known door and is asked again after 30 s.
+ * The door to use for this vault right now. Never throws. A known door is returned at
+ * once (when it is due, a probe starts in the background). Only the first call to a vault
+ * waits: one probe per vault is in flight, with its own 3 s deadline, and a caller with a
+ * shorter deadline (or an abort) stops waiting at it and uses the note door, without
+ * changing what the probe will find. An answer that decides nothing (401, 5xx, network)
+ * keeps the last known door.
  */
 export async function vaultDoor(t: Target, bound: Bound = {}): Promise<Door> {
   const mode = doorMode();
   if (mode !== "auto") return mode;
+  const hit = known.get(keyOf(t));
+  if (hit) {
+    if (hit.until <= Date.now()) void startProbe(t);
+    return hit.door;
+  }
+  return withinBound(startProbe(t), bound, "notes");
+}
+
+/** The probe in flight for this vault (tests wait on it). */
+export function pendingProbe(t: Target): Promise<Door> | undefined {
+  return probing.get(keyOf(t));
+}
+
+function startProbe(t: Target): Promise<Door> {
   const key = keyOf(t);
   const hit = known.get(key);
-  if (hit && hit.until > Date.now()) return hit.door;
   let p = probing.get(key);
   if (!p) {
     const gen = generation;
@@ -98,7 +120,7 @@ export async function vaultDoor(t: Target, bound: Bound = {}): Promise<Door> {
         const door = sure || !hit ? found : hit.door;
         if (gen === generation) {
           if (door !== hit?.door && (door === "records" || hit)) console.log(`[vault] ${t.vault}: ${door === "records" ? "record door (/api/records)" : "note door (/api/notes)"}`);
-          known.set(key, { door, until: Date.now() + (sure ? DOOR_TTL_MS : DOOR_RETRY_MS) });
+          known.set(key, { door, until: Date.now() + (!sure ? DOOR_RETRY_MS : door === "records" ? RECORDS_TTL_MS : NOTES_TTL_MS) });
         }
         return door;
       })
@@ -108,7 +130,7 @@ export async function vaultDoor(t: Target, bound: Bound = {}): Promise<Door> {
     probing.set(key, mine);
     p = mine;
   }
-  return withinBound(p, bound, hit?.door ?? "notes");
+  return p;
 }
 
 async function probe(t: Target): Promise<{ door: Door; sure: boolean }> {
@@ -148,20 +170,26 @@ export class TypeListUnavailable extends Error {
  * On the note door everything is returned as given. Throws `TypeListUnavailable` when a
  * write names tags and the vault's types cannot be read.
  */
-export async function atDoor<B>(t: Target, pathWithQuery: string, body: B, bound: Bound = {}): Promise<{ door: Door; translate: boolean; path: string; body: B | string }> {
+export async function atDoor<B>(t: Target, pathWithQuery: string, body: B, bound: Bound = {}): Promise<{ translate: boolean; path: string; body: B | string }> {
   const door = await vaultDoor(t, bound);
-  const q = pathWithQuery.indexOf("?");
-  const translate = door === "records" && isNotePath(q < 0 ? pathWithQuery : pathWithQuery.slice(0, q));
-  if (!translate) return { door, translate, path: pathWithQuery, body };
+  const translate = door === "records" && isNotePath(pathWithQuery);
+  if (!translate) return { translate, path: pathWithQuery, body };
   const path = doorUrlPath(door, pathWithQuery);
-  if (typeof body !== "string") return { door, translate, path, body };
+  if (typeof body !== "string") return { translate, path, body };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return { translate, path, body }; // not JSON: the vault refuses it as it is
+  }
+  if (!isObj(parsed)) return { translate, path, body };
   let names: ReadonlySet<string> = NO_NAMES;
-  if (namesTags(body)) {
+  if (namesTags(parsed)) {
     const read = await vaultTypeNames(t, bound);
     if (!read) throw new TypeListUnavailable();
     names = read;
   }
-  return { door, translate, path, body: toRecordJson(body, names) };
+  return { translate, path, body: JSON.stringify(toRecordItem(parsed, names)) };
 }
 const NO_NAMES: ReadonlySet<string> = new Set();
 
@@ -169,12 +197,12 @@ const NO_NAMES: ReadonlySet<string> = new Set();
 
 /** `/notes…` (relative to `/api`) on the record door is `/records…`; every other path is kept. */
 export function doorPath(door: Door, path: string): string {
-  return door === "records" ? path.replace(/^\/notes(?=$|[/?#])/, "/records") : path;
+  return door === "records" ? path.replace(NOTE_ROUTE, "/records") : path;
 }
 
 /** Is this path (relative to `/api`) a note route, whose bodies the door translates? */
 export function isNotePath(path: string): boolean {
-  return /^\/notes(?=$|[/?#])/.test(path);
+  return NOTE_ROUTE.test(path);
 }
 
 const PARAM_NAMES: Record<string, string> = { include_content: "include_body", include_metadata: "include_fields" };
@@ -243,17 +271,6 @@ export function toRecordItem(item: unknown, types: ReadonlySet<string>): unknown
     }
   } else out.tags = tags;
   return out;
-}
-
-/** A note-route JSON body string in record words. Not JSON (or not an object): sent as it is. */
-export function toRecordJson(raw: string, types: ReadonlySet<string>): string {
-  let body: unknown;
-  try {
-    body = JSON.parse(raw);
-  } catch {
-    return raw;
-  }
-  return isObj(body) ? JSON.stringify(toRecordItem(body, types)) : raw;
 }
 
 // ---- responses: the door → note shape --------------------------------------
@@ -325,9 +342,10 @@ export async function vaultTypeNames(t: Target, bound: Bound = {}): Promise<Set<
   let p = readingTypes.get(key);
   if (!p) {
     const gen = generation;
+    const keyGen = typesGeneration.get(key) ?? 0;
     const mine: Promise<Set<string> | null> = (async () => {
       const names = (await readNames(t, "/types", false)) ?? (await readNames(t, "/tags", true));
-      if (names && gen === generation) typeNamesCache.set(key, { names, until: Date.now() + TYPES_TTL_MS });
+      if (names && gen === generation && keyGen === (typesGeneration.get(key) ?? 0)) typeNamesCache.set(key, { names, until: Date.now() + TYPES_TTL_MS });
       // Unreadable now: a list read before is still the best answer; else none.
       return names ?? hit?.names ?? null;
     })().finally(() => {
@@ -339,13 +357,20 @@ export async function vaultTypeNames(t: Target, bound: Bound = {}): Promise<Set<
   return withinBound(p, bound, hit?.names ?? null);
 }
 
-/** Does this note-route JSON body name any tags (only then are the type names needed)? */
-export function namesTags(raw: string): boolean {
-  return raw.includes('"tags"');
+/** Does this note-route body (or an item of its batch) carry `tags`? Only then are the
+ *  type names needed. A field called `tags` inside `metadata` does not count. */
+export function namesTags(body: Record<string, unknown>): boolean {
+  if ("tags" in body) return true;
+  return Array.isArray(body.notes) && body.notes.some((n) => isObj(n) && "tags" in n);
 }
 
+/** After a write that may change which names are types: drop the list, and never keep
+ *  one that was being read while the write happened. */
 export function forgetTypeNames(t: Target): void {
-  typeNamesCache.delete(keyOf(t));
+  const key = keyOf(t);
+  typesGeneration.set(key, (typesGeneration.get(key) ?? 0) + 1);
+  typeNamesCache.delete(key);
+  readingTypes.delete(key);
 }
 
 async function readNames(t: Target, path: string, onlyTypes: boolean): Promise<Set<string> | null> {

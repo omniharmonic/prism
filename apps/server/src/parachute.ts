@@ -153,10 +153,13 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
     }
     const { translate, path } = at;
     const init: RequestInit | undefined = translate ? { ...noteInit, body: at.body } : noteInit;
+    // One deadline for the whole call: time spent waiting on the door (only a vault's first
+    // call can) comes out of the fetch's share.
+    const fetchMs = opts.timeoutMs ? Math.max(1, opts.timeoutMs - (Date.now() - t0)) : 0;
     const sendOnce = () =>
       fetch(`${apiBase()}${path}`, {
         ...init,
-        ...(opts.timeoutMs && !init?.signal ? { signal: AbortSignal.timeout(opts.timeoutMs) } : {}),
+        ...(fetchMs && !init?.signal ? { signal: AbortSignal.timeout(fetchMs) } : {}),
         headers: { ...authHeaders(), ...(init?.headers as Record<string, string> | undefined) },
       });
     let resp = await sendOnce();

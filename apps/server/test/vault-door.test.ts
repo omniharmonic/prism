@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { api } from "../src/routes/api";
 import { vaultClient } from "../src/parachute";
 import { config } from "../src/config";
-import { doorPath, doorSearch, expireVaultDoors, fromRecordsBody, resetVaultDoors, toRecordItem, vaultDoor } from "../src/vault-door";
+import { doorPath, doorSearch, expireVaultDoors, forgetTypeNames, fromRecordsBody, pendingProbe, vaultTypeNames, resetVaultDoors, toRecordItem, vaultDoor } from "../src/vault-door";
 import { installFakeVault, resetDb, makeSession, sessionCookie, type FakeVault, type VaultCall } from "./helpers";
 
 const OWNER = "owner@test.local";
@@ -168,7 +168,7 @@ interface Rec {
 }
 
 /** A record door per SPEC v2 §2.1/§5.1, strict about its words. */
-function installRecordDoor(typeNames: string[], opts: { typesDown?: boolean; probeDelayMs?: number } = {}) {
+function installRecordDoor(typeNames: string[], opts: { typesDown?: boolean; probeDelayMs?: number; typesDelayMs?: number } = {}) {
   const recs = new Map<string, Rec>();
   const seen: Array<{ method: string; path: string; search: string; body: unknown }> = [];
   let seq = 0;
@@ -184,6 +184,11 @@ function installRecordDoor(typeNames: string[], opts: { typesDown?: boolean; pro
     const body = typeof init?.body === "string" && init.body ? (JSON.parse(init.body) as Record<string, unknown>) : undefined;
     seen.push({ method, path: sub, search: u.search, body });
     if (sub.startsWith("/notes")) return json({ error: "this test's vault has only the record door" }, 500);
+    if (sub === "/types" && opts.typesDelayMs) {
+      const snapshot = [...typeNames];
+      await new Promise((r) => setTimeout(r, opts.typesDelayMs));
+      return json(snapshot.map((name) => ({ name })));
+    }
     if (sub === "/types" || sub === "/tags") return opts.typesDown ? json({ error: "busy" }, 503) : json(typeNames.map((name) => ({ name })));
     if (!sub.startsWith("/records")) return prev(input, init);
     for (const k of u.searchParams.keys()) if (NOTE_WORDS.includes(k)) return json({ error: `note word ${k} on the record door` }, 400);
@@ -305,7 +310,7 @@ test("auto: a bounded call stays bounded — the probe ends with the caller's ow
   }
 });
 
-test("auto: a record-door vault stays on the record door when a later probe can't decide (401, 5xx)", async () => {
+test("auto: a known door answers at once; a record-door vault stays on it when a later probe can't decide (401, 5xx)", async () => {
   setDoor("auto");
   const door = installRecordDoor([]);
   const t = { url: "http://vault.test", vault: "default", token: "t" };
@@ -317,7 +322,10 @@ test("auto: a record-door vault stays on the record door when a later probe can'
     if (u.pathname.endsWith("/api/records") && u.searchParams.get("limit") === "1") return new Response("busy", { status: 503 });
     return withDoor(input, init);
   }) as typeof fetch;
-  assert.equal(await vaultDoor(t), "records", "a 503 decides nothing");
+  assert.equal(await vaultDoor(t), "records", "a known door answers at once; the probe runs behind it");
+  assert.ok(pendingProbe(t), "the re-probe is in flight");
+  assert.equal(await pendingProbe(t), "records", "a 503 decides nothing: the known door is kept");
+  assert.equal(await vaultDoor(t), "records");
   door.recs.set("x", { id: "x", body: "b", path: null, fields: null, tags: [], types: [], createdAt: "c", updatedAt: "u" });
   assert.equal((await vaultClient().getNote("x")).content, "b");
 });
@@ -357,4 +365,25 @@ test("auto: one caller's short deadline ends its own wait, not the shared probe"
   assert.equal(await impatient, "notes", "nothing known yet: the note door, for this caller only");
   assert.equal(await patient, "records");
   assert.equal(await vaultDoor(t, { timeoutMs: 1 }), "records", "the probe's answer was remembered");
+});
+
+test("record door: a field called `tags` inside metadata needs no type list", async () => {
+  setDoor("records");
+  const down = installRecordDoor(["task"], { typesDown: true });
+  down.recs.set("x", { id: "x", body: "b", path: null, fields: null, tags: [], types: [], createdAt: "c", updatedAt: "u" });
+  const upd = await vaultClient().updateNote("x", { metadata: { tags: "imported, misc" } });
+  assert.deepEqual(upd.metadata, { tags: "imported, misc" });
+  assert.ok(!down.seen.some((x) => x.path === "/types"), "the type list was not needed");
+});
+
+test("record door: a type list read while a schema write lands is not kept", async () => {
+  setDoor("records");
+  const names = ["task"];
+  installRecordDoor(names, { typesDelayMs: 30 });
+  const t = { url: "http://vault.test", vault: "default", token: "test-vault-token" };
+  const before = vaultTypeNames(t); // reads ["task"], slowly
+  names.push("project"); // a schema write makes `project` a type…
+  forgetTypeNames(t); // …and says so while that read is still out
+  assert.deepEqual([...(await before)!], ["task"]);
+  assert.deepEqual([...(await vaultTypeNames(t))!].sort(), ["project", "task"], "read again, not the stale list");
 });

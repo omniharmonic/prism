@@ -17,7 +17,7 @@ import type { Context } from "hono";
 import { resolveVaultEntry, grantsForResource, isCollabUnsaved, deleteCollabSetAsideForNote, hasCollabSetAside } from "../db";
 import type { VaultEntry } from "../config";
 import { vault, vaultClient, VaultError, VaultConflictError, type Note } from "../parachute";
-import { atDoor, changesTypes, forgetTypeNames, fromRecordsText, TypeListUnavailable } from "../vault-door";
+import { atDoor, changesTypes, forgetTypeNames, fromRecordsText, TypeListUnavailable, vaultDoor } from "../vault-door";
 import { resolveActor, requestVia, type Actor } from "../auth/actor";
 import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
 import { effectiveLevel, effectiveCaps, governedReview, grantedTags, resolvePageAnchor, type Cap, type NoteRef } from "../permissions";
@@ -131,6 +131,9 @@ async function proxyToVault(c: Context) {
   // entry → byte-for-byte the previous single-vault behavior. Only the owner
   // passthrough is vault-aware; non-owner routes stay on the primary (Phase 2).
   const entry = resolveVaultEntry(c.req.header("x-prism-vault"));
+  // Settle the vault door first (../vault-door.ts; only a vault's first call waits), so no
+  // wait sits between a write's read-cache clear below and the write itself.
+  await vaultDoor(entry);
   const method = c.req.method;
   const headers: Record<string, string> = { Authorization: `Bearer ${entry.token}` };
   const init: RequestInit = { method, headers };
@@ -186,6 +189,8 @@ async function proxyToVault(c: Context) {
   }
   const { translate } = at;
   if (translate) init.body = at.body;
+  // Reading the type list may have waited: clear again so no read cached in that gap outlives the write.
+  if (translate && method !== "GET" && method !== "HEAD") dropReadCache();
   const target = `${entry.url}/vault/${entry.vault}/api${at.path}`;
   const shape = translate ? fromRecordsText : undefined;
   const t0 = Date.now();
