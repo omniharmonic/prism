@@ -168,7 +168,7 @@ interface Rec {
 }
 
 /** A record door per SPEC v2 §2.1/§5.1, strict about its words. */
-function installRecordDoor(typeNames: string[]) {
+function installRecordDoor(typeNames: string[], opts: { typesDown?: boolean; probeDelayMs?: number } = {}) {
   const recs = new Map<string, Rec>();
   const seen: Array<{ method: string; path: string; search: string; body: unknown }> = [];
   let seq = 0;
@@ -184,7 +184,7 @@ function installRecordDoor(typeNames: string[]) {
     const body = typeof init?.body === "string" && init.body ? (JSON.parse(init.body) as Record<string, unknown>) : undefined;
     seen.push({ method, path: sub, search: u.search, body });
     if (sub.startsWith("/notes")) return json({ error: "this test's vault has only the record door" }, 500);
-    if (sub === "/types") return json(typeNames.map((name) => ({ name })));
+    if (sub === "/types" || sub === "/tags") return opts.typesDown ? json({ error: "busy" }, 503) : json(typeNames.map((name) => ({ name })));
     if (!sub.startsWith("/records")) return prev(input, init);
     for (const k of u.searchParams.keys()) if (NOTE_WORDS.includes(k)) return json({ error: `note word ${k} on the record door` }, 400);
     if (body) for (const k of Object.keys(body)) if (NOTE_WORDS.includes(k)) return json({ error: `note word ${k} on the record door` }, 400);
@@ -195,6 +195,9 @@ function installRecordDoor(typeNames: string[]) {
     const one = sub.match(/^\/records\/([^/]+)$/);
     const lean = u.searchParams.get("include_body") === "false";
     const out = (r: Rec) => (lean ? { ...r, body: undefined } : r);
+    if (sub === "/records" && method === "GET" && u.searchParams.get("limit") === "1" && opts.probeDelayMs) await new Promise((r) => setTimeout(r, opts.probeDelayMs));
+    const version = sub.match(/^\/records\/([^/]+)\/versions\/(\d+)$/);
+    if (version && method === "GET") return json({ record_id: version[1], version_ix: Number(version[2]), body: "old text", fields: { status: "open" }, op: "update" });
     if (sub === "/records" && method === "GET") {
       const tag = u.searchParams.getAll("tag");
       const limit = Number(u.searchParams.get("limit") ?? 1000);
@@ -210,6 +213,10 @@ function installRecordDoor(typeNames: string[]) {
       const r = recs.get(decodeURIComponent(one[1]!));
       if (!r) return json({ error: "Not found" }, 404);
       if (method === "GET") return json(out(r));
+      if (method === "DELETE") {
+        recs.delete(r.id);
+        return new Response(null, { status: 204 });
+      }
       if (method === "PATCH") {
         if (body?.if_updated_at && body.if_updated_at !== r.updatedAt) return json({ error: "conflict", current: r }, 409);
         if (typeof body?.body === "string") r.body = body.body;
@@ -313,4 +320,41 @@ test("auto: a record-door vault stays on the record door when a later probe can'
   assert.equal(await vaultDoor(t), "records", "a 503 decides nothing");
   door.recs.set("x", { id: "x", body: "b", path: null, fields: null, tags: [], types: [], createdAt: "c", updatedAt: "u" });
   assert.equal((await vaultClient().getNote("x")).content, "b");
+});
+
+test("record door: a 204 delete, a single version read, and a write whose types can't be read (refused, nothing sent)", async () => {
+  setDoor("records");
+  const door = installRecordDoor(["task"]);
+  door.recs.set("x", { id: "x", body: "b", path: null, fields: null, tags: [], types: ["task"], createdAt: "c", updatedAt: "u" });
+  const v = vaultClient();
+  const ver = await v.getVersion("x", 2);
+  assert.equal(ver.content, "old text");
+  assert.deepEqual(ver.metadata, { status: "open" });
+  assert.equal(ver.note_id, "x");
+  await v.deleteNote("x"); // the record door answers 204 with no body
+  assert.equal(door.recs.size, 0);
+
+  resetVaultDoors();
+  fv.restore();
+  fv = installFakeVault();
+  const down = installRecordDoor(["task"], { typesDown: true });
+  await assert.rejects(v.createNote({ content: "c", tags: ["task"] }), (e: { status: number }) => e.status === 503);
+  assert.ok(!down.seen.some((x) => x.method === "POST"), "nothing was sent with a guessed split");
+  const r = await ownerReq("/notes", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ content: "c", tags: ["task"] }) });
+  assert.equal(r.status, 503);
+  assert.ok(!down.seen.some((x) => x.method === "POST"));
+  // A write that names no tags needs no type list.
+  const made = await v.createNote({ content: "plain" });
+  assert.equal(made.content, "plain");
+});
+
+test("auto: one caller's short deadline ends its own wait, not the shared probe", async () => {
+  setDoor("auto");
+  installRecordDoor([], { probeDelayMs: 50 });
+  const t = { url: "http://vault.test", vault: "default", token: "t" };
+  const impatient = vaultDoor(t, { timeoutMs: 1 });
+  const patient = vaultDoor(t);
+  assert.equal(await impatient, "notes", "nothing known yet: the note door, for this caller only");
+  assert.equal(await patient, "records");
+  assert.equal(await vaultDoor(t, { timeoutMs: 1 }), "records", "the probe's answer was remembered");
 });

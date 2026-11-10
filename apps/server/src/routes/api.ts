@@ -17,7 +17,7 @@ import type { Context } from "hono";
 import { resolveVaultEntry, grantsForResource, isCollabUnsaved, deleteCollabSetAsideForNote, hasCollabSetAside } from "../db";
 import type { VaultEntry } from "../config";
 import { vault, vaultClient, VaultError, VaultConflictError, type Note } from "../parachute";
-import { changesTypes, doorPath, doorSearch, forgetTypeNames, fromRecordsText, isNotePath, namesTags, toRecordJson, vaultDoor, vaultTypeNames } from "../vault-door";
+import { atDoor, changesTypes, forgetTypeNames, fromRecordsText, TypeListUnavailable } from "../vault-door";
 import { resolveActor, requestVia, type Actor } from "../auth/actor";
 import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
 import { effectiveLevel, effectiveCaps, governedReview, grantedTags, resolvePageAnchor, type Cap, type NoteRef } from "../permissions";
@@ -131,10 +131,6 @@ async function proxyToVault(c: Context) {
   // entry → byte-for-byte the previous single-vault behavior. Only the owner
   // passthrough is vault-aware; non-owner routes stay on the primary (Phase 2).
   const entry = resolveVaultEntry(c.req.header("x-prism-vault"));
-  // The vault door (../vault-door.ts): on 0.8's note door the target is the path as asked.
-  const door = await vaultDoor(entry);
-  const translate = door === "records" && isNotePath(path);
-  const target = `${entry.url}/vault/${entry.vault}/api${doorPath(door, path)}${doorSearch(door, url.search, path)}`;
   const method = c.req.method;
   const headers: Record<string, string> = { Authorization: `Bearer ${entry.token}` };
   const init: RequestInit = { method, headers };
@@ -176,9 +172,21 @@ async function proxyToVault(c: Context) {
       /* a malformed escape, or a note that cannot be read: the delete itself answers */
     }
   }
-  // Record door: the body goes out in record words, after every check above read it as a note.
+  // The vault door (../vault-door.ts), after every check above read the request as a note:
+  // on 0.8's note door the target and body are the caller's own; on the record door they
+  // go out in record words and the answer comes back as notes.
   const noteBody = init.body;
-  if (translate && typeof init.body === "string") init.body = toRecordJson(init.body, namesTags(init.body) ? await vaultTypeNames(entry) : new Set());
+  let at: Awaited<ReturnType<typeof atDoor<BodyInit | null | undefined>>>;
+  try {
+    at = await atDoor(entry, `${path}${url.search}`, init.body);
+  } catch (e) {
+    if (!(e instanceof TypeListUnavailable)) throw e;
+    c.header("Retry-After", "2");
+    return c.json({ error: "vault_unreachable", reason: "Couldn’t read the vault’s types. Nothing was changed — try again." }, 503);
+  }
+  const { translate } = at;
+  if (translate) init.body = at.body;
+  const target = `${entry.url}/vault/${entry.vault}/api${at.path}`;
   const shape = translate ? fromRecordsText : undefined;
   const t0 = Date.now();
   let res: ProxiedResponse;
@@ -217,7 +225,7 @@ async function proxyToVault(c: Context) {
     for (const id of deleting) deleteCollabSetAsideForNote(entry.id, id);
   }
   if (process.env.PRISM_VAULT_TRACE === "1") {
-    console.log(`[trace] proxy ${method} ${translate ? `${doorPath(door, path)}${doorSearch(door, url.search, path)}` : `${path}${url.search}`} → ${res.status} ${res.body.length}B ${Date.now() - t0}ms ua=${(c.req.header("user-agent") ?? "").slice(0, 40)}`);
+    console.log(`[trace] proxy ${method} ${at.path} → ${res.status} ${res.body.length}B ${Date.now() - t0}ms ua=${(c.req.header("user-agent") ?? "").slice(0, 40)}`);
   }
   return new Response(res.body, { status: res.status, headers: { "Content-Type": res.contentType } });
 }

@@ -10,7 +10,7 @@ import { canonicalTagsStrict } from "./tags";
 import { config, type VaultEntry } from "./config";
 import { resolveVaultEntry } from "./db";
 import { shapeMetadata } from "./vault-shapes";
-import { doorUrlPath, fromRecordsBody, isNotePath, namesTags, toRecordJson, vaultDoor, vaultTypeNames } from "./vault-door";
+import { atDoor, fromRecordsBody, TypeListUnavailable } from "./vault-door";
 
 export interface Note {
   id: string;
@@ -140,30 +140,33 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
     "Content-Type": "application/json",
   });
 
-  async function req(notePath: string, noteInit?: RequestInit): Promise<Response> {
+  /** One vault call at this vault's door (vault-door.ts). On 0.8's note door the path,
+   *  query and body are the caller's own. `translate`: the answer is in record words. */
+  async function send(notePath: string, noteInit?: RequestInit): Promise<{ resp: Response; translate: boolean }> {
     const t0 = Date.now();
-    // The door (vault-door.ts): on 0.8's note door `path` and `init` are the caller's own.
-    const bound = { timeoutMs: opts.timeoutMs, signal: noteInit?.signal };
-    const door = await vaultDoor(entry, bound);
-    const translate = door === "records" && isNotePath(notePath);
-    const path = doorUrlPath(door, notePath);
-    const raw = noteInit?.body;
-    const init: RequestInit | undefined =
-      translate && typeof raw === "string" ? { ...noteInit, body: toRecordJson(raw, namesTags(raw) ? await vaultTypeNames(entry, bound) : new Set()) } : noteInit;
-    const send = () =>
+    let at: Awaited<ReturnType<typeof atDoor<BodyInit | null | undefined>>>;
+    try {
+      at = await atDoor(entry, notePath, noteInit?.body, { timeoutMs: opts.timeoutMs, signal: noteInit?.signal });
+    } catch (e) {
+      if (e instanceof TypeListUnavailable) throw new VaultError(503, `${noteInit?.method ?? "GET"} ${notePath}: ${e.message}`);
+      throw e;
+    }
+    const { translate, path } = at;
+    const init: RequestInit | undefined = translate ? { ...noteInit, body: at.body } : noteInit;
+    const sendOnce = () =>
       fetch(`${apiBase()}${path}`, {
         ...init,
         ...(opts.timeoutMs && !init?.signal ? { signal: AbortSignal.timeout(opts.timeoutMs) } : {}),
         headers: { ...authHeaders(), ...(init?.headers as Record<string, string> | undefined) },
       });
-    let resp = await send();
+    let resp = await sendOnce();
     // The vault has been seen to refuse a valid token once in a while (see proxyToVault in
     // routes/api.ts). A 401 is decided before the vault acts on the request, so sending the
     // same request once more cannot apply a write twice. Bodies here are strings.
     if (resp.status === 401 && (init?.body === undefined || typeof init.body === "string")) {
       await resp.body?.cancel().catch(() => {});
       await new Promise((r) => setTimeout(r, 150));
-      resp = await send();
+      resp = await sendOnce();
     }
     if (process.env.PRISM_VAULT_TRACE === "1") {
       // Which server subsystem is calling: first app frame outside this file.
@@ -184,20 +187,19 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
       }
       throw new VaultError(resp.status, `${init?.method ?? "GET"} ${path}: ${resp.status} ${text}`);
     }
-    if (!translate) return resp;
-    // Record door: hand the caller the note shape it has always read, parsed once (every
-    // caller here reads `.json()`; a full-vault list is megabytes).
-    const text = await resp.text();
-    let shaped: unknown;
-    try {
-      shaped = fromRecordsBody(JSON.parse(text));
-    } catch {
-      return new Response(text, { status: resp.status, statusText: resp.statusText, headers: resp.headers });
-    }
-    const out = new Response(null, { status: resp.status, statusText: resp.statusText, headers: resp.headers });
-    Object.defineProperty(out, "json", { value: async () => shaped });
-    Object.defineProperty(out, "text", { value: async () => JSON.stringify(shaped) });
-    return out;
+    return { resp, translate };
+  }
+
+  /** A vault call whose answer is not read. */
+  async function req(notePath: string, noteInit?: RequestInit): Promise<Response> {
+    return (await send(notePath, noteInit)).resp;
+  }
+
+  /** A vault call's JSON answer, in note shape on either door (parsed once). */
+  async function reqJson<T>(notePath: string, noteInit?: RequestInit): Promise<T> {
+    const { resp, translate } = await send(notePath, noteInit);
+    if (!translate) return resp.json() as Promise<T>;
+    return fromRecordsBody(JSON.parse(await resp.text())) as T;
   }
 
   return {
@@ -213,7 +215,7 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
     if (opts.includeMetadata?.length) sp.set("include_metadata", opts.includeMetadata.join(","));
     if (opts.pathPrefix) sp.set("path_prefix", opts.pathPrefix);
     for (const t of sinkTags(opts.tags ?? [])) sp.append("tag", t);
-    return (await req(`/notes?${sp.toString()}`)).json() as Promise<Note[]>;
+    return reqJson<Note[]>(`/notes?${sp.toString()}`);
   },
 
   async getNote(id: string, opts?: { includeLinks?: boolean; /** false = a lean read: no body (and, with `includeMetadata`, only those metadata keys). */ includeContent?: boolean; includeMetadata?: string[] }): Promise<Note> {
@@ -222,7 +224,7 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
     if (opts?.includeContent === false) sp.set("include_content", "false");
     if (opts?.includeMetadata?.length) sp.set("include_metadata", opts.includeMetadata.join(","));
     const q = sp.toString();
-    return (await req(`/notes/${encodeURIComponent(id)}${q ? `?${q}` : ""}`)).json() as Promise<Note>;
+    return reqJson<Note>(`/notes/${encodeURIComponent(id)}${q ? `?${q}` : ""}`);
   },
 
   /**
@@ -251,7 +253,7 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
     if (params.tags !== undefined) body.tags = sinkTags(params.tags);
     if (params.links !== undefined) body.links = params.links;
     if (params.ifExists !== undefined) body.if_exists = params.ifExists;
-    return (await req(`/notes`, { method: "POST", body: JSON.stringify(body) })).json() as Promise<Note & { existed?: boolean }>;
+    return reqJson<Note & { existed?: boolean }>(`/notes`, { method: "POST", body: JSON.stringify(body) });
   },
 
   async updateNote(
@@ -277,7 +279,7 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
     }
     if (params.ifUpdatedAt !== undefined) body.if_updated_at = params.ifUpdatedAt;
     if (body.if_updated_at === undefined) body.force = true;
-    return (await req(`/notes/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) })).json() as Promise<Note>;
+    return reqJson<Note>(`/notes/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) });
   },
 
   async addTags(id: string, tags: string[]): Promise<void> {
@@ -303,31 +305,29 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
 
   async listVersions(id: string, limit = 50, offset = 0): Promise<{ versions: VersionRow[]; total: number }> {
     const q = qs({ limit, offset });
-    return (await req(`/notes/${encodeURIComponent(id)}/versions${q}`)).json() as Promise<{ versions: VersionRow[]; total: number }>;
+    return reqJson<{ versions: VersionRow[]; total: number }>(`/notes/${encodeURIComponent(id)}/versions${q}`);
   },
 
   async getVersion(id: string, versionIx: number): Promise<VersionRow & { content: string | null }> {
-    return (await req(`/notes/${encodeURIComponent(id)}/versions/${versionIx}`)).json() as Promise<VersionRow & { content: string | null }>;
+    return reqJson<VersionRow & { content: string | null }>(`/notes/${encodeURIComponent(id)}/versions/${versionIx}`);
   },
 
   /** Restore requires the reviewed `if_updated_at` (the vault refuses `force`). */
   async restoreVersion(id: string, versionIx: number, ifUpdatedAt: string): Promise<Note> {
-    return (
-      await req(`/notes/${encodeURIComponent(id)}/restore`, {
-        method: "POST",
-        body: JSON.stringify({ version_ix: versionIx, if_updated_at: ifUpdatedAt }),
-      })
-    ).json() as Promise<Note>;
+    return reqJson<Note>(`/notes/${encodeURIComponent(id)}/restore`, {
+      method: "POST",
+      body: JSON.stringify({ version_ix: versionIx, if_updated_at: ifUpdatedAt }),
+    });
   },
 
   async search(query: string, tags: string[] = [], limit = 50): Promise<Note[]> {
     const sp = new URLSearchParams({ search: query, limit: String(limit), include_content: "true" });
     for (const t of sinkTags(tags)) sp.append("tag", t);
-    return (await req(`/notes?${sp.toString()}`)).json() as Promise<Note[]>;
+    return reqJson<Note[]>(`/notes?${sp.toString()}`);
   },
 
   async getTags(): Promise<Array<{ tag: string; count: number }>> {
-    const raw = (await req(`/tags`)).json() as Promise<Array<{ name?: string; tag?: string; count: number }>>;
+    const raw = reqJson<Array<{ name?: string; tag?: string; count: number }>>(`/tags`);
     return (await raw).map((t) => ({ tag: t.tag ?? t.name ?? "", count: t.count }));
   },
 
