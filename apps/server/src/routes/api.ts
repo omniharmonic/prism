@@ -17,6 +17,7 @@ import type { Context } from "hono";
 import { resolveVaultEntry, grantsForResource, isCollabUnsaved, deleteCollabSetAsideForNote, hasCollabSetAside } from "../db";
 import type { VaultEntry } from "../config";
 import { vault, vaultClient, VaultError, VaultConflictError, type Note } from "../parachute";
+import { changesTypes, doorPath, doorSearch, forgetTypeNames, fromRecordsText, isNotePath, toRecordJson, vaultDoor, vaultTypeNames } from "../vault-door";
 import { resolveActor, requestVia, type Actor } from "../auth/actor";
 import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
 import { effectiveLevel, effectiveCaps, governedReview, grantedTags, resolvePageAnchor, type Cap, type NoteRef } from "../permissions";
@@ -130,7 +131,10 @@ async function proxyToVault(c: Context) {
   // entry → byte-for-byte the previous single-vault behavior. Only the owner
   // passthrough is vault-aware; non-owner routes stay on the primary (Phase 2).
   const entry = resolveVaultEntry(c.req.header("x-prism-vault"));
-  const target = `${entry.url}/vault/${entry.vault}/api${path}${url.search}`;
+  // The vault door (../vault-door.ts): on 0.8's note door the target is the path as asked.
+  const door = await vaultDoor(entry);
+  const translate = door === "records" && isNotePath(path);
+  const target = `${entry.url}/vault/${entry.vault}/api${doorPath(door, path)}${doorSearch(door, url.search)}`;
   const method = c.req.method;
   const headers: Record<string, string> = { Authorization: `Bearer ${entry.token}` };
   const init: RequestInit = { method, headers };
@@ -172,13 +176,17 @@ async function proxyToVault(c: Context) {
       /* a malformed escape, or a note that cannot be read: the delete itself answers */
     }
   }
+  // Record door: the body goes out in record words, after every check above read it as a note.
+  const noteBody = init.body;
+  if (translate && typeof init.body === "string") init.body = toRecordJson(init.body, await vaultTypeNames(entry));
+  const shape = translate ? fromRecordsText : undefined;
   const t0 = Date.now();
   let res: ProxiedResponse;
   try {
     // Only a single-note read may ask for a fresh answer: lists keep their protection
     // against N copies of an expensive vault call.
     const fresh = method === "GET" && /^\/notes\/[^/]+$/.test(path) && /\bno-(cache|store)\b/i.test(c.req.header("cache-control") ?? "");
-    res = method === "GET" ? await coalescedGet(target, init, fresh) : await forward(target, init);
+    res = method === "GET" ? await coalescedGet(target, init, fresh, shape) : await forward(target, init, shape);
     // A 401 here is the VAULT refusing the SERVER's token — it says nothing about the caller,
     // who was authenticated before this function ran. Vault 0.7.9 has been seen to refuse a
     // valid token once in a while (2026-10-08: 1 request in 40, then none in 300). The refusal
@@ -187,7 +195,7 @@ async function proxyToVault(c: Context) {
     // started a new sign-in and minted another device each time).
     if (res.status === 401) {
       await new Promise((r) => setTimeout(r, 150));
-      res = await forward(target, init);
+      res = await forward(target, init, shape);
       if (res.status === 401) {
         console.warn(`[gateway] vault refused the server's token twice on ${method} ${path}`);
         return c.json({ error: "vault_auth", reason: "The server could not reach its vault. Try again in a moment." }, 502);
@@ -200,15 +208,16 @@ async function proxyToVault(c: Context) {
   // Keep the WP7.1 tree projection current for the owner's own writes (the vault
   // subscribe socket covers everyone else's; this makes the writer's next read exact).
   if (method !== "GET" && method !== "HEAD" && res.status >= 200 && res.status < 300) {
+    if (changesTypes(path)) forgetTypeNames(entry);
     void treeAfterOwnerWrite(entry, method, path, res.body).catch(() => {});
     // A stored title written through the passthrough is the page's name: open live documents look again.
     const titled = method === "PATCH" ? path.match(/^\/notes\/([^/?]+)$/)?.[1] : undefined;
-    if (titled && writesTitle(init.body)) { try { void tellPagesChanged(entry.id, [decodeURIComponent(titled)]); } catch { /* malformed escape */ } }
+    if (titled && writesTitle(noteBody)) { try { void tellPagesChanged(entry.id, [decodeURIComponent(titled)]); } catch { /* malformed escape */ } }
     // A note deleted for good takes the page text set aside from its live document with it.
     for (const id of deleting) deleteCollabSetAsideForNote(entry.id, id);
   }
   if (process.env.PRISM_VAULT_TRACE === "1") {
-    console.log(`[trace] proxy ${method} ${path}${url.search} → ${res.status} ${res.body.length}B ${Date.now() - t0}ms ua=${(c.req.header("user-agent") ?? "").slice(0, 40)}`);
+    console.log(`[trace] proxy ${method} ${translate ? `${doorPath(door, path)}${doorSearch(door, url.search)}` : `${path}${url.search}`} → ${res.status} ${res.body.length}B ${Date.now() - t0}ms ua=${(c.req.header("user-agent") ?? "").slice(0, 40)}`);
   }
   return new Response(res.body, { status: res.status, headers: { "Content-Type": res.contentType } });
 }
@@ -316,11 +325,13 @@ interface ProxiedResponse {
   contentType: string;
 }
 
-async function forward(target: string, init: RequestInit): Promise<ProxiedResponse> {
+/** `shape`: the record door's answer in note shape (vault-door.ts); absent on the note door. */
+async function forward(target: string, init: RequestInit, shape?: (text: string) => string): Promise<ProxiedResponse> {
   const resp = await fetch(target, init);
+  const text = await resp.text();
   return {
     status: resp.status,
-    body: await resp.text(),
+    body: shape ? shape(text) : text,
     contentType: resp.headers.get("content-type") ?? "application/json",
   };
 }
@@ -356,7 +367,7 @@ function dropReadCache(): void {
  *  on a single-note read — a client re-reading because it was TOLD the note changed).
  *  Never answered from the reuse window or a read already in flight; its answer
  *  replaces the cached one. */
-async function coalescedGet(target: string, init: RequestInit, fresh = false): Promise<ProxiedResponse> {
+async function coalescedGet(target: string, init: RequestInit, fresh = false, shape?: (text: string) => string): Promise<ProxiedResponse> {
   if (!fresh) {
     const hit = readCache.get(target);
     if (hit && hit.expires > Date.now()) return hit.res;
@@ -367,11 +378,11 @@ async function coalescedGet(target: string, init: RequestInit, fresh = false): P
   const p = (async () => {
     let res: ProxiedResponse;
     try {
-      res = await forward(target, init);
+      res = await forward(target, init, shape);
     } catch {
       // A reused keep-alive socket can be reset by the vault; a GET is idempotent,
       // so retry once on a fresh request before giving up.
-      res = await forward(target, init);
+      res = await forward(target, init, shape);
     }
     if (res.status === 200 && READ_TTL_MS > 0 && generation === writeGeneration) readCache.set(target, { expires: Date.now() + READ_TTL_MS, res });
     if (readCache.size > 200) {

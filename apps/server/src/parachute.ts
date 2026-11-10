@@ -10,6 +10,7 @@ import { canonicalTagsStrict } from "./tags";
 import { config, type VaultEntry } from "./config";
 import { resolveVaultEntry } from "./db";
 import { shapeMetadata } from "./vault-shapes";
+import { doorUrlPath, fromRecordsBody, fromRecordsText, isNotePath, toRecordJson, vaultDoor, vaultTypeNames } from "./vault-door";
 
 export interface Note {
   id: string;
@@ -19,6 +20,8 @@ export interface Note {
   createdAt: string;
   updatedAt: string | null;
   tags: string[] | null;
+  /** Parachute ≥0.9: which of the names are the vault's types (they are in `tags` too). Absent on 0.8. */
+  types?: string[] | null;
   /** Present only on list reads with `includeLinks` (see NoteLink). */
   links?: NoteLink[];
   /** Lean (no-content) list reads carry the title the vault derived from the body. */
@@ -137,8 +140,14 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
     "Content-Type": "application/json",
   });
 
-  async function req(path: string, init?: RequestInit): Promise<Response> {
+  async function req(notePath: string, noteInit?: RequestInit): Promise<Response> {
     const t0 = Date.now();
+    // The door (vault-door.ts): on 0.8's note door `path` and `init` are the caller's own.
+    const door = await vaultDoor(entry, { timeoutMs: opts.timeoutMs, signal: noteInit?.signal });
+    const translate = door === "records" && isNotePath(notePath);
+    const path = doorUrlPath(door, notePath);
+    const init: RequestInit | undefined =
+      translate && typeof noteInit?.body === "string" ? { ...noteInit, body: toRecordJson(noteInit.body, await vaultTypeNames(entry)) } : noteInit;
     const send = () =>
       fetch(`${apiBase()}${path}`, {
         ...init,
@@ -165,6 +174,7 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
         let parsed: unknown = text;
         try {
           parsed = JSON.parse(text);
+          if (translate) parsed = fromRecordsBody(parsed);
         } catch {
           /* keep the raw text */
         }
@@ -172,7 +182,10 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
       }
       throw new VaultError(resp.status, `${init?.method ?? "GET"} ${path}: ${resp.status} ${text}`);
     }
-    return resp;
+    if (!translate) return resp;
+    // Record door: hand the caller the note shape it has always read.
+    const text = await resp.text();
+    return new Response(fromRecordsText(text), { status: resp.status, statusText: resp.statusText, headers: resp.headers });
   }
 
   return {

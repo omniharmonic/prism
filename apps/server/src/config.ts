@@ -148,6 +148,10 @@ export const config = {
   // How long `GET /health` (and `/api/health`) waits for the vault's own /health
   // before answering 503. 0 = no timeout (the old behaviour: hangs with the vault).
   vaultHealthTimeoutMs: Number(process.env.VAULT_HEALTH_TIMEOUT_MS ?? 2000),
+  // Which vault REST door to use (vault-door.ts): `auto` asks each vault once whether it
+  // has Parachute 0.9.1's `/api/records`; `notes` pins 0.8's `/api/notes`; `records` pins
+  // the record door.
+  vaultDoor: process.env.PRISM_VAULT_DOOR ?? "auto",
   mcpRatePerMinute: Number(process.env.MCP_RATE_PER_MINUTE ?? 120),
   mcpAuthFailuresPer10Min: Number(process.env.MCP_AUTH_FAILURES_PER_10MIN ?? 20),
 
