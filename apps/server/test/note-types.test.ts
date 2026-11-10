@@ -1,7 +1,6 @@
 /**
  * Parachute 0.9 gives each note `types` beside `tags` (packages/core
- * lib/schemas/names.ts). Kind is read from the types first, then the tags; database
- * and dashboard membership reads both. A 0.8 note (no `types`) reads exactly as
+ * lib/schemas/names.ts). Kind and database/dashboard membership read both. A 0.8 note (no `types`) reads exactly as
  * before — the first two assertions of each test are that case.
  */
 import { test } from "node:test";
@@ -15,16 +14,17 @@ const note = (id: string, tags: string[], types?: string[]): Note => ({
   id, content: "", path: `Notes/${id}`, metadata: {}, createdAt: "2026-11-01T00:00:00Z", updatedAt: null, tags, ...(types ? { types } : {}),
 });
 
-test("kind: a note's types decide before its plain tags; with no types, the old tag precedence", () => {
+test("kind: types and tags are read together, in the tag table's order — the kind never depends on whether types were sent", () => {
   // 0.8: `task` outranks `project` in tag-schemas.json.
   assert.equal(inferContentType(note("a", ["project", "task"])), "task");
   assert.equal(getStructuralTag(note("a", ["project", "task"])), "task");
-  // 0.9: the same names, but the vault says the note IS a project (a type) and only labelled `task`.
-  assert.equal(inferContentType(note("b", ["project", "task"], ["project"])), "project");
-  assert.equal(getStructuralTag(note("b", ["project", "task"], ["project"])), "project");
-  // The record door's own shape (tags hold plain labels only) still finds the kind.
+  // 0.9 note door: the same names plus `types` — the same kind (a tree row has no types; a live document must agree).
+  assert.equal(inferContentType(note("b", ["project", "task"], ["project"])), "task");
+  assert.equal(getStructuralTag(note("b", ["project", "task"], ["project"])), "task");
+  // 1.0 record shape (tags hold plain labels only): the kind comes from the types.
   assert.equal(inferContentType(note("c", ["idea"], ["task"])), "task");
-  // Types the table doesn't know fall back to the tags.
+  assert.equal(getStructuralTag(note("c", ["idea"], ["task"])), "task");
+  // Types the table doesn't know leave the tags to decide.
   assert.equal(inferContentType(note("d", ["task"], ["invoice"])), "task");
 });
 

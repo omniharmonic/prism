@@ -1,6 +1,6 @@
 import type { ContentType, Note } from "../types";
 import tagSchemas from "./tag-schemas.json";
-import { typeFirst } from "./names";
+import { firstNamed } from "./names";
 
 /** Shape of a single tag entry in the canonical tag-schemas.json. */
 type TagSchemaEntry = {
@@ -86,9 +86,9 @@ export function inferContentType(note: NoteForTypeInference): ContentType {
     if (meta.type.length > 0) unknownMetaType = true;
   }
 
-  // 2. Type/tag inference — the note's types (Parachute ≥0.9) against the mapping
-  // table first, then its tags (a 0.8 note has only tags: the old scan).
-  const structural = typeFirst(note, TAG_TO_CONTENT_TYPE);
+  // 2. Name inference — the note's types (Parachute ≥0.9) and tags against the mapping
+  // table, in the table's order (a 0.8 note has only tags: the old scan).
+  const structural = firstNamed(note, TAG_TO_CONTENT_TYPE);
   if (structural) return structural[1];
 
   // 2b. An unrecognized metadata.type with no structural tag to override it still
@@ -163,7 +163,7 @@ export function inferContentType(note: NoteForTypeInference): ContentType {
 
 // The original vault tag for a note (the structural tag that determined its type)
 export function getStructuralTag(note: NoteForTypeInference): string | null {
-  return typeFirst(note, TAG_TO_CONTENT_TYPE)?.[0] ?? null;
+  return firstNamed(note, TAG_TO_CONTENT_TYPE)?.[0] ?? null;
 }
 
 // Icon name mapping for content types (Lucide icon names)

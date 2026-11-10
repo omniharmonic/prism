@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { api } from "../src/routes/api";
 import { vaultClient } from "../src/parachute";
 import { config } from "../src/config";
-import { doorPath, doorSearch, fromRecordsBody, resetVaultDoors, toRecordItem, vaultDoor } from "../src/vault-door";
+import { doorPath, doorSearch, expireVaultDoors, fromRecordsBody, resetVaultDoors, toRecordItem, vaultDoor } from "../src/vault-door";
 import { installFakeVault, resetDb, makeSession, sessionCookie, type FakeVault, type VaultCall } from "./helpers";
 
 const OWNER = "owner@test.local";
@@ -48,6 +48,7 @@ test("door words: only note routes move, and only their two renamed parameters",
   assert.equal(doorPath("notes", "/notes/x"), "/notes/x");
   assert.equal(doorSearch("records", "?include_content=false&include_metadata=a,b&tag=task&tag=x"), "?include_body=false&include_fields=a%2Cb&tag=task&tag=x");
   assert.equal(doorSearch("notes", "?include_content=false"), "?include_content=false");
+  assert.equal(doorSearch("records", "?include_metadata=x", "/tags"), "?include_metadata=x", "another route's query is its own");
 });
 
 test("door words: a write in record words — types split from tags, a person's own field names untouched", () => {
@@ -66,6 +67,8 @@ test("door words: a write in record words — types split from tags, a person's 
     if_updated_at: "t",
   });
   assert.deepEqual(toRecordItem({ notes: [{ content: "a", tags: ["task"] }, { content: "b" }] }, types), { records: [{ body: "a", tags: [], types: ["task"] }, { body: "b" }] });
+  // A replace that names no type clears the types, as `tags: [...]` did on the note door.
+  assert.deepEqual(toRecordItem({ content: "x", path: "P", tags: ["idea"], if_exists: "replace" }, types), { body: "x", path: "P", tags: ["idea"], types: [], if_exists: "replace" });
 });
 
 test("door words: answers in note shape — tags list every name, types kept, history and conflicts too", () => {
@@ -293,4 +296,21 @@ test("auto: a bounded call stays bounded — the probe ends with the caller's ow
     clearTimeout(guard);
     globalThis.fetch = prev;
   }
+});
+
+test("auto: a record-door vault stays on the record door when a later probe can't decide (401, 5xx)", async () => {
+  setDoor("auto");
+  const door = installRecordDoor([]);
+  const t = { url: "http://vault.test", vault: "default", token: "t" };
+  assert.equal(await vaultDoor(t), "records");
+  expireVaultDoors();
+  const withDoor = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const u = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    if (u.pathname.endsWith("/api/records") && u.searchParams.get("limit") === "1") return new Response("busy", { status: 503 });
+    return withDoor(input, init);
+  }) as typeof fetch;
+  assert.equal(await vaultDoor(t), "records", "a 503 decides nothing");
+  door.recs.set("x", { id: "x", body: "b", path: null, fields: null, tags: [], types: [], createdAt: "c", updatedAt: "u" });
+  assert.equal((await vaultClient().getNote("x")).content, "b");
 });

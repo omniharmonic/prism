@@ -40,10 +40,13 @@ const DOOR_TTL_MS = 10 * 60_000;
 const DOOR_RETRY_MS = 30_000;
 const PROBE_TIMEOUT_MS = 3_000;
 const TYPES_TTL_MS = 60_000;
+/** A type list that could not be read is asked for again this soon. */
+const TYPES_RETRY_MS = 5_000;
 
 const known = new Map<string, { door: Door; until: number }>();
 const probing = new Map<string, Promise<Door>>();
 const typeNamesCache = new Map<string, { names: Set<string>; until: number }>();
+const readingTypes = new Map<string, Promise<Set<string>>>();
 
 const keyOf = (t: Target) => `${t.url}/vault/${t.vault}`;
 
@@ -53,11 +56,18 @@ export function doorMode(): "auto" | Door {
   return m === "notes" || m === "records" ? m : "auto";
 }
 
+/** Keep what is known but ask again on the next call (tests: a TTL that ran out). */
+export function expireVaultDoors(): void {
+  for (const v of known.values()) v.until = 0;
+  for (const v of typeNamesCache.values()) v.until = 0;
+}
+
 /** Forget every cached door and type list (tests; a vault registry change). */
 export function resetVaultDoors(): void {
   known.clear();
   probing.clear();
   typeNamesCache.clear();
+  readingTypes.clear();
 }
 
 /**
@@ -74,7 +84,10 @@ export async function vaultDoor(t: Target, bound: { timeoutMs?: number; signal?:
   let p = probing.get(key);
   if (!p) {
     p = probe(t, bound)
-      .then(({ door, sure }) => {
+      .then(({ door: found, sure }) => {
+        // An answer that decides nothing (401, 5xx, network, a caller's deadline) keeps the
+        // last known door: a record-door vault must not drop to /api/notes for a hiccup.
+        const door = sure || !hit ? found : hit.door;
         if (door !== hit?.door && (door === "records" || hit)) console.log(`[vault] ${t.vault}: ${door === "records" ? "record door (/api/records)" : "note door (/api/notes)"}`);
         known.set(key, { door, until: Date.now() + (sure ? DOOR_TTL_MS : DOOR_RETRY_MS) });
         return door;
@@ -87,10 +100,9 @@ export async function vaultDoor(t: Target, bound: { timeoutMs?: number; signal?:
 
 async function probe(t: Target, bound: { timeoutMs?: number; signal?: AbortSignal | null }): Promise<{ door: Door; sure: boolean }> {
   try {
-    const ms = bound.timeoutMs && bound.timeoutMs > 0 ? Math.min(bound.timeoutMs, PROBE_TIMEOUT_MS) : PROBE_TIMEOUT_MS;
     const r = await fetch(`${t.url}/vault/${t.vault}/api/records?limit=1&include_body=false`, {
       headers: { Authorization: `Bearer ${t.token}` },
-      signal: bound.signal ? AbortSignal.any([AbortSignal.timeout(ms), bound.signal]) : AbortSignal.timeout(ms),
+      signal: boundSignal(bound),
     });
     const text = await r.text().catch(() => "");
     if (r.ok) {
@@ -124,9 +136,10 @@ export function isNotePath(path: string): boolean {
 
 const PARAM_NAMES: Record<string, string> = { include_content: "include_body", include_metadata: "include_fields" };
 
-/** A query string (with or without `?`) in the door's parameter names. */
-export function doorSearch(door: Door, search: string): string {
-  if (door !== "records" || !search) return search;
+/** A note route's query string (with or without `?`) in the door's parameter names.
+ *  Pass `path` to leave every other route's query as it is. */
+export function doorSearch(door: Door, search: string, path = "/notes"): string {
+  if (door !== "records" || !search || !isNotePath(path)) return search;
   const sp = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
   const out = new URLSearchParams();
   for (const [k, v] of sp) out.append(PARAM_NAMES[k] ?? k, v);
@@ -138,7 +151,8 @@ export function doorSearch(door: Door, search: string): string {
 export function doorUrlPath(door: Door, pathWithQuery: string): string {
   const i = pathWithQuery.indexOf("?");
   if (i < 0) return doorPath(door, pathWithQuery);
-  return doorPath(door, pathWithQuery.slice(0, i)) + doorSearch(door, pathWithQuery.slice(i));
+  const path = pathWithQuery.slice(0, i);
+  return doorPath(door, path) + doorSearch(door, pathWithQuery.slice(i), path);
 }
 
 const BODY_KEYS: Record<string, string> = { content: "body", metadata: "fields", content_edit: "body_edit" };
@@ -163,10 +177,11 @@ export function toRecordItem(item: unknown, types: ReadonlySet<string>): unknown
   if (!("tags" in item)) return out;
   const tags = item.tags;
   if (Array.isArray(tags)) {
-    // A create (or a PUT): names that are the vault's types travel as `types`.
+    // A create (or a replace): names that are the vault's types travel as `types`, always
+    // beside `tags`, so a replace that drops a type drops it as it did on the note door.
     const s = splitNames(tags, types);
     out.tags = s.tags;
-    if (s.types.length) out.types = uniq([...(Array.isArray(out.types) ? (out.types as string[]) : []), ...s.types]);
+    out.types = uniq([...(Array.isArray(out.types) ? (out.types as string[]) : []), ...s.types]);
   } else if (isObj(tags)) {
     // A PATCH: `{add, remove}` on each.
     const add = splitNames(tags.add, types);
@@ -259,22 +274,35 @@ export function fromRecordsText(text: string): string {
  * cannot be read, from `GET /tags` rows that say `kind: "type"`. Cached briefly;
  * `forgetTypeNames` after a write that may change the list.
  */
-export async function vaultTypeNames(t: Target): Promise<Set<string>> {
+export async function vaultTypeNames(t: Target, bound: { timeoutMs?: number; signal?: AbortSignal | null } = {}): Promise<Set<string>> {
   const key = keyOf(t);
   const hit = typeNamesCache.get(key);
   if (hit && hit.until > Date.now()) return hit.names;
-  const names = (await readNames(t, "/types", false)) ?? (await readNames(t, "/tags", true)) ?? new Set<string>();
-  typeNamesCache.set(key, { names, until: Date.now() + TYPES_TTL_MS });
-  return names;
+  let p = readingTypes.get(key);
+  if (!p) {
+    p = (async () => {
+      const names = (await readNames(t, "/types", false, bound)) ?? (await readNames(t, "/tags", true, bound));
+      // A list that could not be read is not remembered for long: the next write asks again.
+      typeNamesCache.set(key, { names: names ?? hit?.names ?? new Set<string>(), until: Date.now() + (names ? TYPES_TTL_MS : TYPES_RETRY_MS) });
+      return names ?? hit?.names ?? new Set<string>();
+    })().finally(() => readingTypes.delete(key));
+    readingTypes.set(key, p);
+  }
+  return p;
+}
+
+/** Does this note-route JSON body name any tags (only then are the type names needed)? */
+export function namesTags(raw: string): boolean {
+  return raw.includes('"tags"');
 }
 
 export function forgetTypeNames(t: Target): void {
   typeNamesCache.delete(keyOf(t));
 }
 
-async function readNames(t: Target, path: string, onlyTypes: boolean): Promise<Set<string> | null> {
+async function readNames(t: Target, path: string, onlyTypes: boolean, bound: { timeoutMs?: number; signal?: AbortSignal | null }): Promise<Set<string> | null> {
   try {
-    const r = await fetch(`${t.url}/vault/${t.vault}/api${path}`, { headers: { Authorization: `Bearer ${t.token}` }, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+    const r = await fetch(`${t.url}/vault/${t.vault}/api${path}`, { headers: { Authorization: `Bearer ${t.token}` }, signal: boundSignal(bound) });
     if (!r.ok) {
       await r.body?.cancel().catch(() => {});
       return null;
@@ -302,6 +330,12 @@ export function changesTypes(path: string): boolean {
 }
 
 // ---- small helpers ----------------------------------------------------------
+
+/** Our own short deadline, shortened further by the caller's (`timeoutMs`, `signal`). */
+function boundSignal(bound: { timeoutMs?: number; signal?: AbortSignal | null }): AbortSignal {
+  const ms = bound.timeoutMs && bound.timeoutMs > 0 ? Math.min(bound.timeoutMs, PROBE_TIMEOUT_MS) : PROBE_TIMEOUT_MS;
+  return bound.signal ? AbortSignal.any([AbortSignal.timeout(ms), bound.signal]) : AbortSignal.timeout(ms);
+}
 
 function isObj(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v);

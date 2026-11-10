@@ -17,7 +17,7 @@ import type { Context } from "hono";
 import { resolveVaultEntry, grantsForResource, isCollabUnsaved, deleteCollabSetAsideForNote, hasCollabSetAside } from "../db";
 import type { VaultEntry } from "../config";
 import { vault, vaultClient, VaultError, VaultConflictError, type Note } from "../parachute";
-import { changesTypes, doorPath, doorSearch, forgetTypeNames, fromRecordsText, isNotePath, toRecordJson, vaultDoor, vaultTypeNames } from "../vault-door";
+import { changesTypes, doorPath, doorSearch, forgetTypeNames, fromRecordsText, isNotePath, namesTags, toRecordJson, vaultDoor, vaultTypeNames } from "../vault-door";
 import { resolveActor, requestVia, type Actor } from "../auth/actor";
 import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
 import { effectiveLevel, effectiveCaps, governedReview, grantedTags, resolvePageAnchor, type Cap, type NoteRef } from "../permissions";
@@ -134,7 +134,7 @@ async function proxyToVault(c: Context) {
   // The vault door (../vault-door.ts): on 0.8's note door the target is the path as asked.
   const door = await vaultDoor(entry);
   const translate = door === "records" && isNotePath(path);
-  const target = `${entry.url}/vault/${entry.vault}/api${doorPath(door, path)}${doorSearch(door, url.search)}`;
+  const target = `${entry.url}/vault/${entry.vault}/api${doorPath(door, path)}${doorSearch(door, url.search, path)}`;
   const method = c.req.method;
   const headers: Record<string, string> = { Authorization: `Bearer ${entry.token}` };
   const init: RequestInit = { method, headers };
@@ -178,7 +178,7 @@ async function proxyToVault(c: Context) {
   }
   // Record door: the body goes out in record words, after every check above read it as a note.
   const noteBody = init.body;
-  if (translate && typeof init.body === "string") init.body = toRecordJson(init.body, await vaultTypeNames(entry));
+  if (translate && typeof init.body === "string") init.body = toRecordJson(init.body, namesTags(init.body) ? await vaultTypeNames(entry) : new Set());
   const shape = translate ? fromRecordsText : undefined;
   const t0 = Date.now();
   let res: ProxiedResponse;
@@ -217,7 +217,7 @@ async function proxyToVault(c: Context) {
     for (const id of deleting) deleteCollabSetAsideForNote(entry.id, id);
   }
   if (process.env.PRISM_VAULT_TRACE === "1") {
-    console.log(`[trace] proxy ${method} ${translate ? `${doorPath(door, path)}${doorSearch(door, url.search)}` : `${path}${url.search}`} → ${res.status} ${res.body.length}B ${Date.now() - t0}ms ua=${(c.req.header("user-agent") ?? "").slice(0, 40)}`);
+    console.log(`[trace] proxy ${method} ${translate ? `${doorPath(door, path)}${doorSearch(door, url.search, path)}` : `${path}${url.search}`} → ${res.status} ${res.body.length}B ${Date.now() - t0}ms ua=${(c.req.header("user-agent") ?? "").slice(0, 40)}`);
   }
   return new Response(res.body, { status: res.status, headers: { "Content-Type": res.contentType } });
 }

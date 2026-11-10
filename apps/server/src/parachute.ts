@@ -10,7 +10,7 @@ import { canonicalTagsStrict } from "./tags";
 import { config, type VaultEntry } from "./config";
 import { resolveVaultEntry } from "./db";
 import { shapeMetadata } from "./vault-shapes";
-import { doorUrlPath, fromRecordsBody, fromRecordsText, isNotePath, toRecordJson, vaultDoor, vaultTypeNames } from "./vault-door";
+import { doorUrlPath, fromRecordsBody, isNotePath, namesTags, toRecordJson, vaultDoor, vaultTypeNames } from "./vault-door";
 
 export interface Note {
   id: string;
@@ -143,11 +143,13 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
   async function req(notePath: string, noteInit?: RequestInit): Promise<Response> {
     const t0 = Date.now();
     // The door (vault-door.ts): on 0.8's note door `path` and `init` are the caller's own.
-    const door = await vaultDoor(entry, { timeoutMs: opts.timeoutMs, signal: noteInit?.signal });
+    const bound = { timeoutMs: opts.timeoutMs, signal: noteInit?.signal };
+    const door = await vaultDoor(entry, bound);
     const translate = door === "records" && isNotePath(notePath);
     const path = doorUrlPath(door, notePath);
+    const raw = noteInit?.body;
     const init: RequestInit | undefined =
-      translate && typeof noteInit?.body === "string" ? { ...noteInit, body: toRecordJson(noteInit.body, await vaultTypeNames(entry)) } : noteInit;
+      translate && typeof raw === "string" ? { ...noteInit, body: toRecordJson(raw, namesTags(raw) ? await vaultTypeNames(entry, bound) : new Set()) } : noteInit;
     const send = () =>
       fetch(`${apiBase()}${path}`, {
         ...init,
@@ -183,9 +185,19 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
       throw new VaultError(resp.status, `${init?.method ?? "GET"} ${path}: ${resp.status} ${text}`);
     }
     if (!translate) return resp;
-    // Record door: hand the caller the note shape it has always read.
+    // Record door: hand the caller the note shape it has always read, parsed once (every
+    // caller here reads `.json()`; a full-vault list is megabytes).
     const text = await resp.text();
-    return new Response(fromRecordsText(text), { status: resp.status, statusText: resp.statusText, headers: resp.headers });
+    let shaped: unknown;
+    try {
+      shaped = fromRecordsBody(JSON.parse(text));
+    } catch {
+      return new Response(text, { status: resp.status, statusText: resp.statusText, headers: resp.headers });
+    }
+    const out = new Response(null, { status: resp.status, statusText: resp.statusText, headers: resp.headers });
+    Object.defineProperty(out, "json", { value: async () => shaped });
+    Object.defineProperty(out, "text", { value: async () => JSON.stringify(shaped) });
+    return out;
   }
 
   return {

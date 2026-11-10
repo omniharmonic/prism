@@ -44,6 +44,7 @@ import { bodyLimit } from "hono/body-limit";
 import { db, resolveVaultEntry } from "../db";
 import type { VaultEntry } from "../config";
 import { fetchVault, vaultClient, VaultConflictError, VaultError, type Note } from "../parachute";
+import { forgetTypeNames } from "../vault-door";
 import { resolveActor, requestVia, type Actor } from "../auth/actor";
 import { effectiveCaps, grantedTags, type Cap, type NoteRef } from "../permissions";
 import { roleAtLeast, roleFloor } from "../roles";
@@ -660,6 +661,8 @@ async function applySchemaPatch(c: Context, entry: VaultEntry, tag: string, patc
       if (resp.status === 403) return c.json({ error: "schema_admin_unavailable", detail: "the vault refused the admin token" }, 503);
       return vaultFailure(c, new VaultError(resp.status, `PUT /tags/${tag}: ${resp.status} ${text}`));
     }
+    // A tag with fields is a type on Parachute ≥0.9: the record door's type list changed.
+    forgetTypeNames(entry);
   }
   if (patch.ui || patch.pinned !== undefined) {
     const all = readHints(entry.id).get(tag) ?? {};
