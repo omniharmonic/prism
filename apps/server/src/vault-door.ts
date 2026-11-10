@@ -331,11 +331,13 @@ export function fromRecordsText(text: string): string {
 
 /**
  * The vault's type names, for splitting a write's names into `types` and `tags`
- * (the record door refuses a type's name in `tags`). From `GET /types` (every row but
- * those that say `kind: "tag"`); when that cannot be read or has a shape we don't know,
+ * (the record door refuses a type's name in `tags`). From `GET /types` (rows that say
+ * `kind: "type"` or say no kind); when that cannot be read or has a shape we don't know,
  * from `GET /tags` rows that say `kind: "type"`. Cached for 15 s (`forgetTypeNames` after
  * a write that may change it); one read in flight per vault.
- * `null` when neither can be read and nothing is known: the caller must not guess.
+ * `null` when no current list can be read: the caller refuses the write rather than
+ * guess. A guess that sends a plain tag as a type would create a type in the vault; a
+ * type sent as a tag is only refused, so every doubtful row counts as a tag.
  */
 export async function vaultTypeNames(t: Target, bound: Bound = {}): Promise<Set<string> | null> {
   const key = keyOf(t);
@@ -347,19 +349,17 @@ export async function vaultTypeNames(t: Target, bound: Bound = {}): Promise<Set<
     const keyGen = typesGeneration.get(key) ?? 0;
     const mine: Promise<Set<string> | null> = (async () => {
       const names = (await readNames(t, "/types", false)) ?? (await readNames(t, "/tags", true));
-      const current = gen === generation && keyGen === (typesGeneration.get(key) ?? 0);
-      if (names && current) typeNamesCache.set(key, { names, until: Date.now() + TYPES_TTL_MS });
-      // Unreadable now: a list read before is still the best answer (kept a few seconds,
-      // so a flaky vault isn't asked on every write); else none.
-      else if (hit && current) typeNamesCache.set(key, { names: hit.names, until: Date.now() + 5_000 });
-      return names ?? hit?.names ?? null;
+      // A list overtaken by a schema write (or a reset) is not used: the write is refused and retried.
+      if (gen !== generation || keyGen !== (typesGeneration.get(key) ?? 0)) return null;
+      if (names) typeNamesCache.set(key, { names, until: Date.now() + TYPES_TTL_MS });
+      return names;
     })().finally(() => {
       if (readingTypes.get(key) === mine) readingTypes.delete(key);
     });
     readingTypes.set(key, mine);
     p = mine;
   }
-  return withinBound(p, bound, hit?.names ?? null);
+  return withinBound(p, bound, null);
 }
 
 /** Does this note-route body (or an item of its batch) carry `tags`? Only then are the
@@ -386,17 +386,20 @@ async function readNames(t: Target, path: string, onlyTypes: boolean): Promise<S
       return null;
     }
     const body: unknown = await r.json();
-    const rows: unknown[] | null = Array.isArray(body) ? body : isObj(body) && Array.isArray(body.types) ? body.types : null;
-    if (!rows) return null; // a shape we don't know: not "no types"
+    const listed = Array.isArray(body) ? body : isObj(body) && Array.isArray(body.types) ? body.types : isObj(body) && onlyTypes && Array.isArray(body.tags) ? body.tags : null;
+    if (!listed) return null; // a shape we don't know: not "no types"
+    const rows: unknown[] = listed;
+    // `/tags` rows that never say their kind can't tell types from tags: unreadable, not "none".
+    if (onlyTypes && rows.length > 0 && !rows.some((r) => isObj(r) && "kind" in r)) return null;
     const out = new Set<string>();
     for (const row of rows) {
       if (typeof row === "string") {
         if (!onlyTypes) out.add(row);
       } else if (isObj(row)) {
         const name = typeof row.name === "string" ? row.name : typeof row.tag === "string" ? row.tag : null;
-        // On `/types` every row is a type unless it says it is a tag (list-types gives one
-        // list of types AND tags, each with its `kind`); on `/tags` only rows that say "type".
-        if (name && (onlyTypes ? row.kind === "type" : row.kind !== "tag")) out.add(name);
+        // A row that says it is a type is one; on `/types` so is a row that says nothing.
+        // Anything else (kind "tag", null, unknown) counts as a tag (see above).
+        if (name && (row.kind === "type" || (!onlyTypes && !("kind" in row)))) out.add(name);
       }
     }
     return out;

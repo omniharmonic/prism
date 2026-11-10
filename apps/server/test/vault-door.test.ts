@@ -385,7 +385,7 @@ test("record door: a type list read while a schema write lands is not kept", asy
   const before = vaultTypeNames(t); // reads ["task"], slowly
   names.push("project"); // a schema write makes `project` a type…
   forgetTypeNames(t); // …and says so while that read is still out
-  assert.deepEqual([...(await before)!], ["task"]);
+  assert.equal(await before, null, "the overtaken read is not used");
   assert.deepEqual([...(await vaultTypeNames(t))!].sort(), ["project", "task"], "read again, not the stale list");
 });
 
@@ -394,7 +394,7 @@ test("record door: a type list that also lists plain tags (each row with its kin
   const t = { url: "http://vault.test", vault: "default", token: "test-vault-token" };
   installRecordDoor(["meeting"], { typesRows: [{ name: "meeting", kind: "type" }, { name: "pinned", kind: "tag" }, { name: "event", kind: null }, { name: "task" }] });
   const names = (await vaultTypeNames(t))!;
-  assert.deepEqual([...names].sort(), ["event", "meeting", "task"], "only rows that say tag are left out");
+  assert.deepEqual([...names].sort(), ["meeting", "task"], "a type, or a /types row that says nothing; a doubtful kind counts as a tag");
   resetVaultDoors();
   installRecordDoor(["meeting"], { typesRows: { types: [{ name: "meeting" }], tags: [{ name: "pinned" }] } });
   assert.deepEqual([...(await vaultTypeNames(t))!], ["meeting"], "the {types, tags} shape");
@@ -408,10 +408,30 @@ test("record door: a /types answer in a shape we don't know falls back to /tags 
   const t = { url: "http://vault.test", vault: "default", token: "test-vault-token" };
   installRecordDoor([], { typesRows: { items: [{ name: "meeting" }] } });
   const prev = globalThis.fetch;
+  let tagsAnswer: unknown = { tags: [{ name: "meeting", kind: "type" }, { name: "pinned", kind: "tag" }] };
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const u = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
-    if (u.pathname.endsWith("/api/tags")) return new Response(JSON.stringify([{ name: "meeting", kind: "type" }, { name: "pinned", kind: "tag" }]), { status: 200 });
+    if (u.pathname.endsWith("/api/tags")) return new Response(JSON.stringify(tagsAnswer), { status: 200 });
     return prev(input, init);
   }) as typeof fetch;
-  assert.deepEqual([...(await vaultTypeNames(t))!], ["meeting"]);
+  try {
+    assert.deepEqual([...(await vaultTypeNames(t))!], ["meeting"]);
+    // /tags rows that never say their kind can't be split: no list, so the write is refused.
+    resetVaultDoors();
+    tagsAnswer = [{ name: "meeting", count: 3 }];
+    assert.equal(await vaultTypeNames(t), null);
+  } finally {
+    globalThis.fetch = prev;
+  }
+});
+
+test("record door: a type-list read overtaken by a schema write is not used (the write is refused, then retried)", async () => {
+  setDoor("records");
+  const names = ["task"];
+  installRecordDoor(names, { typesDelayMs: 30 });
+  const t = { url: "http://vault.test", vault: "default", token: "test-vault-token" };
+  const during = vaultTypeNames(t);
+  names.push("project");
+  forgetTypeNames(t);
+  assert.equal(await during, null);
 });
