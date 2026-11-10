@@ -143,3 +143,16 @@ test("touchedNotes: create (result ids / batch / path fallback), update + delete
   assert.deepEqual(touchedNotes("delete-note", { id: "y" }, ""), [{ noteId: "y", op: "delete" }]);
   assert.deepEqual(touchedNotes("query-notes", { id: "z" }, ""), []);
 });
+
+test("touchedNotes: Parachute 0.9's record tools count like the note tools (records batch included)", () => {
+  assert.deepEqual(touchedNotes("create-record", {}, [{ type: "text", text: '{"records":[{"id":"a"},{"id":"b"}]}' }]), [
+    { noteId: "a", op: "create" },
+    { noteId: "b", op: "create" },
+  ]);
+  assert.deepEqual(touchedNotes("update-record", { records: [{ id: "x" }, { id: "w" }] }, ""), [
+    { noteId: "x", op: "update" },
+    { noteId: "w", op: "update" },
+  ]);
+  assert.deepEqual(touchedNotes("delete-record", { id: "y" }, ""), [{ noteId: "y", op: "delete" }]);
+  assert.deepEqual(touchedNotes("query-records", { id: "z" }, ""), []);
+});

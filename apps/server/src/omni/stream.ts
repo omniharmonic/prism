@@ -89,6 +89,13 @@ const WRITE_TOOLS: Record<string, { op: CardOp; via: "prism" | "vault" }> = {
   "create-note": { op: "created", via: "vault" },
   "update-note": { op: "updated", via: "vault" },
   "delete-note": { op: "deleted", via: "vault" },
+  // Parachute 0.9's names for the same three.
+  create_record: { op: "created", via: "vault" },
+  update_record: { op: "updated", via: "vault" },
+  delete_record: { op: "deleted", via: "vault" },
+  "create-record": { op: "created", via: "vault" },
+  "update-record": { op: "updated", via: "vault" },
+  "delete-record": { op: "deleted", via: "vault" },
 };
 
 /** `mcp__prism__prism_update_note` → `prism_update_note`; a bare name stays. */

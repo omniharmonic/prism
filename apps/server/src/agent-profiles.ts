@@ -30,11 +30,16 @@ export const SESSION_PROFILES: readonly AgentProfile[] = ["vault-ro", "vault-rw"
 export const PROFILES: readonly AgentProfile[] = ["vault-ro", "vault-rw"];
 
 /** Vault 0.7.9 tools whose manifest `requiredVerb` is "read". `doctor` is a
- *  read-only scan (core/src/doctor.ts: "never auto-fixes"; manifest verb read). */
-export const READ_ONLY_TOOLS = ["query-notes", "list-tags", "find-path", "vault-info", "doctor"] as const;
+ *  read-only scan (core/src/doctor.ts: "never auto-fixes"; manifest verb read).
+ *  Parachute 0.9 renames the note tools to record tools (`query-records`,
+ *  `list-types`; `find-path` folds into `query-records`) and keeps the old names as
+ *  deprecated aliases until 1.0, so both are listed; a name a vault doesn't offer is
+ *  simply not there. */
+export const READ_ONLY_TOOLS = ["query-notes", "list-tags", "find-path", "vault-info", "doctor", "query-records", "list-types"] as const;
 /** vault-rw is an EXPLICIT allowlist too — never the whole server: the admin-verb
  *  tools (update-tag, delete-tag, rename-tag, merge-tags, prune-schema,
- *  manage-token) and request-attachment-upload are never allowed. */
+ *  manage-token; 0.9's manage-types, manage-keys) and request-attachment-upload are
+ *  never allowed. Nor is 0.9's `attachment-url`: it uploads as well as reads. */
 export const READ_WRITE_TOOLS = [
   "query-notes",
   "create-note",
@@ -46,9 +51,14 @@ export const READ_WRITE_TOOLS = [
   "doctor",
   "read-attachment",
   "request-attachment-download",
+  "query-records",
+  "create-record",
+  "update-record",
+  "delete-record",
+  "list-types",
 ] as const;
 /** Background skills may write notes but never delete them. */
-export const SKILL_TOOLS: readonly string[] = READ_WRITE_TOOLS.filter((t) => t !== "delete-note");
+export const SKILL_TOOLS: readonly string[] = READ_WRITE_TOOLS.filter((t) => t !== "delete-note" && t !== "delete-record");
 
 /** Prism MCP tools (scope read). Asserted against the live catalog in tests. */
 export const PRISM_READ_TOOLS = [

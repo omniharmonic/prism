@@ -67,7 +67,7 @@ export function toolsDeniedByProfile(init: CliInitEvent, profile: AgentProfile):
 
 /** Violations of a read-only profile: any write/delete tool the profile would ALLOW. */
 export function checkReadOnlyEnforced(init: CliInitEvent, profile: AgentProfile): string[] {
-  const WRITE = /__((create|update|delete)-note|prism_(create_note|update_note|delete_note|restore_version|add_comment|resolve_comment|suggest_edit|sheet_update|share|propose_change|vote|withdraw_proposal))$/;
+  const WRITE = /__((create|update|delete)-(note|record)|manage-(types|keys)|attachment-url|prism_(create_note|update_note|delete_note|restore_version|add_comment|resolve_comment|suggest_edit|sheet_update|share|propose_change|vote|withdraw_proposal))$/;
   const allowed = new Set(profileAllowedTools(profile));
   const problems = (init.tools ?? []).filter((t) => allowed.has(t) && WRITE.test(t)).map((t) => `read-only profile ${profile} allows ${t}`);
   for (const t of profileAllowedTools(profile)) if (WRITE.test(t)) problems.push(`read-only profile ${profile} allowlist names ${t}`);

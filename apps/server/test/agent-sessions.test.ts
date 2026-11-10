@@ -600,7 +600,7 @@ test("profiles: vault-ro allowlists ONLY read tools; vault-rw is an EXPLICIT lis
   await postTurn(ro, { prompt: "read" });
   assert.equal(
     flag(calls[0]!.args, "--allowedTools"),
-    "mcp__parachute-vault__query-notes,mcp__parachute-vault__list-tags,mcp__parachute-vault__find-path,mcp__parachute-vault__vault-info,mcp__parachute-vault__doctor",
+    "mcp__parachute-vault__query-notes,mcp__parachute-vault__list-tags,mcp__parachute-vault__find-path,mcp__parachute-vault__vault-info,mcp__parachute-vault__doctor,mcp__parachute-vault__query-records,mcp__parachute-vault__list-types",
   );
   assert.doesNotMatch(flag(calls[0]!.args, "--allowedTools")!, /create|update|delete/);
   assert.match(calls[0]!.args.at(-1)!, /READ-ONLY/);
@@ -610,12 +610,12 @@ test("profiles: vault-ro allowlists ONLY read tools; vault-rw is an EXPLICIT lis
   const rwList = flag(calls[1]!.args, "--allowedTools")!.split(",");
   assert.deepEqual(
     rwList,
-    ["query-notes", "create-note", "update-note", "delete-note", "list-tags", "find-path", "vault-info", "doctor", "read-attachment", "request-attachment-download"].map(
+    ["query-notes", "create-note", "update-note", "delete-note", "list-tags", "find-path", "vault-info", "doctor", "read-attachment", "request-attachment-download", "query-records", "create-record", "update-record", "delete-record", "list-types"].map(
       (t) => `mcp__parachute-vault__${t}`,
     ),
   );
   assert.ok(!rwList.includes("mcp__parachute-vault"), "never the whole server");
-  for (const admin of ["update-tag", "delete-tag", "rename-tag", "merge-tags", "prune-schema", "manage-token", "request-attachment-upload"]) {
+  for (const admin of ["update-tag", "delete-tag", "rename-tag", "merge-tags", "prune-schema", "manage-token", "request-attachment-upload", "manage-types", "manage-keys", "attachment-url"]) {
     assert.ok(!profileAllowedTools("vault-rw").includes(`mcp__parachute-vault__${admin}`), admin);
   }
   const bad = await agentApi.request("/sessions", { method: "POST", headers: { ...J, ...owner() }, body: JSON.stringify({ profile: "root" }) });
