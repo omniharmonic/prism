@@ -1,5 +1,6 @@
 import type { ContentType, Note } from "../types";
 import tagSchemas from "./tag-schemas.json";
+import { firstNamed } from "./names";
 
 /** Shape of a single tag entry in the canonical tag-schemas.json. */
 type TagSchemaEntry = {
@@ -15,7 +16,7 @@ type TagSchemaEntry = {
  * Both `Note` and `NoteTreeEntry` satisfy it — accepting this lets the lean
  * tree-view payload share the same type-inference helpers as full notes.
  */
-type NoteForTypeInference = Pick<Note, "metadata" | "tags" | "path"> & {
+type NoteForTypeInference = Pick<Note, "metadata" | "tags" | "path"> & Pick<Partial<Note>, "types"> & {
   // Optional: when the full note body is available, content sniffing catches
   // structural types (e.g. an Excalidraw canvas) even if tags/metadata are missing
   // or wrong. Lean tree/tab payloads omit it and fall back to tag/ext inference.
@@ -85,15 +86,10 @@ export function inferContentType(note: NoteForTypeInference): ContentType {
     if (meta.type.length > 0) unknownMetaType = true;
   }
 
-  // 2. Tag-based inference — check tags against the mapping table
-  if (note.tags && note.tags.length > 0) {
-    const tagSet = new Set(note.tags);
-    for (const [tag, type] of TAG_TO_CONTENT_TYPE) {
-      if (tagSet.has(tag)) {
-        return type;
-      }
-    }
-  }
+  // 2. Name inference — the note's types (Parachute ≥0.9) and tags against the mapping
+  // table, in the table's order (a 0.8 note has only tags: the old scan).
+  const structural = firstNamed(note, TAG_TO_CONTENT_TYPE);
+  if (structural) return structural[1];
 
   // 2b. An unrecognized metadata.type with no structural tag to override it still
   // means "document-like content" — and stops here rather than falling through to
@@ -167,15 +163,7 @@ export function inferContentType(note: NoteForTypeInference): ContentType {
 
 // The original vault tag for a note (the structural tag that determined its type)
 export function getStructuralTag(note: NoteForTypeInference): string | null {
-  if (note.tags && note.tags.length > 0) {
-    const tagSet = new Set(note.tags);
-    for (const [tag] of TAG_TO_CONTENT_TYPE) {
-      if (tagSet.has(tag)) {
-        return tag;
-      }
-    }
-  }
-  return null;
+  return firstNamed(note, TAG_TO_CONTENT_TYPE)?.[0] ?? null;
 }
 
 // Icon name mapping for content types (Lucide icon names)

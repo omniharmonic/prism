@@ -13,6 +13,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { db, resolveVaultEntry } from "./db";
+import { doorPath, vaultDoor } from "./vault-door";
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS prism_attachments (
@@ -133,8 +134,8 @@ export async function purgeAttachmentsForNote(vaultId: string, noteId: string, o
     let ok = false;
     if (row.vault_attachment_id) {
       try {
-        const { api, auth } = base(vaultId);
-        const r = await fetch(`${api}/notes/${encodeURIComponent(noteId)}/attachments/${encodeURIComponent(row.vault_attachment_id)}`, {
+        const { notes, auth } = await noteBase(vaultId);
+        const r = await fetch(`${notes}/${encodeURIComponent(noteId)}/attachments/${encodeURIComponent(row.vault_attachment_id)}`, {
           method: "DELETE",
           headers: { Authorization: auth },
           signal: AbortSignal.timeout(15_000),
@@ -206,6 +207,12 @@ function base(vaultId: string) {
   return { api: `${e.url}/vault/${e.vault}/api`, auth: `Bearer ${e.token}` };
 }
 
+/** `base` plus the note collection at this vault's door (`/notes`, or `/records` on Parachute ≥0.9.1; vault-door.ts). */
+async function noteBase(vaultId: string) {
+  const b = base(vaultId);
+  return { ...b, notes: `${b.api}${doorPath(await vaultDoor(resolveVaultEntry(vaultId)), "/notes")}` };
+}
+
 /**
  * Upload into the vault's storage under a server-chosen file name. Takes the
  * parsed upload Blob as-is (no extra copy): the vault's `/storage/upload` only
@@ -225,8 +232,8 @@ export async function vaultUpload(vaultId: string, bytes: Blob, filename: string
 
 /** Link a stored file to a note (never auto-transcribed). */
 export async function vaultAttach(vaultId: string, noteId: string, path: string, mimeType: string): Promise<{ id: string }> {
-  const { api, auth } = base(vaultId);
-  const r = await fetch(`${api}/notes/${encodeURIComponent(noteId)}/attachments`, {
+  const { notes, auth } = await noteBase(vaultId);
+  const r = await fetch(`${notes}/${encodeURIComponent(noteId)}/attachments`, {
     method: "POST",
     headers: { Authorization: auth, "Content-Type": "application/json" },
     body: JSON.stringify({ path, mimeType, transcribe: false }),

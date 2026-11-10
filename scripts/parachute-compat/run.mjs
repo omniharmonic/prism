@@ -17,7 +17,7 @@ import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readF
 import { createHash } from "node:crypto";
 import { delimiter, dirname, isAbsolute, join, relative } from "node:path";
 import {
-  ADMIN_ONLY_TOOLS, EMBEDDED_ITEMS, PRISM_VAULT_RO, PRISM_VAULT_RW,
+  ADMIN_ONLY_TOOLS, EMBEDDED_ITEMS, requiredVaultTools,
   assertHomeAllowed, assertPortAllowed, countResults, decodeJwt, detectFeatures, fmtMode, isLoopbackAddr, isSecretPath,
   liveParachuteHome, modeProblem, parseArgs, parseJsonOut, parseLsof, parseMint, pickPort, portFree, renderMarkdown, scrub, usage,
 } from "./lib.mjs";
@@ -482,7 +482,7 @@ async function main() {
     if (!t) { rec("mcp", `tools/list (${verb})`, "SKIP", "no token"); continue; }
     const names = await mcpTools(`${vaultOrigin}/vault/${VAULT}/mcp`, t);
     if (!names) { rec("mcp", `tools/list (${verb})`, "FAIL", "no tools/list answer"); continue; }
-    const need = verb === "read" ? PRISM_VAULT_RO : PRISM_VAULT_RW;
+    const need = requiredVaultTools(verb, names);
     const missing = need.filter((n) => !names.includes(n));
     const leaked = verb === "admin" ? [] : ADMIN_ONLY_TOOLS.filter((n) => names.includes(n));
     rec("mcp", `tools/list (${verb}) has Prism's allowlist${verb === "admin" ? "" : ", no admin verbs"}`, missing.length || leaked.length ? "FAIL" : "PASS",

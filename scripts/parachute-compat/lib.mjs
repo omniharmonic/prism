@@ -15,8 +15,19 @@ export const PRISM_VAULT_RW = [
   "query-notes", "create-note", "update-note", "delete-note", "list-tags", "find-path", "vault-info", "doctor",
   "read-attachment", "request-attachment-download",
 ];
-/** Must stay hidden from non-admin tokens. */
-export const ADMIN_ONLY_TOOLS = ["update-tag", "delete-tag", "rename-tag", "merge-tags", "prune-schema", "manage-token"];
+/** Parachute 0.9's record names in the same allowlists. Required only from a vault
+ *  that lists record tools (0.8 has none); the old names stay required through 0.9. */
+export const PRISM_VAULT_RO_RECORDS = ["query-records", "list-types"];
+export const PRISM_VAULT_RW_RECORDS = ["query-records", "create-record", "update-record", "delete-record", "list-types"];
+/** The allowlist a tools/list answer must carry: the record names too when it has any. */
+export function requiredVaultTools(verb, names) {
+  const records = names.includes("query-records");
+  return verb === "read"
+    ? [...PRISM_VAULT_RO, ...(records ? PRISM_VAULT_RO_RECORDS : [])]
+    : [...PRISM_VAULT_RW, ...(records ? PRISM_VAULT_RW_RECORDS : [])];
+}
+/** Must stay hidden from non-admin tokens (0.9 adds manage-types and manage-keys). */
+export const ADMIN_ONLY_TOOLS = ["update-tag", "delete-tag", "rename-tag", "merge-tags", "prune-schema", "manage-token", "manage-types", "manage-keys"];
 
 /** The embedded-mode requirements the suite reports on (launch plan §3.1). */
 export const EMBEDDED_ITEMS = Object.freeze({

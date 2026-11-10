@@ -36,12 +36,13 @@ beforeEach(() => {
   configureBilling();
 });
 
-test("skill profile = vault-rw minus delete-note; never the whole server", () => {
-  assert.ok(!SKILL_TOOLS.includes("delete-note"));
-  assert.deepEqual(SKILL_TOOLS, READ_WRITE_TOOLS.filter((t) => t !== "delete-note"));
+test("skill profile = vault-rw minus delete-note and delete-record; never the whole server", () => {
+  assert.ok(!SKILL_TOOLS.includes("delete-note") && !SKILL_TOOLS.includes("delete-record"));
+  assert.deepEqual(SKILL_TOOLS, READ_WRITE_TOOLS.filter((t) => t !== "delete-note" && t !== "delete-record"));
   const l = profileAllowedTools("skill");
   assert.ok(l.includes("mcp__parachute-vault__create-note") && l.includes("mcp__parachute-vault__update-note"));
-  assert.ok(!l.includes("mcp__parachute-vault__delete-note") && !l.includes("mcp__parachute-vault"));
+  assert.ok(l.includes("mcp__parachute-vault__create-record") && l.includes("mcp__parachute-vault__update-record"), "Parachute 0.9's names too");
+  assert.ok(!l.includes("mcp__parachute-vault__delete-note") && !l.includes("mcp__parachute-vault__delete-record") && !l.includes("mcp__parachute-vault"));
 });
 
 test("prism profiles: tool names are real catalog tools with the right scope; no delete/share/governance actions", () => {

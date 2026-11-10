@@ -116,6 +116,10 @@ const WRITE_OPS: Record<string, "create" | "update" | "delete"> = {
   "create-note": "create",
   "update-note": "update",
   "delete-note": "delete",
+  // Parachute 0.9's names for the same three.
+  "create-record": "create",
+  "update-record": "update",
+  "delete-record": "delete",
   prism_create_note: "create",
   prism_update_note: "update",
   prism_delete_note: "delete",
@@ -150,14 +154,15 @@ export function touchedNotes(tool: string, input: unknown, resultContent: unknow
   const inp = asObj(input) ?? {};
   const out: Array<{ noteId: string; op: "create" | "update" | "delete" }> = [];
   if (op === "create") {
-    // The result carries the created note(s): {id,…} | [{id,…}] | {notes:[…]}.
+    // The result carries the created note(s): {id,…} | [{id,…}] | {notes:[…]} | {records:[…]} (0.9).
     let parsed: unknown = null;
     try {
       parsed = JSON.parse(toolResultText(resultContent));
     } catch {
       /* not JSON */
     }
-    const list = Array.isArray(parsed) ? parsed : Array.isArray(asObj(parsed)?.notes) ? (asObj(parsed)!.notes as unknown[]) : [parsed];
+    const batch = asObj(parsed)?.notes ?? asObj(parsed)?.records;
+    const list = Array.isArray(parsed) ? parsed : Array.isArray(batch) ? batch : [parsed];
     for (const n of list) {
       const id = str(asObj(n)?.id) ?? str(asObj(n)?.path);
       if (id) out.push({ noteId: id, op });
@@ -168,12 +173,12 @@ export function touchedNotes(tool: string, input: unknown, resultContent: unknow
     }
     return out;
   }
-  // update/delete: {id} or a batch {notes:[{id}]} / {ids:[…]}.
+  // update/delete: {id} or a batch {notes:[{id}]} / {records:[{id}]} (0.9) / {ids:[…]}.
   const ids: string[] = [];
   const one = str(inp.id) ?? str(inp.path);
   if (one) ids.push(one);
   if (Array.isArray(inp.ids)) for (const x of inp.ids) if (str(x)) ids.push(x as string);
-  if (Array.isArray(inp.notes)) for (const n of inp.notes) {
+  for (const n of [...(Array.isArray(inp.notes) ? inp.notes : []), ...(Array.isArray(inp.records) ? inp.records : [])]) {
     const id = str(asObj(n)?.id) ?? str(asObj(n)?.path);
     if (id) ids.push(id);
   }

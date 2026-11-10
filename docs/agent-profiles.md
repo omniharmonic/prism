@@ -6,9 +6,9 @@ Operator reference for the server agent runner (`/api/agent/*`, owner-only).
 
 | Profile | Server | Tools | Notes |
 |---|---|---|---|
-| `vault-ro` (UI default) | parachute-vault | `query-notes list-tags find-path vault-info doctor` | also runs on a per-turn READ-scoped hub token |
-| `vault-rw` | parachute-vault | read tools + `create-note update-note delete-note read-attachment request-attachment-download` | |
-| `skill` | parachute-vault | `vault-rw` minus `delete-note` | background skills (`SKILLS_ENABLED`); server-internal, not a session choice |
+| `vault-ro` (UI default) | parachute-vault | `query-notes list-tags find-path vault-info doctor`, and Parachute 0.9's `query-records list-types` | also runs on a per-turn READ-scoped hub token |
+| `vault-rw` | parachute-vault | read tools + `create-note update-note delete-note read-attachment request-attachment-download`, and 0.9's `create-record update-record delete-record` | never `attachment-url` (it uploads too), `manage-types` or `manage-keys` |
+| `skill` | parachute-vault | `vault-rw` minus `delete-note` and `delete-record` | background skills (`SKILLS_ENABLED`); server-internal, not a session choice |
 | `prism-ro` | Prism `/mcp` | the read-scope `prism_*` tools | needs `AGENT_PRISM_PROFILES=true` |
 | `prism-rw` | Prism `/mcp` | read tools + create/update note, restore version, comments, suggested edits, sheet update | needs `AGENT_PRISM_PROFILES=true`; no delete, share or governance actions |
 | `prism-graph` | Prism `/mcp` | read tools + the `prism_people_*` graph-maintenance tools (review queue, duplicates, merge recommendations, filing gaps) + create/update note | needs `AGENT_PRISM_PROFILES=true` AND `AGENT_GRAPH_PROFILE=true`; the ONLY profile with the people tools (they expose raw identity keys and change who records belong to); no delete, share, restore or governance actions. Switching such a session's permission mode turns it into an ordinary prism profile without them. |
