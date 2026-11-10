@@ -331,9 +331,10 @@ export function fromRecordsText(text: string): string {
 
 /**
  * The vault's type names, for splitting a write's names into `types` and `tags`
- * (the record door refuses a type's name in `tags`). From `GET /types`; when that
- * cannot be read, from `GET /tags` rows that say `kind: "type"`. Cached for a minute
- * (`forgetTypeNames` after a write that may change it); one read in flight per vault.
+ * (the record door refuses a type's name in `tags`). From `GET /types` (every row but
+ * those that say `kind: "tag"`); when that cannot be read or has a shape we don't know,
+ * from `GET /tags` rows that say `kind: "type"`. Cached for 15 s (`forgetTypeNames` after
+ * a write that may change it); one read in flight per vault.
  * `null` when neither can be read and nothing is known: the caller must not guess.
  */
 export async function vaultTypeNames(t: Target, bound: Bound = {}): Promise<Set<string> | null> {
@@ -346,8 +347,11 @@ export async function vaultTypeNames(t: Target, bound: Bound = {}): Promise<Set<
     const keyGen = typesGeneration.get(key) ?? 0;
     const mine: Promise<Set<string> | null> = (async () => {
       const names = (await readNames(t, "/types", false)) ?? (await readNames(t, "/tags", true));
-      if (names && gen === generation && keyGen === (typesGeneration.get(key) ?? 0)) typeNamesCache.set(key, { names, until: Date.now() + TYPES_TTL_MS });
-      // Unreadable now: a list read before is still the best answer; else none.
+      const current = gen === generation && keyGen === (typesGeneration.get(key) ?? 0);
+      if (names && current) typeNamesCache.set(key, { names, until: Date.now() + TYPES_TTL_MS });
+      // Unreadable now: a list read before is still the best answer (kept a few seconds,
+      // so a flaky vault isn't asked on every write); else none.
+      else if (hit && current) typeNamesCache.set(key, { names: hit.names, until: Date.now() + 5_000 });
       return names ?? hit?.names ?? null;
     })().finally(() => {
       if (readingTypes.get(key) === mine) readingTypes.delete(key);
@@ -382,16 +386,17 @@ async function readNames(t: Target, path: string, onlyTypes: boolean): Promise<S
       return null;
     }
     const body: unknown = await r.json();
-    const rows: unknown[] = Array.isArray(body) ? body : isObj(body) && Array.isArray(body.types) ? body.types : [];
+    const rows: unknown[] | null = Array.isArray(body) ? body : isObj(body) && Array.isArray(body.types) ? body.types : null;
+    if (!rows) return null; // a shape we don't know: not "no types"
     const out = new Set<string>();
     for (const row of rows) {
       if (typeof row === "string") {
         if (!onlyTypes) out.add(row);
       } else if (isObj(row)) {
         const name = typeof row.name === "string" ? row.name : typeof row.tag === "string" ? row.tag : null;
-        // A row that says what it is counts only as a type; `/types` rows that say nothing
-        // are types. (One list of types AND tags, each with its `kind`, is list-types' shape.)
-        if (name && (row.kind === "type" || (!onlyTypes && row.kind === undefined))) out.add(name);
+        // On `/types` every row is a type unless it says it is a tag (list-types gives one
+        // list of types AND tags, each with its `kind`); on `/tags` only rows that say "type".
+        if (name && (onlyTypes ? row.kind === "type" : row.kind !== "tag")) out.add(name);
       }
     }
     return out;

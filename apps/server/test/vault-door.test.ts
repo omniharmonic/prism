@@ -392,13 +392,26 @@ test("record door: a type list read while a schema write lands is not kept", asy
 test("record door: a type list that also lists plain tags (each row with its kind) keeps the tags as tags", async () => {
   setDoor("records");
   const t = { url: "http://vault.test", vault: "default", token: "test-vault-token" };
-  installRecordDoor(["meeting"], { typesRows: [{ name: "meeting", kind: "type" }, { name: "pinned", kind: "tag" }] });
+  installRecordDoor(["meeting"], { typesRows: [{ name: "meeting", kind: "type" }, { name: "pinned", kind: "tag" }, { name: "event", kind: null }, { name: "task" }] });
   const names = (await vaultTypeNames(t))!;
-  assert.ok(names.has("meeting") && !names.has("pinned"));
+  assert.deepEqual([...names].sort(), ["event", "meeting", "task"], "only rows that say tag are left out");
   resetVaultDoors();
   installRecordDoor(["meeting"], { typesRows: { types: [{ name: "meeting" }], tags: [{ name: "pinned" }] } });
   assert.deepEqual([...(await vaultTypeNames(t))!], ["meeting"], "the {types, tags} shape");
   const sent = toRecordItem({ content: "x", tags: ["meeting", "pinned"] }, names) as Record<string, unknown>;
   assert.deepEqual(sent.types, ["meeting"]);
   assert.deepEqual(sent.tags, ["pinned"]);
+});
+
+test("record door: a /types answer in a shape we don't know falls back to /tags rows that say kind type", async () => {
+  setDoor("records");
+  const t = { url: "http://vault.test", vault: "default", token: "test-vault-token" };
+  installRecordDoor([], { typesRows: { items: [{ name: "meeting" }] } });
+  const prev = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const u = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    if (u.pathname.endsWith("/api/tags")) return new Response(JSON.stringify([{ name: "meeting", kind: "type" }, { name: "pinned", kind: "tag" }]), { status: 200 });
+    return prev(input, init);
+  }) as typeof fetch;
+  assert.deepEqual([...(await vaultTypeNames(t))!], ["meeting"]);
 });
