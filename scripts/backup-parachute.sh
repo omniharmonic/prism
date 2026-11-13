@@ -53,7 +53,8 @@ for pkg in hub vault core; do
   f="$HOME/.bun/install/global/node_modules/@openparachute/$pkg/package.json"
   log "$(printf '%-5s' "$pkg") $( [ -f "$f" ] && jq -r .version "$f" || echo absent) (bun global)"
 done
-log "parachute version: $("${PARACHUTE_BIN:-parachute}" version --json 2>/dev/null | jq -r .version 2>/dev/null || echo unknown)"
+PBIN="${PARACHUTE_BIN:-$(sed -n 's/^PARACHUTE_BIN=//p' "$PRISM/apps/server/.env" 2>/dev/null | tail -1)}"
+log "parachute version (${PBIN:-parachute}): $("${PBIN:-parachute}" version --json 2>/dev/null | jq -r '.version // "unknown"' 2>/dev/null || echo unknown)"
 log "prism $(git -C "$PRISM" rev-parse --short HEAD) ($(git -C "$PRISM" branch --show-current))"
 log ""
 

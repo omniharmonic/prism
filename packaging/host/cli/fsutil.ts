@@ -1,5 +1,5 @@
 /** Small filesystem helpers with the install's permission rules built in. */
-import { chmodSync, closeSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { CliError, EXIT } from "./exit-codes";
@@ -170,6 +170,17 @@ export function acquireRunLock(path: string, o: { command: string; now: Date; pi
     return { release, info, tookOver };
   }
   throw new CliError(EXIT.PRECONDITION, `could not take the run lock ${path}`, { lock: { path } });
+}
+
+/** The executable `name` in the folder of `path`'s real file (links followed), or undefined. */
+export function besideRealFile(path: string, name: string): string | undefined {
+  try {
+    const p = join(dirname(realpathSync(path)), name);
+    accessSync(p, constants.X_OK);
+    return p;
+  } catch {
+    return undefined;
+  }
 }
 
 export { existsSync };

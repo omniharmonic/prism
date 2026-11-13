@@ -283,7 +283,7 @@ test("a bun-script CLI runs when the caller's PATH lacks its folder (clean-VM fi
 });
 
 test("Parachute 0.8 from bun: the vault CLI inside the package finds bun through the hub CLI's folder", async () => {
-  // `bun add -g @openparachute/core` links only `parachute` into ~/.bun/bin (beside bun); `parachute-vault`
+  // `bun add -g @openparachute/core` links only `parachute` and `parachute-core` into ~/.bun/bin (beside bun); `parachute-vault`
   // stays in the package, whose folder has no bun, and its script ends `exec bun …`.
   const root = mkdtempSync(join(tmpdir(), "prism-bun08-"));
   try {

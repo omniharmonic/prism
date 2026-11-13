@@ -280,7 +280,7 @@ app never disagree.
 |---|---|---|---|
 | `machine` | yes | `prism doctor` | — (`failed`, exit 4) |
 | `install` | yes | a host install at the prefix | `prism install --no-start --no-signin` (needs `--owner-email` the first time, else `needs-person`) |
-| `vault` | yes | Parachute's own launchd unit; the vault at `PARACHUTE_URL`; the `parachute` / `parachute-vault` commands (`.env`, `PATH`, `~/.bun/bin`) | Parachute's own unit, or a Parachute someone else runs → **reused** (paths recorded as explicit `PARACHUTE_BIN` / `PARACHUTE_VAULT_BIN`, nothing else touched). Nothing runs → **stock mode** ([Stock Parachute](#stock-parachute-the-fallback)): vault created, the person creates the admin, Prism's hub agent. Embedded payload: its `parachute bootstrap --embedded --json`. Stock Parachute missing: `needs-person` with the install commands (bun; `bun add -g @openparachute/core@0.8.0` — the agent, with the person's yes; bun links only `parachute`, so `parachute-vault` is found inside the package, `~/.bun/install/global/node_modules/@openparachute/core/packages/cli/bin/parachute-vault`). **The CLI never installs Parachute itself, and never runs `parachute init`.** |
+| `vault` | yes | Parachute's own launchd unit; the vault at `PARACHUTE_URL`; the `parachute` / `parachute-vault` commands (`.env`, `PATH`, `~/.bun/bin`) | Parachute's own unit, or a Parachute someone else runs → **reused** (paths recorded as explicit `PARACHUTE_BIN` / `PARACHUTE_VAULT_BIN`, nothing else touched). Nothing runs → **stock mode** ([Stock Parachute](#stock-parachute-the-fallback)): vault created, the person creates the admin, Prism's hub agent. Embedded payload: its `parachute bootstrap --embedded --json`. Stock Parachute missing: `needs-person` with the install commands (bun; `bun add -g @openparachute/core@0.8.0` — the agent, with the person's yes; bun links only `parachute` and `parachute-core`, so `parachute-vault` is found inside the package, `<BUN_INSTALL or ~/.bun>/install/global/node_modules/@openparachute/core/packages/cli/bin/parachute-vault`; a 0.8 `parachute` is always paired with the `parachute-vault` of its own install, a 0.7 one never with a 0.8 vault). **The CLI never installs Parachute itself, and never runs `parachute init`.** |
 | `secrets` | yes | every generated secret in `.env` | adds the missing ones; never replaces `SECRETS_KEY` or any other existing value |
 | `vault-token` | yes | `PARACHUTE_TOKEN` is set and the vault accepts it | `prism token mint` |
 | `schemas` | yes | a dry run of the tag-schema seed finds nothing to add | an `--ephemeral` `vault:<name>:admin` token (memory only), then the seed (additive). Vault 0.7.9 requires every tag that declares a field to agree on its type and `indexed` flag (else 422 `tag_field_conflict` for the whole tag); Prism's own schemas disagree on a few (`confidence`, `species`, `published`, …), so the seed keeps the vault's (or the earlier tag's) `indexed` flag and leaves a type-clashing declaration out — the step's detail names them (13 on a fresh vault). Notes may still carry those keys. |
@@ -375,8 +375,9 @@ installed packages:
   SIGTERM/SIGINT are forwarded, SIGKILL after 15 s; a crash (or an unexpected exit 0) is a failed
   exit, so launchd restarts it after 10 s. It **refuses** (exit 0, no restart loop) without
   `PARACHUTE_BIN` / `PARACHUTE_HOME` in `.env`, and while Parachute's own `computer.parachute.hub`
-  is loaded. It also stops (exit 0, no restart loop) when Parachute ≥ 0.8 exits **7**: an older
-  Parachute (0.7) still owns the home, which restarting can't fix; `prism logs` says what to do. The vault binds loopback by default (`VAULT_BIND` unset).
+  is loaded. It also stops (exit 0, no restart loop) when Parachute ≥ 0.8 exits **7** with its "an older
+  Parachute still owns" message (any other exit 7 is restarted as before): restarting can't fix
+  that; `prism logs` says what to do. The vault binds loopback by default (`VAULT_BIND` unset).
 - **Ports: the defaults only**, 1939 (hub) and 1940 (vault). The setup step adopts stock mode only
   when `PARACHUTE_URL` is `http://127.0.0.1:1940`; on any other address it asks the person to start
   their Parachute there instead.
@@ -396,8 +397,9 @@ takeover`; it is not built into `prism`:
    0.8 on it, and leaves 0.7 installed. 0.7.19 + 0.7.9 homes need no migration, so going back keeps
    every write.
 4. In `.env`, set `PARACHUTE_BIN` and `PARACHUTE_VAULT_BIN` to the 0.8 programs (the bundle's
-   `bin/parachute` and `bin/parachute-vault`); `prism start`. (`prism setup` pairs a 0.8
-   `parachute` with the `parachute-vault` of its own install even if `.env` still names 0.7's.)
+   `bin/parachute` and `bin/parachute-vault`); `prism start`. (In stock mode `prism setup` pairs a 0.8 `parachute`
+   with the `parachute-vault` of its own install even if `.env` still names 0.7's; when Parachute's
+   own unit is reused, `.env` is not rewritten, so set both lines yourself.)
 5. Back: `prism stop`, `PARACHUTE_HOME=<home> <0.8>/bin/parachute-core takeover --rollback --yes`,
    the two `.env` lines back to 0.7, `prism start`. Always pass the home: without it takeover
    uses `~/.parachute`, which is not Prism's home when Prism made it inside the install.
