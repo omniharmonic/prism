@@ -579,6 +579,10 @@ test("setup: vaultBesideHub — 0.8's parachute-vault from the same install as p
   writeFileSync(hub07, "#!/bin/sh\n", { mode: 0o755 });
   assert.equal(vaultBesideHub(hub07), undefined);
   assert.equal(pickVaultBin(hub07, [undefined, old07, undefined], { PATH: "/nonexistent" }, w.home), old07, "0.7: .env as before");
+  // back to 0.7: .env still names the 0.8 vault (it has parachute-core beside it): skipped for a 0.7 hub
+  writeFileSync(join(pkgBin, "parachute-core"), "#!/bin/sh\n", { mode: 0o755 });
+  assert.equal(pickVaultBin(hub07, [undefined, v08, undefined], { PATH: "/nonexistent" }, w.home), old07);
+  assert.equal(pickVaultBin(hub07, [v08, undefined, undefined], { PATH: "/nonexistent" }, w.home), v08, "the flag still wins");
   assert.equal(vaultBesideHub(join(w.root, "missing")), undefined);
 });
 

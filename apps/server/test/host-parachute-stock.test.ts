@@ -445,7 +445,7 @@ test("run hub, stock: refuses (exit 0 under launchd) without a CLI/home, and whi
   assert.equal(owned.code, EXIT.OK, "exit 7 under launchd: stop, restarting cannot fix it");
   assert.match(logs.at(-1)!, /parachute-core takeover/);
   assert.ok(logs.at(-1)!.includes(`PARACHUTE_HOME=${home} `), "the hint names the home (takeover's default is ~/.parachute)");
-  assert.match(logs.at(-1)!, /PARACHUTE_BIN/);
+  assert.match(logs.at(-1)!, /PARACHUTE_BIN and PARACHUTE_VAULT_BIN/);
   const ownedFg = await runStockHub({ ...base, bin: w.bin, home, foreground: true, spawnChild: () => fakeChild(7) });
   assert.equal(ownedFg.code, EXIT.CONFIG);
 });

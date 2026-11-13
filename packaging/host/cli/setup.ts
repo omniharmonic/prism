@@ -252,7 +252,19 @@ export function vaultBesideHub(hub: string): string | undefined {
 export function pickVaultBin(hub: string | null, explicit: Array<string | undefined>, env: NodeJS.ProcessEnv, home: string): string | null {
   const [flag, ...rest] = explicit;
   const beside = hub ? vaultBesideHub(hub) : undefined;
-  return findExecutable("parachute-vault", [flag, beside, ...rest], env, home);
+  // And the other way (back to 0.7): a hub with no vault of its own is not paired with a 0.8 vault
+  // (one with `parachute-core` beside its real file) that `.env` still names.
+  const others = hub && !beside ? rest.filter((p) => !(p && isAbsolute(p) && isCoreVault(p))) : rest;
+  return findExecutable("parachute-vault", [flag, beside, ...others], env, home);
+}
+
+function isCoreVault(vault: string): boolean {
+  try {
+    accessSync(join(dirname(realpathSync(vault)), "parachute-core"), constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
