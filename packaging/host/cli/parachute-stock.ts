@@ -22,7 +22,7 @@
  * Nothing here touches a Parachute that Parachute's own launchd unit runs: that one is reused.
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, readdirSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { EXIT } from "./exit-codes";
 import type { Launchd } from "./launchd";
@@ -295,12 +295,21 @@ export async function runStockHub(o: StockHubRun): Promise<{ code: number; comma
     // Parachute ≥ 0.8's `serve` on a home stock 0.7 still owns: it refuses before opening anything
     // and changes nothing. Restarting can't fix that, so (like the refusals above) exit 0 under
     // launchd instead of a KeepAlive loop. 0.7's own hub never exits 7.
-    o.log(`prism run hub: Parachute refused the home (exit 7): an older Parachute (0.7) still owns ${o.home}. Move it over with \`PARACHUTE_HOME=${o.home} ${join(dirname(o.bin), "parachute-core")} takeover\` (it backs up first; \`… takeover --rollback\` goes back), or point PARACHUTE_BIN in ${o.layout.envFile} back at the 0.7 \`parachute\`; then prism start. ${o.layout.logs}/hub.log has Parachute's own message.`);
+    o.log(`prism run hub: Parachute refused the home (exit 7): an older Parachute (0.7) still owns ${o.home}. Move it over with \`PARACHUTE_HOME=${o.home} ${coreBesideBin(o.bin)} takeover\` (it backs up first; \`… takeover --rollback\` goes back), or point PARACHUTE_BIN in ${o.layout.envFile} back at the 0.7 \`parachute\`; then prism start. ${o.layout.logs}/hub.log has Parachute's own message.`);
     return { code: o.foreground ? EXIT.CONFIG : EXIT.OK, command, modes };
   }
   o.log(`prism run hub: the hub exited with ${code}`);
   // An unexpected exit 0 is still a failure for launchd (KeepAlive restarts only failures).
   return { code: code === 0 ? EXIT.ERROR : code, command, modes };
+}
+
+/** `parachute-core` of the install `bin` belongs to (its real folder: a person's own link has none beside it). */
+function coreBesideBin(bin: string): string {
+  try {
+    return join(dirname(realpathSync(bin)), "parachute-core");
+  } catch {
+    return join(dirname(bin), "parachute-core");
+  }
 }
 
 function defaultSpawn(c: HubCommand, foreground: boolean): ChildProcess {

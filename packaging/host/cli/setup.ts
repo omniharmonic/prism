@@ -244,6 +244,18 @@ export function vaultBesideHub(hub: string): string | undefined {
 }
 
 /**
+ * `parachute-vault` for this `parachute`: the flag (`explicit[0]`) wins; then the one of the SAME
+ * install as the hub when it has one (Parachute ≥ 0.8), ahead of `.env` and the environment — so a
+ * 0.7 `PARACHUTE_VAULT_BIN` left in `.env` (or a leftover 0.7 vault on PATH) is never paired with a
+ * 0.8 hub after the move; then the rest, as {@link findExecutable}.
+ */
+export function pickVaultBin(hub: string | null, explicit: Array<string | undefined>, env: NodeJS.ProcessEnv, home: string): string | null {
+  const [flag, ...rest] = explicit;
+  const beside = hub ? vaultBesideHub(hub) : undefined;
+  return findExecutable("parachute-vault", [flag, beside, ...rest], env, home);
+}
+
+/**
  * An executable on disk: an absolute path, or a name looked up on PATH, then `~/.bun/bin`, then
  * (for `parachute-vault`) inside bun's global `@openparachute/core` package.
  */
@@ -475,9 +487,7 @@ const steps: Record<string, StepImpl<SetupRc>> = {
     const flagBin = str(rc.p, "parachute-bin");
     const flagVaultBin = str(rc.p, "parachute-vault-bin");
     const hub = findExecutable("parachute", [flagBin, env.PARACHUTE_BIN, rc.ctx.env.PARACHUTE_BIN], rc.ctx.env, rc.ctx.home);
-    // After any explicit path: the `parachute-vault` of the SAME install as `parachute` (0.8 ships both
-    // in one folder), so a leftover 0.7 vault on PATH is never paired with a 0.8 hub.
-    const vaultBin = findExecutable("parachute-vault", [flagVaultBin, env.PARACHUTE_VAULT_BIN, rc.ctx.env.PARACHUTE_VAULT_BIN, hub ? vaultBesideHub(hub) : undefined], rc.ctx.env, rc.ctx.home);
+    const vaultBin = pickVaultBin(hub, [flagVaultBin, env.PARACHUTE_VAULT_BIN, rc.ctx.env.PARACHUTE_VAULT_BIN], rc.ctx.env, rc.ctx.home);
     // Parachute's OWN launchd units (read-only `launchctl print` + the plist): when they are here,
     // Parachute runs itself and Prism reuses it — never a second hub.
     const theirs = await foreignParachuteUnits(rc.ctx);

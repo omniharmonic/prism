@@ -385,7 +385,8 @@ installed packages:
 programs are installed (exit 7, nothing changed). The move is Parachute's own `parachute-core
 takeover`; it is not built into `prism`:
 1. `prism backup`, then `prism stop` (takeover won't start while a process outside a unit it can
-   pause holds the data).
+   pause holds the data). `prism backup` copies only the databases; the rollback copy is the
+   whole-home backup takeover makes in step 3.
 2. Install 0.8 **beside** 0.7: the release tarball (checked against `SHA256SUMS`), or npm with its
    own `--prefix`. Not `bun add -g`: it silently replaces 0.7's `~/.bun/bin/parachute`, which is
    what `PARACHUTE_BIN` usually names.
@@ -394,7 +395,9 @@ takeover`; it is not built into `prism`:
    It backs up the whole home (sha256 per file) to `<home>/../parachute-takeover/<time>/`, checks
    0.8 on it, and leaves 0.7 installed. 0.7.19 + 0.7.9 homes need no migration, so going back keeps
    every write.
-4. In `.env`, set `PARACHUTE_BIN` and `PARACHUTE_VAULT_BIN` to the 0.8 programs; `prism start`.
+4. In `.env`, set `PARACHUTE_BIN` and `PARACHUTE_VAULT_BIN` to the 0.8 programs (the bundle's
+   `bin/parachute` and `bin/parachute-vault`); `prism start`. (`prism setup` pairs a 0.8
+   `parachute` with the `parachute-vault` of its own install even if `.env` still names 0.7's.)
 5. Back: `prism stop`, `PARACHUTE_HOME=<home> <0.8>/bin/parachute-core takeover --rollback --yes`,
    the two `.env` lines back to 0.7, `prism start`. Always pass the home: without it takeover
    uses `~/.parachute`, which is not Prism's home when Prism made it inside the install.

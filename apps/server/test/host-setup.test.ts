@@ -11,7 +11,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-import { runSteps, cmdSetup, findExecutable, vaultBesideHub, stockParachuteCommands, type StepImpl, type StepEvent, type SetupDeps } from "../../../packaging/host/cli/setup";
+import { runSteps, cmdSetup, findExecutable, pickVaultBin, vaultBesideHub, stockParachuteCommands, type StepImpl, type StepEvent, type SetupDeps } from "../../../packaging/host/cli/setup";
 import { cmdToken, tokenFacts, parachuteCallEnv } from "../../../packaging/host/cli/token";
 import { EXIT } from "../../../packaging/host/cli/exit-codes";
 import { layoutFor, privateDirs, type Layout } from "../../../packaging/host/cli/paths";
@@ -567,11 +567,18 @@ test("setup: vaultBesideHub — 0.8's parachute-vault from the same install as p
   writeFileSync(join(w.home, ".bun", "bin", "parachute-vault"), "#!/bin/sh\n", { mode: 0o755 });
   const hub = findExecutable("parachute", [], { PATH: "/nonexistent" }, w.home)!;
   assert.equal(vaultBesideHub(hub), realpathSync(join(pkgBin, "parachute-vault")));
-  assert.equal(findExecutable("parachute-vault", [undefined, vaultBesideHub(hub)], { PATH: "/nonexistent" }, w.home), realpathSync(join(pkgBin, "parachute-vault")));
+  const v08 = realpathSync(join(pkgBin, "parachute-vault"));
+  const old07 = join(w.home, ".bun", "bin", "parachute-vault");
+  // the move to 0.8: .env still names the 0.7 vault; the 0.8 hub's own vault wins over it
+  assert.equal(pickVaultBin(hub, [undefined, old07, undefined], { PATH: "/nonexistent" }, w.home), v08);
+  assert.equal(pickVaultBin(hub, [undefined, undefined, undefined], { PATH: join(w.home, ".bun", "bin") }, w.home), v08);
+  // only the --parachute-vault-bin flag outranks it
+  assert.equal(pickVaultBin(hub, [old07, undefined, undefined], { PATH: "/nonexistent" }, w.home), old07);
   const hub07 = join(w.root, "hub07", "src", "cli.ts");
   mkdirSync(dirname(hub07), { recursive: true });
   writeFileSync(hub07, "#!/bin/sh\n", { mode: 0o755 });
   assert.equal(vaultBesideHub(hub07), undefined);
+  assert.equal(pickVaultBin(hub07, [undefined, old07, undefined], { PATH: "/nonexistent" }, w.home), old07, "0.7: .env as before");
   assert.equal(vaultBesideHub(join(w.root, "missing")), undefined);
 });
 
