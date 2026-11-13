@@ -297,6 +297,11 @@ test("Parachute 0.8 from bun: the vault CLI inside the package finds bun through
     const cfg = { ...parachuteCliConfig({}), bin: join(bunBin, "parachute"), vaultBin: join(pkgBin, "parachute-vault") };
     const r = await runParachute("vault", ["create", "v"], { config: cfg, parentEnv: { HOME: root, PATH: "/usr/bin:/bin" } });
     assert.equal(r.stdout.trim(), "ran-with-bun");
+    // PARACHUTE_BIN set to the real in-package `parachute` (no bun beside it): bun's own bin (~/.bun) still is
+    writeFileSync(join(pkgBin, "parachute"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const cfg2 = { ...cfg, bin: join(pkgBin, "parachute") };
+    const r2 = await runParachute("vault", ["create", "v"], { config: cfg2, parentEnv: { HOME: root, PATH: "/usr/bin:/bin" } });
+    assert.equal(r2.stdout.trim(), "ran-with-bun");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

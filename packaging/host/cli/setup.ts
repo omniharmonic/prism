@@ -250,16 +250,23 @@ export function pickVaultBin(hub: string | null, explicit: Array<string | undefi
   const [flag, ...rest] = explicit;
   const beside = hub ? vaultBesideHub(hub) : undefined;
   if (!hub || beside) return findExecutable("parachute-vault", [flag, beside, ...rest], env, home);
-  const found = findExecutable("parachute-vault", [flag, ...rest.filter((p) => !(p && isAbsolute(p) && isCoreVault(p)))], env, home);
-  return found && found !== flag && isCoreVault(found) ? null : found;
+  // A 0.7 hub: the flag's program as given; otherwise the first program found that is not a 0.8 vault.
+  const fromFlag = flag ? executables("parachute-vault", [flag], env, home, false)[0] : undefined;
+  if (fromFlag) return fromFlag;
+  return executables("parachute-vault", rest, env, home).find((p) => !isCoreVault(p)) ?? null;
 }
 
 /**
- * An executable on disk: an absolute path, or a name looked up on PATH, then `~/.bun/bin`, then
- * (for `parachute-vault`) inside bun's global `@openparachute/core` package, under `BUN_INSTALL`
- * or `~/.bun` (bun links only `parachute` and `parachute-core` into its `bin`).
+ * An executable on disk: an absolute path, or a name looked up on PATH, then bun's `bin`
+ * (`BUN_INSTALL`, then `~/.bun`), then (for `parachute-vault`) inside bun's global
+ * `@openparachute/core` package there (bun links only `parachute` and `parachute-core` into `bin`).
  */
 export function findExecutable(name: string, explicit: Array<string | undefined>, env: NodeJS.ProcessEnv, home: string): string | null {
+  return executables(name, explicit, env, home)[0] ?? null;
+}
+
+/** Every match {@link findExecutable} would consider, in its order (`fallbacks: false` = the explicit ones only). */
+function executables(name: string, explicit: Array<string | undefined>, env: NodeJS.ProcessEnv, home: string, fallbacks = true): string[] {
   const ok = (p: string) => {
     try {
       accessSync(p, constants.X_OK);
@@ -268,21 +275,22 @@ export function findExecutable(name: string, explicit: Array<string | undefined>
       return false;
     }
   };
+  const out: string[] = [];
+  const add = (p: string) => {
+    if (ok(p) && !out.includes(p)) out.push(p);
+  };
+  const path = (env.PATH ?? "").split(delimiter).filter((dir) => dir && isAbsolute(dir));
   for (const e of explicit) {
     if (!e) continue;
-    if (isAbsolute(e)) {
-      if (ok(e)) return e;
-      continue;
-    }
-    for (const dir of (env.PATH ?? "").split(delimiter)) if (dir && isAbsolute(dir) && ok(join(dir, e))) return join(dir, e);
+    if (isAbsolute(e)) add(e);
+    else for (const dir of path) add(join(dir, e));
   }
-  for (const dir of (env.PATH ?? "").split(delimiter)) if (dir && isAbsolute(dir) && ok(join(dir, name))) return join(dir, name);
-  const bun = join(home, ".bun", "bin", name);
-  if (ok(bun)) return bun;
-  if (name !== "parachute-vault") return null;
-  const roots = [env.BUN_INSTALL, join(home, ".bun")].filter((r): r is string => !!r && isAbsolute(r));
-  for (const r of roots) if (ok(join(r, ...BUN_CORE_VAULT))) return join(r, ...BUN_CORE_VAULT);
-  return null;
+  if (!fallbacks) return out;
+  for (const dir of path) add(join(dir, name));
+  const roots = [env.BUN_INSTALL, home ? join(home, ".bun") : undefined].filter((r): r is string => !!r && isAbsolute(r));
+  for (const r of roots) add(join(r, "bin", name));
+  if (name === "parachute-vault") for (const r of roots) add(join(r, ...BUN_CORE_VAULT));
+  return out;
 }
 
 /**

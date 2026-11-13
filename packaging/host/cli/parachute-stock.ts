@@ -256,13 +256,17 @@ export async function runStockHub(o: StockHubRun): Promise<{ code: number; comma
   process.umask(0o077);
   const out = o.foreground ? null : new RotatingLog(join(o.layout.logs, "hub.log"));
   const child = (o.spawnChild ?? defaultSpawn)(command, o.foreground);
-  // Parachute ≥ 0.8's refusal on a home 0.7 still owns: exit 7 AND this line (dispatch.ts serveRefusal).
+  // Parachute ≥ 0.8's refusal on a home 0.7 still owns: exit 7 AND this line (dispatch.ts serveRefusal),
+  // matched over a rolling tail of both streams (a line may arrive in two reads).
   let saidOldOwner = false;
+  let tail = "";
   const watch = (d: Buffer) => {
-    if (!saidOldOwner && /an older Parachute still owns/.test(d.toString())) saidOldOwner = true;
+    if (saidOldOwner) return;
+    tail = (tail + d.toString()).slice(-512);
+    if (/an older Parachute still owns/.test(tail)) saidOldOwner = true;
   };
   if (out) {
-    child.stdout?.on("data", (d: Buffer) => out.write(d));
+    child.stdout?.on("data", (d: Buffer) => (out.write(d), watch(d)));
     child.stderr?.on("data", (d: Buffer) => (out.write(d), watch(d)));
   }
   let stopping = false;
@@ -296,16 +300,22 @@ export async function runStockHub(o: StockHubRun): Promise<{ code: number; comma
   if (killTimer) clearTimeout(killTimer);
   out?.close();
   if (stopping) return { code: EXIT.OK, command, modes };
-  if (code === PARACHUTE_OLD_OWNER && (o.foreground || saidOldOwner)) {
+  if (code === PARACHUTE_OLD_OWNER && saidOldOwner) {
     // Parachute ≥ 0.8's `serve` on a home stock 0.7 still owns: it refuses before opening anything
     // and changes nothing. Restarting can't fix that, so (like the refusals above) exit 0 under
     // launchd instead of a KeepAlive loop. Any other exit 7 (no such message) is restarted as before.
-    o.log(`prism run hub: Parachute refused the home (exit 7): an older Parachute (0.7) still owns ${o.home}, or (on a Mac) a launchd plist for Parachute 0.7's hub or vault is still in ~/Library/LaunchAgents. ${o.layout.logs}/hub.log has Parachute's own message. To move the home to 0.8, follow docs/host-bundle.md "Moving a 0.7 home to 0.8" (prism backup and prism stop first, then \`PARACHUTE_HOME=${o.home} ${besideRealFile(o.bin, "parachute-core") ?? join(dirname(o.bin), "parachute-core")} takeover --dry-run\`). To stay on 0.7, point PARACHUTE_BIN and PARACHUTE_VAULT_BIN in ${o.layout.envFile} back at the 0.7 programs. Then prism start.`);
-    return { code: o.foreground ? EXIT.CONFIG : EXIT.OK, command, modes };
+    o.log(`prism run hub: Parachute refused the home (exit 7): an older Parachute (0.7) still owns ${o.home}, or (on a Mac) a launchd plist for Parachute 0.7's hub or vault is still in ~/Library/LaunchAgents. ${o.layout.logs}/hub.log has Parachute's own message. To move the home to 0.8, follow docs/host-bundle.md "Moving a 0.7 home to 0.8" (prism backup and prism stop first, then \`PARACHUTE_HOME=${o.home} ${coreFor(o.bin)} takeover --dry-run\`). To stay on 0.7, point PARACHUTE_BIN and PARACHUTE_VAULT_BIN in ${o.layout.envFile} back at the 0.7 programs. Then prism start.`);
+    return { code: EXIT.OK, command, modes };
   }
   o.log(`prism run hub: the hub exited with ${code}`);
   // An unexpected exit 0 is still a failure for launchd (KeepAlive restarts only failures).
   return { code: code === 0 ? EXIT.ERROR : code, command, modes };
+}
+
+/** `parachute-core` for the install `bin` belongs to: the link beside it (bun's `bin`, the bundle's `bin`, where bun is found), else beside its real file. */
+function coreFor(bin: string): string {
+  const linked = join(dirname(bin), "parachute-core");
+  return existsSync(linked) ? linked : besideRealFile(bin, "parachute-core") ?? linked;
 }
 
 function defaultSpawn(c: HubCommand, foreground: boolean): ChildProcess {

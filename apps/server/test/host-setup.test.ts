@@ -589,6 +589,10 @@ test("setup: pickVaultBin — never a 0.7 hub with a 0.8 vault or the reverse; t
   assert.equal(pickVaultBin(hub07, [undefined, v08, undefined], { PATH: dirname(old07) }, w.home), old07);
   assert.equal(pickVaultBin(hub07, [undefined, v08, undefined], env0, w.home), null, "the in-package 0.8 vault is not a fallback for a 0.7 hub");
   assert.equal(pickVaultBin(hub07, [v08, undefined, undefined], env0, w.home), v08, "the flag still wins");
+  // the first match is a 0.8 vault (bun's package dir on PATH): skipped, the 0.7 one after it is used
+  assert.equal(pickVaultBin(hub07, [undefined, undefined, undefined], { PATH: `${pkgBin}:${dirname(old07)}` }, w.home), old07);
+  // a bare-name flag, resolved on PATH, still wins
+  assert.equal(pickVaultBin(hub07, ["parachute-vault", undefined, undefined], { PATH: pkgBin }, w.home), join(pkgBin, "parachute-vault"));
   // a person's own wrapper folder (parachute + parachute-vault, no parachute-core): .env is kept
   const wrap = join(w.root, "wrap");
   mkdirSync(wrap, { recursive: true });

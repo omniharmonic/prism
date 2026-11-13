@@ -29,7 +29,7 @@
  * last line).
  */
 import { spawn, spawnSync } from "node:child_process";
-import { dirname, isAbsolute } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 export type ParachuteTool = "hub" | "vault";
 
@@ -197,10 +197,15 @@ function resolveCall(tool: ParachuteTool, args: readonly string[], opts: RunOpti
   const parentEnv = opts.parentEnv ?? process.env;
   const cfg = opts.config ?? parachuteCliConfig(parentEnv);
   const bin = tool === "hub" ? cfg.bin : cfg.vaultBin;
-  // The vault CLI also gets the hub CLI's folder: Parachute 0.8 from bun keeps `parachute-vault`
-  // inside its package (no `bun` beside it), while `parachute` sits in `~/.bun/bin` next to `bun`.
-  const base = parachuteEnv(parentEnv, cfg, opts.env);
-  const env = withBinDirOnPath(tool === "vault" ? withBinDirOnPath(base, cfg.bin) : base, bin);
+  // The vault CLI also gets bun's `bin` (BUN_INSTALL, else ~/.bun) and the hub CLI's folder: Parachute 0.8
+  // from bun keeps `parachute-vault` inside its package (no `bun` beside it, and its script runs `bun`).
+  let env = parachuteEnv(parentEnv, cfg, opts.env);
+  if (tool === "vault") {
+    const bunRoot = parentEnv.BUN_INSTALL?.trim() || (parentEnv.HOME ? join(parentEnv.HOME, ".bun") : "");
+    if (bunRoot) env = withBinDirOnPath(env, join(bunRoot, "bin", "bun"));
+    env = withBinDirOnPath(env, cfg.bin);
+  }
+  env = withBinDirOnPath(env, bin);
   return { bin, env, timeoutMs: opts.timeoutMs ?? cfg.timeoutMs, maxBuffer: opts.maxBuffer ?? 8 * 1024 * 1024 };
 }
 

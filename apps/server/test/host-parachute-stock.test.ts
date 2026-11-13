@@ -406,13 +406,13 @@ test("install --parachute stock: refused when Parachute's own unit is here; othe
 
 // ── `prism run hub|vault` in stock mode ──────────────────────────────────────
 
-function fakeChild(exitWith: number | null, signal: NodeJS.Signals | null = null, stderrText?: string): ChildProcess {
+function fakeChild(exitWith: number | null, signal: NodeJS.Signals | null = null, stderrText?: string | string[]): ChildProcess {
   const c = new EventEmitter() as unknown as ChildProcess & EventEmitter;
   (c as unknown as { kill: () => boolean }).kill = () => true;
   const err = new EventEmitter();
   (c as unknown as { stderr: EventEmitter }).stderr = err;
   setImmediate(() => {
-    if (stderrText) err.emit("data", Buffer.from(stderrText));
+    for (const t of stderrText === undefined ? [] : Array.isArray(stderrText) ? stderrText : [stderrText]) err.emit("data", Buffer.from(t));
     c.emit("exit", exitWith, signal);
   });
   return c;
@@ -454,8 +454,12 @@ test("run hub, stock: refuses (exit 0 under launchd) without a CLI/home, and whi
   assert.match(logs.at(-1)!, /PARACHUTE_BIN and PARACHUTE_VAULT_BIN/);
   assert.match(logs.at(-1)!, /--dry-run/);
   assert.match(logs.at(-1)!, /LaunchAgents/);
+  // the line split across two reads still counts
+  const split = await runStockHub({ ...base, bin: w.bin, home, spawnChild: () => fakeChild(7, null, ["parachute-core serve: an older Parach", "ute still owns ~/x.\n"]) });
+  assert.equal(split.code, EXIT.OK);
+  // foreground: Parachute's output goes to the terminal, so an exit 7 is passed on as it is
   const ownedFg = await runStockHub({ ...base, bin: w.bin, home, foreground: true, spawnChild: () => fakeChild(7) });
-  assert.equal(ownedFg.code, EXIT.CONFIG);
+  assert.equal(ownedFg.code, 7);
   // an exit 7 without Parachute's refusal line is an ordinary failure: launchd restarts it
   const other7 = await runStockHub({ ...base, bin: w.bin, home, spawnChild: () => fakeChild(7, null, "something else\n") });
   assert.equal(other7.code, 7);
