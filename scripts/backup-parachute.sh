@@ -54,6 +54,7 @@ for pkg in hub vault core; do
   log "$(printf '%-5s' "$pkg") $( [ -f "$f" ] && jq -r .version "$f" || echo absent) (bun global)"
 done
 PBIN="${PARACHUTE_BIN:-$( { sed -n 's/^PARACHUTE_BIN=//p' "$PRISM/apps/server/.env" 2>/dev/null || true; } | tail -1)}"
+PBIN="${PBIN%[\"\']}"; PBIN="${PBIN#[\"\']}"
 log "parachute version (${PBIN:-parachute}): $("${PBIN:-parachute}" version --json 2>/dev/null | jq -r '.version // "unknown"' 2>/dev/null || echo unknown)"
 log "prism $(git -C "$PRISM" rev-parse --short HEAD) ($(git -C "$PRISM" branch --show-current))"
 log ""

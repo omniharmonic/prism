@@ -411,9 +411,13 @@ function fakeChild(exitWith: number | null, signal: NodeJS.Signals | null = null
   (c as unknown as { kill: () => boolean }).kill = () => true;
   const err = new EventEmitter();
   (c as unknown as { stderr: EventEmitter }).stderr = err;
+  // as Node can: 'exit' first, the last stderr read after it, then the pipe ends
   setImmediate(() => {
-    for (const t of stderrText === undefined ? [] : Array.isArray(stderrText) ? stderrText : [stderrText]) err.emit("data", Buffer.from(t));
     c.emit("exit", exitWith, signal);
+    setImmediate(() => {
+      for (const t of stderrText === undefined ? [] : Array.isArray(stderrText) ? stderrText : [stderrText]) err.emit("data", Buffer.from(t));
+      err.emit("end");
+    });
   });
   return c;
 }
@@ -454,6 +458,9 @@ test("run hub, stock: refuses (exit 0 under launchd) without a CLI/home, and whi
   assert.match(logs.at(-1)!, /PARACHUTE_BIN and PARACHUTE_VAULT_BIN/);
   assert.match(logs.at(-1)!, /--dry-run/);
   assert.match(logs.at(-1)!, /LaunchAgents/);
+  // a long first read (the refusal far from its end) still counts
+  const long = await runStockHub({ ...base, bin: w.bin, home, spawnChild: () => fakeChild(7, null, refusal + "x".repeat(2000)) });
+  assert.equal(long.code, EXIT.OK);
   // the line split across two reads still counts
   const split = await runStockHub({ ...base, bin: w.bin, home, spawnChild: () => fakeChild(7, null, ["parachute-core serve: an older Parach", "ute still owns ~/x.\n"]) });
   assert.equal(split.code, EXIT.OK);

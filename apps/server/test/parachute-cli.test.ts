@@ -302,6 +302,10 @@ test("Parachute 0.8 from bun: the vault CLI inside the package finds bun through
     const cfg2 = { ...cfg, bin: join(pkgBin, "parachute") };
     const r2 = await runParachute("vault", ["create", "v"], { config: cfg2, parentEnv: { HOME: root, PATH: "/usr/bin:/bin" } });
     assert.equal(r2.stdout.trim(), "ran-with-bun");
+    // and the hub CLI itself, when PARACHUTE_BIN names that in-package `parachute` (a bun script)
+    writeFileSync(join(pkgBin, "parachute"), "#!/bin/sh\nexec bun x.ts \"$@\"\n", { mode: 0o755 });
+    const r3 = await runParachute("hub", ["auth", "mint-token"], { config: cfg2, parentEnv: { HOME: root, PATH: "/usr/bin:/bin" } });
+    assert.equal(r3.stdout.trim(), "ran-with-bun");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
