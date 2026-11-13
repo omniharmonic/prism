@@ -433,7 +433,7 @@ test("setup: Parachute missing → needs-person with the exact install commands 
   assert.deepEqual(v.commands, stockParachuteCommands());
   assert.deepEqual(v.commands!.map((c) => c.who), ["agent-with-consent", "agent-with-consent"]);
   assert.ok(!v.commands!.some((c) => /\binit\b/.test(c.run)), "never `parachute init` (it installs Parachute's own launchd unit)");
-  assert.match(v.commands![1]!.run, /@openparachute\/hub@0\.7\.19 @openparachute\/vault@0\.7\.9/);
+  assert.match(v.commands![1]!.run, /bun add -g @openparachute\/core@0\.8\.0$/);
   assert.deepEqual(calls(w), [], "nothing was installed or run");
 });
 
@@ -541,6 +541,19 @@ test("setup: findExecutable — explicit absolute path, then PATH, then ~/.bun/b
   mkdirSync(join(w.home, ".bun", "bin"), { recursive: true });
   writeFileSync(join(w.home, ".bun", "bin", "parachute"), "#!/bin/sh\n", { mode: 0o755 });
   assert.equal(findExecutable("parachute", [], env0, w.home), join(w.home, ".bun", "bin", "parachute"));
+});
+
+test("setup: findExecutable — Parachute 0.8 from `bun add -g`: parachute-vault is found inside the package (bun links only parachute)", () => {
+  const w = world({ installed: false });
+  const env0 = { PATH: "/nonexistent" };
+  const pkgBin = join(w.home, ".bun", "install", "global", "node_modules", "@openparachute", "core", "packages", "cli", "bin");
+  mkdirSync(pkgBin, { recursive: true });
+  writeFileSync(join(pkgBin, "parachute-vault"), "#!/bin/sh\n", { mode: 0o755 });
+  assert.equal(findExecutable("parachute-vault", [], env0, w.home), join(pkgBin, "parachute-vault"));
+  assert.equal(findExecutable("parachute", [], env0, w.home), null, "only parachute-vault is looked up inside the package");
+  mkdirSync(join(w.home, ".bun", "bin"), { recursive: true });
+  writeFileSync(join(w.home, ".bun", "bin", "parachute-vault"), "#!/bin/sh\n", { mode: 0o755 });
+  assert.equal(findExecutable("parachute-vault", [], env0, w.home), join(w.home, ".bun", "bin", "parachute-vault"), "a linked one (0.7) still wins");
 });
 
 test("setup progress: --json writes one JSON line per step on stdout; otherwise a line on stderr", () => {

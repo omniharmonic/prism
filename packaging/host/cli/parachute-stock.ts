@@ -33,6 +33,8 @@ import { ensureDir } from "./fsutil";
 import { DIR_MODE } from "./paths";
 
 export const STOCK_HUB_PORT = 1939;
+/** `parachute serve`'s exit when an older Parachute (0.7) still owns the home (Parachute ≥ 0.8, docs/PRISM.md). */
+export const PARACHUTE_OLD_OWNER = 7;
 export const STOCK_VAULT_PORT = 1940;
 export const STOCK_HUB_ORIGIN = `http://127.0.0.1:${STOCK_HUB_PORT}`;
 export const STOCK_VAULT_URL = `http://127.0.0.1:${STOCK_VAULT_PORT}`;
@@ -289,6 +291,13 @@ export async function runStockHub(o: StockHubRun): Promise<{ code: number; comma
   if (killTimer) clearTimeout(killTimer);
   out?.close();
   if (stopping) return { code: EXIT.OK, command, modes };
+  if (code === PARACHUTE_OLD_OWNER) {
+    // Parachute ≥ 0.8's `serve` on a home stock 0.7 still owns: it refuses before opening anything
+    // and changes nothing. Restarting can't fix that, so (like the refusals above) exit 0 under
+    // launchd instead of a KeepAlive loop. 0.7's own hub never exits 7.
+    o.log(`prism run hub: Parachute refused the home (exit 7): an older Parachute (0.7) still owns ${o.home}. Move it over with \`parachute-core takeover\` (it backs up first; \`parachute-core takeover --rollback\` goes back), or point PARACHUTE_BIN in ${o.layout.envFile} back at the 0.7 \`parachute\`; then prism start. ${o.layout.logs}/hub.log has Parachute's own message.`);
+    return { code: o.foreground ? EXIT.CONFIG : EXIT.OK, command, modes };
+  }
   o.log(`prism run hub: the hub exited with ${code}`);
   // An unexpected exit 0 is still a failure for launchd (KeepAlive restarts only failures).
   return { code: code === 0 ? EXIT.ERROR : code, command, modes };

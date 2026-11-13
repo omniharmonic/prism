@@ -439,6 +439,14 @@ test("run hub, stock: refuses (exit 0 under launchd) without a CLI/home, and whi
   assert.equal(mode(home), 0o700);
   const exitedZero = await runStockHub({ ...base, bin: w.bin, home, spawnChild: () => fakeChild(0) });
   assert.equal(exitedZero.code, EXIT.ERROR, "an unexpected exit 0 still counts as a failure for KeepAlive");
+
+  // Parachute 0.8 on a home stock 0.7 still owns: `serve` exits 7 and changes nothing. No KeepAlive loop.
+  const owned = await runStockHub({ ...base, bin: w.bin, home, spawnChild: () => fakeChild(7) });
+  assert.equal(owned.code, EXIT.OK, "exit 7 under launchd: stop, restarting cannot fix it");
+  assert.match(logs.at(-1)!, /parachute-core takeover/);
+  assert.match(logs.at(-1)!, /PARACHUTE_BIN/);
+  const ownedFg = await runStockHub({ ...base, bin: w.bin, home, foreground: true, spawnChild: () => fakeChild(7) });
+  assert.equal(ownedFg.code, EXIT.CONFIG);
 });
 
 test("run vault, stock: the hub's supervisor runs the vault; Prism starts none (exit 0)", async () => {

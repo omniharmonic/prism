@@ -142,8 +142,21 @@ export async function runSteps<C>(
 
 // ── the real steps ───────────────────────────────────────────────────────────
 
-/** The stock Parachute v1 measured against (launch plan §3.6). */
-export const STOCK_PARACHUTE = { hub: "0.7.19", vault: "0.7.9" } as const;
+/**
+ * The stock Parachute a new install gets (launch plan §3.6). Parachute 0.8 is one npm package,
+ * `@openparachute/core`, in place of 0.7's hub (0.7.19) + vault (0.7.9); its `parachute` and
+ * `parachute-vault` keep every command and flag Prism calls. A home stock 0.7 made is moved by
+ * `parachute-core takeover` (see {@link runStockHub}'s exit 7), never by this command.
+ */
+export const STOCK_PARACHUTE = { core: "0.8.0" } as const;
+
+/**
+ * Where `bun add -g @openparachute/core` puts `parachute-vault`: bun links only `parachute` and
+ * `parachute-core` into `~/.bun/bin` (Parachute's docs/PRISM.md, install table).
+ */
+const BUN_GLOBAL_PACKAGE_BINS: Record<string, string[]> = {
+  "parachute-vault": [".bun", "install", "global", "node_modules", "@openparachute", "core", "packages", "cli", "bin", "parachute-vault"],
+};
 
 /** Where the Mac client is published (`PRISM_CLIENT_DOWNLOAD_URL` overrides; owner decision). */
 export const DEFAULT_CLIENT_DOWNLOAD_URL = "https://github.com/omniharmonic/prism/releases/latest";
@@ -216,7 +229,10 @@ function parsedFor(command: string, rc: SetupRc, flags: Record<string, string | 
   return { command, positional: [], flags: { prefix: rc.layout.prefix, ...flags } };
 }
 
-/** An executable on disk: an absolute path, or a name looked up on PATH, then `~/.bun/bin`. */
+/**
+ * An executable on disk: an absolute path, or a name looked up on PATH, then `~/.bun/bin`, then
+ * (for `parachute-vault`) inside bun's global `@openparachute/core` package.
+ */
 export function findExecutable(name: string, explicit: Array<string | undefined>, env: NodeJS.ProcessEnv, home: string): string | null {
   const ok = (p: string) => {
     try {
@@ -236,7 +252,9 @@ export function findExecutable(name: string, explicit: Array<string | undefined>
   }
   for (const dir of (env.PATH ?? "").split(delimiter)) if (dir && isAbsolute(dir) && ok(join(dir, name))) return join(dir, name);
   const bun = join(home, ".bun", "bin", name);
-  return ok(bun) ? bun : null;
+  if (ok(bun)) return bun;
+  const inPackage = BUN_GLOBAL_PACKAGE_BINS[name];
+  return inPackage && ok(join(home, ...inPackage)) ? join(home, ...inPackage) : null;
 }
 
 /**
@@ -246,7 +264,7 @@ export function findExecutable(name: string, explicit: Array<string | undefined>
 export function stockParachuteCommands(): SuggestedCommand[] {
   return [
     { who: "agent-with-consent", run: "curl -fsSL https://bun.sh/install | bash" },
-    { who: "agent-with-consent", run: `~/.bun/bin/bun add -g @openparachute/hub@${STOCK_PARACHUTE.hub} @openparachute/vault@${STOCK_PARACHUTE.vault}` },
+    { who: "agent-with-consent", run: `~/.bun/bin/bun add -g @openparachute/core@${STOCK_PARACHUTE.core}` },
   ];
 }
 
