@@ -7,11 +7,11 @@
  */
 import { test, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
-import { runSteps, cmdSetup, findExecutable, stockParachuteCommands, type StepImpl, type StepEvent, type SetupDeps } from "../../../packaging/host/cli/setup";
+import { runSteps, cmdSetup, findExecutable, vaultBesideHub, stockParachuteCommands, type StepImpl, type StepEvent, type SetupDeps } from "../../../packaging/host/cli/setup";
 import { cmdToken, tokenFacts, parachuteCallEnv } from "../../../packaging/host/cli/token";
 import { EXIT } from "../../../packaging/host/cli/exit-codes";
 import { layoutFor, privateDirs, type Layout } from "../../../packaging/host/cli/paths";
@@ -554,6 +554,25 @@ test("setup: findExecutable — Parachute 0.8 from `bun add -g`: parachute-vault
   mkdirSync(join(w.home, ".bun", "bin"), { recursive: true });
   writeFileSync(join(w.home, ".bun", "bin", "parachute-vault"), "#!/bin/sh\n", { mode: 0o755 });
   assert.equal(findExecutable("parachute-vault", [], env0, w.home), join(w.home, ".bun", "bin", "parachute-vault"), "a linked one (0.7) still wins");
+});
+
+test("setup: vaultBesideHub — 0.8's parachute-vault from the same install as parachute; 0.7's hub has none", () => {
+  const w = world({ installed: false });
+  const pkgBin = join(w.home, ".bun", "install", "global", "node_modules", "@openparachute", "core", "packages", "cli", "bin");
+  mkdirSync(pkgBin, { recursive: true });
+  for (const n of ["parachute", "parachute-vault"]) writeFileSync(join(pkgBin, n), "#!/bin/sh\n", { mode: 0o755 });
+  mkdirSync(join(w.home, ".bun", "bin"), { recursive: true });
+  symlinkSync(join(pkgBin, "parachute"), join(w.home, ".bun", "bin", "parachute"));
+  // a leftover 0.7 parachute-vault in ~/.bun/bin must not be paired with the 0.8 hub
+  writeFileSync(join(w.home, ".bun", "bin", "parachute-vault"), "#!/bin/sh\n", { mode: 0o755 });
+  const hub = findExecutable("parachute", [], { PATH: "/nonexistent" }, w.home)!;
+  assert.equal(vaultBesideHub(hub), realpathSync(join(pkgBin, "parachute-vault")));
+  assert.equal(findExecutable("parachute-vault", [undefined, vaultBesideHub(hub)], { PATH: "/nonexistent" }, w.home), realpathSync(join(pkgBin, "parachute-vault")));
+  const hub07 = join(w.root, "hub07", "src", "cli.ts");
+  mkdirSync(dirname(hub07), { recursive: true });
+  writeFileSync(hub07, "#!/bin/sh\n", { mode: 0o755 });
+  assert.equal(vaultBesideHub(hub07), undefined);
+  assert.equal(vaultBesideHub(join(w.root, "missing")), undefined);
 });
 
 test("setup progress: --json writes one JSON line per step on stdout; otherwise a line on stderr", () => {

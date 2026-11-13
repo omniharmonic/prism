@@ -197,7 +197,10 @@ function resolveCall(tool: ParachuteTool, args: readonly string[], opts: RunOpti
   const parentEnv = opts.parentEnv ?? process.env;
   const cfg = opts.config ?? parachuteCliConfig(parentEnv);
   const bin = tool === "hub" ? cfg.bin : cfg.vaultBin;
-  const env = withBinDirOnPath(parachuteEnv(parentEnv, cfg, opts.env), bin);
+  // The vault CLI also gets the hub CLI's folder: Parachute 0.8 from bun keeps `parachute-vault`
+  // inside its package (no `bun` beside it), while `parachute` sits in `~/.bun/bin` next to `bun`.
+  const base = parachuteEnv(parentEnv, cfg, opts.env);
+  const env = withBinDirOnPath(tool === "vault" ? withBinDirOnPath(base, cfg.bin) : base, bin);
   return { bin, env, timeoutMs: opts.timeoutMs ?? cfg.timeoutMs, maxBuffer: opts.maxBuffer ?? 8 * 1024 * 1024 };
 }
 

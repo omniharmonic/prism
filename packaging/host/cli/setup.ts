@@ -14,7 +14,7 @@
  * step that is not done stops the run; the person-facing steps after the server runs are all
  * reported in one go. Nothing a step reports is a secret: never a token, link or key.
  */
-import { accessSync, constants, existsSync, readFileSync, rmdirSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, realpathSync, rmdirSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { CliError, EXIT } from "./exit-codes";
 import { bool, int, str, type Parsed } from "./args";
@@ -227,6 +227,20 @@ async function checklist(rc: SetupRc): Promise<{ ok: true; steps: LocalSetupStep
 
 function parsedFor(command: string, rc: SetupRc, flags: Record<string, string | boolean>): Parsed {
   return { command, positional: [], flags: { prefix: rc.layout.prefix, ...flags } };
+}
+
+/**
+ * `parachute-vault` beside the real file `parachute` resolves to, when there is one: Parachute ≥ 0.8
+ * (npm, bun, the bundle) keeps both in `packages/cli/bin/`. 0.7's hub package has none.
+ */
+export function vaultBesideHub(hub: string): string | undefined {
+  try {
+    const p = join(dirname(realpathSync(hub)), "parachute-vault");
+    accessSync(p, constants.X_OK);
+    return p;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -461,7 +475,9 @@ const steps: Record<string, StepImpl<SetupRc>> = {
     const flagBin = str(rc.p, "parachute-bin");
     const flagVaultBin = str(rc.p, "parachute-vault-bin");
     const hub = findExecutable("parachute", [flagBin, env.PARACHUTE_BIN, rc.ctx.env.PARACHUTE_BIN], rc.ctx.env, rc.ctx.home);
-    const vaultBin = findExecutable("parachute-vault", [flagVaultBin, env.PARACHUTE_VAULT_BIN, rc.ctx.env.PARACHUTE_VAULT_BIN], rc.ctx.env, rc.ctx.home);
+    // After any explicit path: the `parachute-vault` of the SAME install as `parachute` (0.8 ships both
+    // in one folder), so a leftover 0.7 vault on PATH is never paired with a 0.8 hub.
+    const vaultBin = findExecutable("parachute-vault", [flagVaultBin, env.PARACHUTE_VAULT_BIN, rc.ctx.env.PARACHUTE_VAULT_BIN, hub ? vaultBesideHub(hub) : undefined], rc.ctx.env, rc.ctx.home);
     // Parachute's OWN launchd units (read-only `launchctl print` + the plist): when they are here,
     // Parachute runs itself and Prism reuses it — never a second hub.
     const theirs = await foreignParachuteUnits(rc.ctx);

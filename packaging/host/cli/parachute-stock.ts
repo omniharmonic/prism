@@ -295,7 +295,7 @@ export async function runStockHub(o: StockHubRun): Promise<{ code: number; comma
     // Parachute ≥ 0.8's `serve` on a home stock 0.7 still owns: it refuses before opening anything
     // and changes nothing. Restarting can't fix that, so (like the refusals above) exit 0 under
     // launchd instead of a KeepAlive loop. 0.7's own hub never exits 7.
-    o.log(`prism run hub: Parachute refused the home (exit 7): an older Parachute (0.7) still owns ${o.home}. Move it over with \`parachute-core takeover\` (it backs up first; \`parachute-core takeover --rollback\` goes back), or point PARACHUTE_BIN in ${o.layout.envFile} back at the 0.7 \`parachute\`; then prism start. ${o.layout.logs}/hub.log has Parachute's own message.`);
+    o.log(`prism run hub: Parachute refused the home (exit 7): an older Parachute (0.7) still owns ${o.home}. Move it over with \`PARACHUTE_HOME=${o.home} ${join(dirname(o.bin), "parachute-core")} takeover\` (it backs up first; \`… takeover --rollback\` goes back), or point PARACHUTE_BIN in ${o.layout.envFile} back at the 0.7 \`parachute\`; then prism start. ${o.layout.logs}/hub.log has Parachute's own message.`);
     return { code: o.foreground ? EXIT.CONFIG : EXIT.OK, command, modes };
   }
   o.log(`prism run hub: the hub exited with ${code}`);

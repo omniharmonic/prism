@@ -282,6 +282,26 @@ test("a bun-script CLI runs when the caller's PATH lacks its folder (clean-VM fi
   }
 });
 
+test("Parachute 0.8 from bun: the vault CLI inside the package finds bun through the hub CLI's folder", async () => {
+  // `bun add -g @openparachute/core` links only `parachute` into ~/.bun/bin (beside bun); `parachute-vault`
+  // stays in the package, whose folder has no bun, and its script ends `exec bun …`.
+  const root = mkdtempSync(join(tmpdir(), "prism-bun08-"));
+  try {
+    const bunBin = join(root, ".bun", "bin");
+    const pkgBin = join(root, ".bun", "install", "global", "node_modules", "@openparachute", "core", "packages", "cli", "bin");
+    mkdirSync(bunBin, { recursive: true });
+    mkdirSync(pkgBin, { recursive: true });
+    writeFileSync(join(bunBin, "bun"), "#!/bin/sh\necho ran-with-bun\n", { mode: 0o755 });
+    writeFileSync(join(bunBin, "parachute"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    writeFileSync(join(pkgBin, "parachute-vault"), "#!/bin/sh\nexec bun x.ts \"$@\"\n", { mode: 0o755 });
+    const cfg = { ...parachuteCliConfig({}), bin: join(bunBin, "parachute"), vaultBin: join(pkgBin, "parachute-vault") };
+    const r = await runParachute("vault", ["create", "v"], { config: cfg, parentEnv: { HOME: root, PATH: "/usr/bin:/bin" } });
+    assert.equal(r.stdout.trim(), "ran-with-bun");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("withBinDirOnPath: an absolute binary's folder goes first once; a bare name changes nothing", () => {
   assert.equal(withBinDirOnPath({ PATH: "/usr/bin:/bin" }, "/u/.bun/bin/parachute").PATH, "/u/.bun/bin:/usr/bin:/bin");
   assert.equal(withBinDirOnPath({ PATH: "/u/.bun/bin:/usr/bin" }, "/u/.bun/bin/parachute").PATH, "/u/.bun/bin:/usr/bin");

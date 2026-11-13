@@ -389,16 +389,19 @@ takeover`; it is not built into `prism`:
 2. Install 0.8 **beside** 0.7: the release tarball (checked against `SHA256SUMS`), or npm with its
    own `--prefix`. Not `bun add -g`: it silently replaces 0.7's `~/.bun/bin/parachute`, which is
    what `PARACHUTE_BIN` usually names.
-3. `PARACHUTE_HOME=<home> <0.8>/bin/parachute-core takeover --dry-run`, then the same with `--yes`.
+3. `PARACHUTE_HOME=<home> <0.8>/bin/parachute-core takeover --dry-run` (`<home>` is `.env`'s
+   `PARACHUTE_HOME`), then the same with `--yes`.
    It backs up the whole home (sha256 per file) to `<home>/../parachute-takeover/<time>/`, checks
    0.8 on it, and leaves 0.7 installed. 0.7.19 + 0.7.9 homes need no migration, so going back keeps
    every write.
 4. In `.env`, set `PARACHUTE_BIN` and `PARACHUTE_VAULT_BIN` to the 0.8 programs; `prism start`.
-5. Back: `prism stop`, `<0.8>/bin/parachute-core takeover --rollback --yes`, the two `.env` lines
-   back to 0.7, `prism start`.
-On macOS, 0.8.0's takeover refuses while a launchd agent whose plist name contains `parachute`
-runs the old hub (Parachute's own `computer.parachute.hub`, i.e. a reused install): pausing launchd
-agents isn't built yet. Prism's own hub agent is not one of those.
+5. Back: `prism stop`, `PARACHUTE_HOME=<home> <0.8>/bin/parachute-core takeover --rollback --yes`,
+   the two `.env` lines back to 0.7, `prism start`. Always pass the home: without it takeover
+   uses `~/.parachute`, which is not Prism's home when Prism made it inside the install.
+On macOS, 0.8.0's takeover refuses, and 0.8's `serve` exits 7 for every home, while a plist for the
+old hub or vault is in `~/Library/LaunchAgents` (name containing `parachute`, loaded or not:
+Parachute's own `computer.parachute.hub`, i.e. a reused install): pausing launchd agents isn't built
+yet. Prism's own hub agent (`<prefix>.hub`) is not one of those.
 
 **Which `PARACHUTE_HOME`** (decision, `chooseParachuteHome`): one already configured (`.env`, or
 `--parachute-home`) wins; else, when `~/.parachute` holds Parachute data (`hub.db`,
