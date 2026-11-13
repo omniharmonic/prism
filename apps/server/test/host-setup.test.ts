@@ -7,11 +7,11 @@
  */
 import { test, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
-import { runSteps, cmdSetup, findExecutable, stockParachuteCommands, type StepImpl, type StepEvent, type SetupDeps } from "../../../packaging/host/cli/setup";
+import { runSteps, cmdSetup, findExecutable, pickVaultBin, vaultBesideHub, stockParachuteCommands, type StepImpl, type StepEvent, type SetupDeps } from "../../../packaging/host/cli/setup";
 import { cmdToken, tokenFacts, parachuteCallEnv } from "../../../packaging/host/cli/token";
 import { EXIT } from "../../../packaging/host/cli/exit-codes";
 import { layoutFor, privateDirs, type Layout } from "../../../packaging/host/cli/paths";
@@ -433,7 +433,7 @@ test("setup: Parachute missing → needs-person with the exact install commands 
   assert.deepEqual(v.commands, stockParachuteCommands());
   assert.deepEqual(v.commands!.map((c) => c.who), ["agent-with-consent", "agent-with-consent"]);
   assert.ok(!v.commands!.some((c) => /\binit\b/.test(c.run)), "never `parachute init` (it installs Parachute's own launchd unit)");
-  assert.match(v.commands![1]!.run, /@openparachute\/hub@0\.7\.19 @openparachute\/vault@0\.7\.9/);
+  assert.match(v.commands![1]!.run, /bun add -g @openparachute\/core@0\.8\.0$/);
   assert.deepEqual(calls(w), [], "nothing was installed or run");
 });
 
@@ -541,6 +541,65 @@ test("setup: findExecutable — explicit absolute path, then PATH, then ~/.bun/b
   mkdirSync(join(w.home, ".bun", "bin"), { recursive: true });
   writeFileSync(join(w.home, ".bun", "bin", "parachute"), "#!/bin/sh\n", { mode: 0o755 });
   assert.equal(findExecutable("parachute", [], env0, w.home), join(w.home, ".bun", "bin", "parachute"));
+});
+
+test("setup: findExecutable — Parachute 0.8 from `bun add -g`: parachute-vault is found inside the package, under ~/.bun or BUN_INSTALL", () => {
+  const w = world({ installed: false });
+  const env0 = { PATH: "/nonexistent" };
+  const pkgBin = join(w.home, ".bun", "install", "global", "node_modules", "@openparachute", "core", "packages", "cli", "bin");
+  mkdirSync(pkgBin, { recursive: true });
+  writeFileSync(join(pkgBin, "parachute-vault"), "#!/bin/sh\n", { mode: 0o755 });
+  assert.equal(findExecutable("parachute-vault", [], env0, w.home), join(pkgBin, "parachute-vault"));
+  assert.equal(findExecutable("parachute", [], env0, w.home), null, "only parachute-vault is looked up inside the package");
+  const custom = join(w.root, "custom-bun");
+  const customBin = join(custom, "install", "global", "node_modules", "@openparachute", "core", "packages", "cli", "bin");
+  mkdirSync(customBin, { recursive: true });
+  writeFileSync(join(customBin, "parachute-vault"), "#!/bin/sh\n", { mode: 0o755 });
+  assert.equal(findExecutable("parachute-vault", [], { ...env0, BUN_INSTALL: custom }, w.home), join(customBin, "parachute-vault"), "BUN_INSTALL first");
+  mkdirSync(join(w.home, ".bun", "bin"), { recursive: true });
+  writeFileSync(join(w.home, ".bun", "bin", "parachute-vault"), "#!/bin/sh\n", { mode: 0o755 });
+  assert.equal(findExecutable("parachute-vault", [], env0, w.home), join(w.home, ".bun", "bin", "parachute-vault"), "a linked one (0.7) still wins");
+});
+
+test("setup: pickVaultBin — never a 0.7 hub with a 0.8 vault or the reverse; the flag wins; a wrapper folder doesn't count", () => {
+  const w = world({ installed: false });
+  const env0 = { PATH: "/nonexistent" };
+  const pkgBin = join(w.home, ".bun", "install", "global", "node_modules", "@openparachute", "core", "packages", "cli", "bin");
+  mkdirSync(pkgBin, { recursive: true });
+  for (const n of ["parachute", "parachute-core", "parachute-vault"]) writeFileSync(join(pkgBin, n), "#!/bin/sh\n", { mode: 0o755 });
+  mkdirSync(join(w.home, ".bun", "bin"), { recursive: true });
+  symlinkSync(join(pkgBin, "parachute"), join(w.home, ".bun", "bin", "parachute"));
+  const hub = findExecutable("parachute", [], env0, w.home)!;
+  const v08 = realpathSync(join(pkgBin, "parachute-vault"));
+  assert.equal(vaultBesideHub(hub), v08);
+  // a 0.7 vault, left in .env after the move (0.7's hub package keeps it elsewhere)
+  const old07 = join(w.root, "bun07", "bin", "parachute-vault");
+  mkdirSync(dirname(old07), { recursive: true });
+  writeFileSync(old07, "#!/bin/sh\n", { mode: 0o755 });
+  // 0.8 hub: its own vault outranks .env and PATH; only the flag outranks it
+  assert.equal(pickVaultBin(hub, [undefined, old07, undefined], env0, w.home), v08);
+  assert.equal(pickVaultBin(hub, [undefined, undefined, undefined], { PATH: dirname(old07) }, w.home), v08);
+  assert.equal(pickVaultBin(hub, [old07, undefined, undefined], env0, w.home), old07);
+  // 0.7 hub (no parachute-core beside it): .env as before; a 0.8 vault is skipped from .env AND from the fallback
+  const hub07 = join(w.root, "hub07", "src", "cli.ts");
+  mkdirSync(dirname(hub07), { recursive: true });
+  writeFileSync(hub07, "#!/bin/sh\n", { mode: 0o755 });
+  assert.equal(vaultBesideHub(hub07), undefined);
+  assert.equal(pickVaultBin(hub07, [undefined, old07, undefined], env0, w.home), old07, "0.7: .env as before");
+  assert.equal(pickVaultBin(hub07, [undefined, v08, undefined], { PATH: dirname(old07) }, w.home), old07);
+  assert.equal(pickVaultBin(hub07, [undefined, v08, undefined], env0, w.home), null, "the in-package 0.8 vault is not a fallback for a 0.7 hub");
+  assert.equal(pickVaultBin(hub07, [v08, undefined, undefined], env0, w.home), v08, "the flag still wins");
+  // the first match is a 0.8 vault (bun's package dir on PATH): skipped, the 0.7 one after it is used
+  assert.equal(pickVaultBin(hub07, [undefined, undefined, undefined], { PATH: `${pkgBin}:${dirname(old07)}` }, w.home), old07);
+  // a bare-name flag, resolved on PATH, still wins
+  assert.equal(pickVaultBin(hub07, ["parachute-vault", undefined, undefined], { PATH: pkgBin }, w.home), join(pkgBin, "parachute-vault"));
+  // a person's own wrapper folder (parachute + parachute-vault, no parachute-core): .env is kept
+  const wrap = join(w.root, "wrap");
+  mkdirSync(wrap, { recursive: true });
+  for (const n of ["parachute", "parachute-vault"]) writeFileSync(join(wrap, n), "#!/bin/sh\n", { mode: 0o755 });
+  assert.equal(vaultBesideHub(join(wrap, "parachute")), undefined);
+  assert.equal(pickVaultBin(join(wrap, "parachute"), [undefined, old07, undefined], env0, w.home), old07);
+  assert.equal(vaultBesideHub(join(w.root, "missing")), undefined);
 });
 
 test("setup progress: --json writes one JSON line per step on stdout; otherwise a line on stderr", () => {

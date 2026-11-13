@@ -14,12 +14,12 @@
  * step that is not done stops the run; the person-facing steps after the server runs are all
  * reported in one go. Nothing a step reports is a secret: never a token, link or key.
  */
-import { accessSync, constants, existsSync, readFileSync, rmdirSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, realpathSync, rmdirSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { CliError, EXIT } from "./exit-codes";
 import { bool, int, str, type Parsed } from "./args";
 import { DIR_MODE, SECRET_FILE_MODE, type Layout } from "./paths";
-import { acquireRunLock, ensureDir, readTextOrNull, runLockState, writeFileAtomic } from "./fsutil";
+import { acquireRunLock, besideRealFile, ensureDir, readTextOrNull, runLockState, writeFileAtomic } from "./fsutil";
 import { readBuildInfo, readState, writeState, type HostState } from "./state";
 import { setKeys, updateEnv } from "./hostenv";
 import { probe, serverBase } from "./health";
@@ -142,8 +142,16 @@ export async function runSteps<C>(
 
 // ── the real steps ───────────────────────────────────────────────────────────
 
-/** The stock Parachute v1 measured against (launch plan §3.6). */
-export const STOCK_PARACHUTE = { hub: "0.7.19", vault: "0.7.9" } as const;
+/**
+ * The stock Parachute a new install gets (launch plan §3.6). Parachute 0.8 is one npm package,
+ * `@openparachute/core`, in place of 0.7's hub (0.7.19) + vault (0.7.9); its `parachute` and
+ * `parachute-vault` keep every command and flag Prism calls. A home stock 0.7 made is moved by
+ * `parachute-core takeover` (see {@link runStockHub}'s exit 7), never by this command.
+ */
+export const STOCK_PARACHUTE = { core: "0.8.0" } as const;
+
+/** `parachute-vault` inside bun's global `@openparachute/core` (relative to bun's root, `BUN_INSTALL` or `~/.bun`). */
+const BUN_CORE_VAULT = ["install", "global", "node_modules", "@openparachute", "core", "packages", "cli", "bin", "parachute-vault"];
 
 /** Where the Mac client is published (`PRISM_CLIENT_DOWNLOAD_URL` overrides; owner decision). */
 export const DEFAULT_CLIENT_DOWNLOAD_URL = "https://github.com/omniharmonic/prism/releases/latest";
@@ -216,8 +224,49 @@ function parsedFor(command: string, rc: SetupRc, flags: Record<string, string | 
   return { command, positional: [], flags: { prefix: rc.layout.prefix, ...flags } };
 }
 
-/** An executable on disk: an absolute path, or a name looked up on PATH, then `~/.bun/bin`. */
+/**
+ * The `parachute-vault` of the same Parachute ≥ 0.8 install as `hub`: 0.8 (npm, bun, the bundle) keeps
+ * `parachute`, `parachute-core` and `parachute-vault` together in `packages/cli/bin/`. A 0.7 hub (or
+ * any other folder without `parachute-core`) has none, so a person's own wrapper folder never counts.
+ */
+export function vaultBesideHub(hub: string): string | undefined {
+  return besideRealFile(hub, "parachute-core") ? besideRealFile(hub, "parachute-vault") : undefined;
+}
+
+/** A 0.8 `parachute-vault`: `parachute-core` sits beside its real file. */
+function isCoreVault(vault: string): boolean {
+  return !!besideRealFile(vault, "parachute-core");
+}
+
+/**
+ * `parachute-vault` for this `parachute`, never mixing 0.7 and 0.8:
+ * - the `--parachute-vault-bin` flag (`explicit[0]`) wins;
+ * - a 0.8 hub: its own install's vault, ahead of `.env` and the environment (a 0.7
+ *   `PARACHUTE_VAULT_BIN` left in `.env` after the move is not kept);
+ * - a 0.7 hub: never a 0.8 vault, from `.env` or from any fallback (after going back);
+ * then the rest, as {@link findExecutable}.
+ */
+export function pickVaultBin(hub: string | null, explicit: Array<string | undefined>, env: NodeJS.ProcessEnv, home: string): string | null {
+  const [flag, ...rest] = explicit;
+  const beside = hub ? vaultBesideHub(hub) : undefined;
+  if (!hub || beside) return findExecutable("parachute-vault", [flag, beside, ...rest], env, home);
+  // A 0.7 hub: the flag's program as given; otherwise the first program found that is not a 0.8 vault.
+  const fromFlag = flag ? executables("parachute-vault", [flag], env, home, false)[0] : undefined;
+  if (fromFlag) return fromFlag;
+  return executables("parachute-vault", rest, env, home).find((p) => !isCoreVault(p)) ?? null;
+}
+
+/**
+ * An executable on disk: an absolute path, or a name looked up on PATH, then bun's `bin`
+ * (`BUN_INSTALL`, then `~/.bun`), then (for `parachute-vault`) inside bun's global
+ * `@openparachute/core` package there (bun links only `parachute` and `parachute-core` into `bin`).
+ */
 export function findExecutable(name: string, explicit: Array<string | undefined>, env: NodeJS.ProcessEnv, home: string): string | null {
+  return executables(name, explicit, env, home)[0] ?? null;
+}
+
+/** Every match {@link findExecutable} would consider, in its order (`fallbacks: false` = the explicit ones only). */
+function executables(name: string, explicit: Array<string | undefined>, env: NodeJS.ProcessEnv, home: string, fallbacks = true): string[] {
   const ok = (p: string) => {
     try {
       accessSync(p, constants.X_OK);
@@ -226,17 +275,22 @@ export function findExecutable(name: string, explicit: Array<string | undefined>
       return false;
     }
   };
+  const out: string[] = [];
+  const add = (p: string) => {
+    if (ok(p) && !out.includes(p)) out.push(p);
+  };
+  const path = (env.PATH ?? "").split(delimiter).filter((dir) => dir && isAbsolute(dir));
   for (const e of explicit) {
     if (!e) continue;
-    if (isAbsolute(e)) {
-      if (ok(e)) return e;
-      continue;
-    }
-    for (const dir of (env.PATH ?? "").split(delimiter)) if (dir && isAbsolute(dir) && ok(join(dir, e))) return join(dir, e);
+    if (isAbsolute(e)) add(e);
+    else for (const dir of path) add(join(dir, e));
   }
-  for (const dir of (env.PATH ?? "").split(delimiter)) if (dir && isAbsolute(dir) && ok(join(dir, name))) return join(dir, name);
-  const bun = join(home, ".bun", "bin", name);
-  return ok(bun) ? bun : null;
+  if (!fallbacks) return out;
+  for (const dir of path) add(join(dir, name));
+  const roots = [env.BUN_INSTALL, home ? join(home, ".bun") : undefined].filter((r): r is string => !!r && isAbsolute(r));
+  for (const r of roots) add(join(r, "bin", name));
+  if (name === "parachute-vault") for (const r of roots) add(join(r, ...BUN_CORE_VAULT));
+  return out;
 }
 
 /**
@@ -246,7 +300,7 @@ export function findExecutable(name: string, explicit: Array<string | undefined>
 export function stockParachuteCommands(): SuggestedCommand[] {
   return [
     { who: "agent-with-consent", run: "curl -fsSL https://bun.sh/install | bash" },
-    { who: "agent-with-consent", run: `~/.bun/bin/bun add -g @openparachute/hub@${STOCK_PARACHUTE.hub} @openparachute/vault@${STOCK_PARACHUTE.vault}` },
+    { who: "agent-with-consent", run: `~/.bun/bin/bun add -g @openparachute/core@${STOCK_PARACHUTE.core}` },
   ];
 }
 
@@ -443,7 +497,7 @@ const steps: Record<string, StepImpl<SetupRc>> = {
     const flagBin = str(rc.p, "parachute-bin");
     const flagVaultBin = str(rc.p, "parachute-vault-bin");
     const hub = findExecutable("parachute", [flagBin, env.PARACHUTE_BIN, rc.ctx.env.PARACHUTE_BIN], rc.ctx.env, rc.ctx.home);
-    const vaultBin = findExecutable("parachute-vault", [flagVaultBin, env.PARACHUTE_VAULT_BIN, rc.ctx.env.PARACHUTE_VAULT_BIN], rc.ctx.env, rc.ctx.home);
+    const vaultBin = pickVaultBin(hub, [flagVaultBin, env.PARACHUTE_VAULT_BIN, rc.ctx.env.PARACHUTE_VAULT_BIN], rc.ctx.env, rc.ctx.home);
     // Parachute's OWN launchd units (read-only `launchctl print` + the plist): when they are here,
     // Parachute runs itself and Prism reuses it — never a second hub.
     const theirs = await foreignParachuteUnits(rc.ctx);

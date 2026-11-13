@@ -6,6 +6,8 @@
 #
 #   scripts/backup-parachute.sh [label]
 #
+# Covers the Parachute home at ~/.parachute only (not a home Prism made inside its install).
+#
 # Writes ~/parachute-backups/<UTC timestamp>-<label>/ (chmod 700 — it holds
 # tokens and secrets) with a MANIFEST.txt of versions, row counts, integrity
 # results and sha256s. Exits non-zero if any integrity check fails.
@@ -44,8 +46,16 @@ snapshot_db() {
 }
 
 log "Parachute/Prism backup — $(date -u +%FT%TZ) — label=$LABEL"
-log "hub   $(jq -r .version "$HOME/.bun/install/global/node_modules/@openparachute/hub/package.json")"
-log "vault $(jq -r .version "$HOME/.bun/install/global/node_modules/@openparachute/vault/package.json")"
+# Parachute 0.7 = hub + vault packages; 0.8 = one package, core (often the release bundle instead,
+# so `parachute version` is the one that runs). Whatever is missing reads "absent", never aborts.
+command -v jq >/dev/null || log "jq not found: package versions below read as absent"
+for pkg in hub vault core; do
+  f="$HOME/.bun/install/global/node_modules/@openparachute/$pkg/package.json"
+  log "$(printf '%-5s' "$pkg") $( [ -f "$f" ] && jq -r .version "$f" || echo absent) (bun global)"
+done
+PBIN="${PARACHUTE_BIN:-$( { sed -n 's/^PARACHUTE_BIN=//p' "$PRISM/apps/server/.env" 2>/dev/null || true; } | tail -1)}"
+PBIN="${PBIN%[\"\']}"; PBIN="${PBIN#[\"\']}"
+log "parachute version (${PBIN:-parachute}): $("${PBIN:-parachute}" version --json 2>/dev/null | jq -r '.version // "unknown"' 2>/dev/null || echo unknown)"
 log "prism $(git -C "$PRISM" rev-parse --short HEAD) ($(git -C "$PRISM" branch --show-current))"
 log ""
 

@@ -282,6 +282,42 @@ test("a bun-script CLI runs when the caller's PATH lacks its folder (clean-VM fi
   }
 });
 
+test("Parachute 0.8 from bun: the vault CLI inside the package finds bun through the hub CLI's folder", async () => {
+  // `bun add -g @openparachute/core` links only `parachute` and `parachute-core` into ~/.bun/bin (beside bun); `parachute-vault`
+  // stays in the package, whose folder has no bun, and its script ends `exec bun …`.
+  const root = mkdtempSync(join(tmpdir(), "prism-bun08-"));
+  try {
+    const bunBin = join(root, ".bun", "bin");
+    const pkgBin = join(root, ".bun", "install", "global", "node_modules", "@openparachute", "core", "packages", "cli", "bin");
+    mkdirSync(bunBin, { recursive: true });
+    mkdirSync(pkgBin, { recursive: true });
+    writeFileSync(join(bunBin, "bun"), "#!/bin/sh\necho ran-with-bun\n", { mode: 0o755 });
+    writeFileSync(join(bunBin, "parachute"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    writeFileSync(join(pkgBin, "parachute-vault"), "#!/bin/sh\nexec bun x.ts \"$@\"\n", { mode: 0o755 });
+    const cfg = { ...parachuteCliConfig({}), bin: join(bunBin, "parachute"), vaultBin: join(pkgBin, "parachute-vault") };
+    const r = await runParachute("vault", ["create", "v"], { config: cfg, parentEnv: { HOME: root, PATH: "/usr/bin:/bin" } });
+    assert.equal(r.stdout.trim(), "ran-with-bun");
+    // PARACHUTE_BIN set to the real in-package `parachute` (no bun beside it): bun's own bin (~/.bun) still is
+    writeFileSync(join(pkgBin, "parachute"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const cfg2 = { ...cfg, bin: join(pkgBin, "parachute") };
+    const r2 = await runParachute("vault", ["create", "v"], { config: cfg2, parentEnv: { HOME: root, PATH: "/usr/bin:/bin" } });
+    assert.equal(r2.stdout.trim(), "ran-with-bun");
+    // and the hub CLI itself, when PARACHUTE_BIN names that in-package `parachute` (a bun script)
+    writeFileSync(join(pkgBin, "parachute"), "#!/bin/sh\nexec bun x.ts \"$@\"\n", { mode: 0o755 });
+    const r3 = await runParachute("hub", ["auth", "mint-token"], { config: cfg2, parentEnv: { HOME: root, PATH: "/usr/bin:/bin" } });
+    assert.equal(r3.stdout.trim(), "ran-with-bun");
+    // a bare-name CLI keeps resolving on the caller's PATH: bun's bin is not put ahead of it
+    // (else ~/.bun/bin/parachute, 0.8 after a `bun add -g`, would shadow a 0.7 `parachute` on PATH)
+    const callerBin = join(root, "caller-bin");
+    mkdirSync(callerBin);
+    writeFileSync(join(callerBin, "show-path"), "#!/bin/sh\necho \"$PATH\"\n", { mode: 0o755 });
+    const r4 = await runParachute("hub", ["x"], { config: { ...cfg2, bin: "show-path" }, parentEnv: { HOME: root, PATH: `${callerBin}:/usr/bin:/bin` } });
+    assert.ok(!r4.stdout.trim().startsWith(bunBin), r4.stdout);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("withBinDirOnPath: an absolute binary's folder goes first once; a bare name changes nothing", () => {
   assert.equal(withBinDirOnPath({ PATH: "/usr/bin:/bin" }, "/u/.bun/bin/parachute").PATH, "/u/.bun/bin:/usr/bin:/bin");
   assert.equal(withBinDirOnPath({ PATH: "/u/.bun/bin:/usr/bin" }, "/u/.bun/bin/parachute").PATH, "/u/.bun/bin:/usr/bin");
