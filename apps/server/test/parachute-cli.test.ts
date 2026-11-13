@@ -306,6 +306,13 @@ test("Parachute 0.8 from bun: the vault CLI inside the package finds bun through
     writeFileSync(join(pkgBin, "parachute"), "#!/bin/sh\nexec bun x.ts \"$@\"\n", { mode: 0o755 });
     const r3 = await runParachute("hub", ["auth", "mint-token"], { config: cfg2, parentEnv: { HOME: root, PATH: "/usr/bin:/bin" } });
     assert.equal(r3.stdout.trim(), "ran-with-bun");
+    // a bare-name CLI keeps resolving on the caller's PATH: bun's bin is not put ahead of it
+    // (else ~/.bun/bin/parachute, 0.8 after a `bun add -g`, would shadow a 0.7 `parachute` on PATH)
+    const callerBin = join(root, "caller-bin");
+    mkdirSync(callerBin);
+    writeFileSync(join(callerBin, "show-path"), "#!/bin/sh\necho \"$PATH\"\n", { mode: 0o755 });
+    const r4 = await runParachute("hub", ["x"], { config: { ...cfg2, bin: "show-path" }, parentEnv: { HOME: root, PATH: `${callerBin}:/usr/bin:/bin` } });
+    assert.ok(!r4.stdout.trim().startsWith(bunBin), r4.stdout);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -202,7 +202,8 @@ function resolveCall(tool: ParachuteTool, args: readonly string[], opts: RunOpti
   // (The hub CLI too, when PARACHUTE_BIN names the in-package `parachute` itself.)
   let env = parachuteEnv(parentEnv, cfg, opts.env);
   const bunRoot = parentEnv.BUN_INSTALL?.trim() || (parentEnv.HOME ? join(parentEnv.HOME, ".bun") : "");
-  if (bunRoot) env = withBinDirOnPath(env, join(bunRoot, "bin", "bun"));
+  // Only for a program named by its path: a bare name keeps resolving on the caller's PATH as before.
+  if (bunRoot && isAbsolute(bin)) env = withBinDirOnPath(env, join(bunRoot, "bin", "bun"));
   if (tool === "vault") env = withBinDirOnPath(env, cfg.bin);
   env = withBinDirOnPath(env, bin);
   return { bin, env, timeoutMs: opts.timeoutMs ?? cfg.timeoutMs, maxBuffer: opts.maxBuffer ?? 8 * 1024 * 1024 };
