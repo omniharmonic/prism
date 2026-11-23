@@ -1,0 +1,20 @@
+/* Swipe actions on list rows (lib/gestures/useSwipeActions). */
+.prism-swipe-row { touch-action: pan-y; }
+.prism-swipe-row[data-swiping] { will-change: transform; }
+.prism-swipe-hint {
+  position: absolute; top: 0; bottom: 0; width: 104px; display: flex; align-items: center; padding: 0 12px;
+  font-size: var(--text-sm, 13px); font-weight: 550; color: var(--text-muted); pointer-events: none; white-space: nowrap;
+  transition: color var(--motion-fast, 120ms);
+}
+/* The row slid left → the action sits in the gap on its right, and vice versa. */
+.prism-swipe-hint[data-side="left"] { left: 100%; justify-content: flex-start; }
+.prism-swipe-hint[data-side="right"] { right: 100%; justify-content: flex-end; }
+.prism-swipe-hint[data-armed] { color: var(--text-primary); }
+.prism-swipe-hint[data-armed][data-tone="accent"] { color: var(--color-accent); }
+/* Reduced motion: the row stays put; the label shows in place at the edge. */
+.prism-swipe-hint[data-still] {
+  top: 4px; bottom: 4px; width: auto; border-radius: var(--radius-sm, 6px); background: var(--bg-elevated, var(--bg-base));
+  box-shadow: 0 0 0 1px var(--border-subtle); z-index: 1;
+}
+.prism-swipe-hint[data-still][data-side="left"] { left: auto; right: 6px; }
+.prism-swipe-hint[data-still][data-side="right"] { right: auto; left: 6px; }

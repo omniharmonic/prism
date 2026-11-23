@@ -1,0 +1,260 @@
+/*
+ * Prism Glass Utility System — "frosted-lite"
+ * ────────────────────────────────────────────
+ * Quiet, content-first surfaces. Base panels are nearly flat with a hairline
+ * border; real backdrop-blur is reserved for *floating* surfaces (menus, the
+ * command palette, modals). Interactive feedback uses dedicated --surface-*
+ * tokens so hovers read correctly on any background, dark or light.
+ * Adapts to dark/light via CSS custom properties.
+ */
+
+/* ─── Base Glass (panels, sidebars, bars) ─── */
+.glass {
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--glass-shadow);
+}
+
+/* ─── Interactive Glass (glass buttons, cards) ─── */
+.glass-interactive {
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--glass-shadow);
+  cursor: pointer;
+}
+.glass-interactive:hover {
+  background: var(--glass-hover);
+  border-color: var(--glass-border-strong);
+}
+.glass-interactive:active {
+  background: var(--glass-active);
+}
+
+/* ─── Quiet in-place hover/active tints (rows, list items, ghost buttons) ───
+   These read correctly on solid content surfaces, unlike the panel fills. */
+.glass-hover:hover {
+  background: var(--surface-hover);
+}
+.glass-active:active {
+  background: var(--surface-active);
+}
+
+/* The canonical Notion-style quiet affordance: invisible at rest, a gentle
+   tint on hover, slightly stronger on press. Use for nav rows, menu items,
+   icon buttons, tabs. */
+.interactive {
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background-color var(--transition-fast);
+}
+.interactive:hover {
+  background: var(--surface-hover);
+}
+.interactive:active {
+  background: var(--surface-active);
+}
+.interactive[data-selected="true"],
+.interactive.is-selected {
+  background: var(--surface-selected);
+}
+
+/* ─── Elevated Glass (modals, dropdowns, command palette, popovers) ─── */
+.glass-elevated {
+  background: var(--material-solid, var(--bg-elevated));
+  border: 1px solid var(--glass-border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--glass-shadow-elevated);
+}
+
+/* ─── Inset Glass (inner wells, code blocks, inputs) ─── */
+.glass-inset {
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+}
+html.dark .glass-inset {
+  background: rgba(0, 0, 0, 0.22);
+}
+html.light .glass-inset {
+  background: rgba(15, 23, 42, 0.025);
+}
+
+/* ─── Focus ring — consistent, accessible, accent-tinted ─── */
+.focus-ring:focus-visible,
+.interactive:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+/* ─── Subtle luminance edge — top highlight on floating glass panels ─── */
+.glass::before,
+.glass-elevated::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  pointer-events: none;
+}
+html.dark .glass::before,
+html.dark .glass-elevated::before {
+  background: linear-gradient(90deg, transparent 12%, rgba(255,255,255,0.06) 50%, transparent 88%);
+}
+html.light .glass::before,
+html.light .glass-elevated::before {
+  background: linear-gradient(90deg, transparent 12%, rgba(255,255,255,0.7) 50%, transparent 88%);
+}
+
+/* ─── Scrollbar styling — thin and quiet ─── */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  border-radius: 6px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+html.dark ::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.14);
+}
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.24);
+}
+html.light ::-webkit-scrollbar-thumb {
+  background-color: rgba(15, 23, 42, 0.16);
+}
+html.light ::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(15, 23, 42, 0.28);
+}
+
+/* ─── Selection ─── */
+::selection {
+  background: var(--color-accent-dim);
+  color: var(--text-primary);
+}
+
+/* ─── Hidden scrollbar (single-row toolbars, pills, horizontal scrollers) ───
+   Keeps the row scrollable by touch while removing the chrome that would
+   otherwise wrap or clutter a compact mobile surface. */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.no-scrollbar::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+/* ─── Bottom sheet — thumb-zone action surface (mobile) ───
+   Slides up from the bottom edge, frosted to match floating glass. The grabber
+   reads as "drag me down to dismiss"; rows below are quiet until pressed. */
+@keyframes sheet-rise {
+  from { transform: translateY(101%); }
+  to { transform: translateY(0); }
+}
+@keyframes sheet-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.sheet-backdrop {
+  animation: sheet-fade 240ms ease-out;
+}
+.sheet-panel {
+  animation: sheet-rise 360ms var(--ease-out-soft);
+  will-change: transform;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sheet-backdrop,
+  .sheet-panel { animation: none; }
+}
+
+/* ─── Floating command pill (mobile bottom bar) ───
+   The signature surface: one frosted row of high-frequency actions, lifted off
+   the canvas so content scrolls beneath it. */
+.command-pill {
+  background: var(--material-solid, var(--bg-elevated));
+  border: 1px solid var(--glass-border-strong);
+  border-radius: 999px;
+  box-shadow: var(--glass-shadow-elevated);
+  animation: pill-in 440ms var(--ease-out-soft);
+}
+@keyframes pill-in {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .command-pill { animation: none; }
+}
+
+/* (The iOS zoom-on-focus floor for form controls lives in touch.css § "iOS zoom-on-focus".) */
+
+/* ─── Tactile press: floating controls dip slightly when pressed ─── */
+.press {
+  transition: transform var(--transition-fast), background-color var(--transition-fast);
+}
+.press:active {
+  transform: scale(0.94);
+}
+@media (prefers-reduced-motion: reduce) {
+  .press:active { transform: none; }
+}
+
+/* ─── Modal/popover entrance — a soft lift + fade, not a hard pop ─── */
+@keyframes modal-rise {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.modal-rise {
+  animation: modal-rise 280ms var(--ease-out-soft);
+  will-change: transform, opacity;
+}
+
+/* ─── Drawer slide (mobile sidebar / context panel) ─── */
+@keyframes drawer-in-left {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+@keyframes drawer-in-right {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+.drawer-left { animation: drawer-in-left 340ms var(--ease-out-soft); will-change: transform; }
+.drawer-right { animation: drawer-in-right 340ms var(--ease-out-soft); will-change: transform; }
+
+@media (prefers-reduced-motion: reduce) {
+  .modal-rise,
+  .drawer-left,
+  .drawer-right { animation: none; }
+}
+
+/* Translucency belongs to floating layers; content and controls remain opaque.
+   Start solid so engines without backdrop-filter have a legible fallback. */
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass-elevated, .command-pill {
+    background: var(--material-floating, var(--bg-elevated));
+    backdrop-filter: blur(var(--material-blur, 20px));
+    -webkit-backdrop-filter: blur(var(--material-blur, 20px));
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .glass-elevated, .command-pill {
+    background: var(--material-solid, var(--bg-elevated));
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+:root.reduce-motion *, :root.reduce-motion *::before, :root.reduce-motion *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}

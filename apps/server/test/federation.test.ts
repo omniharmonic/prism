@@ -1,0 +1,357 @@
+/**
+ * Parachute-to-Parachute federation (Horizon C) — the GATED in-process
+ * invariants. Live two-hub convergence needs a second hub+vault (deferred, see
+ * docs/federation.md); these assert the primitives that gate and route it:
+ *
+ *   - peer-conn tokens: Ed25519-signed, round-trip, reject tamper/expiry/junk;
+ *   - resolveLevel's federation branch: a paired peer with a space grant on the
+ *     doc's space resolves to that level; an unpaired peer, a wrong-space token,
+ *     or a missing grant resolves to null; and with FEDERATION off the branch is
+ *     inert (never consulted);
+ *   - federationTarget: maps a space_note_key → the local note id + pinned kind;
+ *   - effectiveLevel space matching + the durable outbox + the suggestions inbox.
+ *
+ * The "peer" here is THIS server's own keypair (self-signed) — the same trick
+ * verify-federation.ts uses to exercise the verify path without a real second
+ * hub. Operates entirely on the fake vault + in-memory db.
+ */
+import { test, beforeEach, afterEach } from "node:test";
+import assert from "node:assert/strict";
+import { config } from "../src/config";
+
+// Federation is gated behind config.federationEnabled; force it on for this
+// process so the resolveLevel/federationTarget branches are reachable. (Only
+// affects this test process — the default stays off.)
+(config as { federationEnabled: boolean }).federationEnabled = true;
+
+import { serverKeyPair, fingerprint, isValidPeerPublicKey, generateKeyPairB64url } from "../src/auth/peer";
+import { signPeerConnToken, verifyPeerConnToken } from "../src/auth/peer-conn";
+import { resolveLevel, federationTarget } from "../src/collab";
+import { effectiveLevel } from "../src/permissions";
+import { acl } from "../src/routes/acl";
+import { federation } from "../src/routes/federation";
+import {
+  addGrant, createSpace, upsertPeer, removePeer, upsertFederatedNote,
+  queueOutbox, outboxForPeer, clearOutboxItem,
+  createSuggestion, listSuggestions, getSuggestion,
+  storePairing, listSpaces, federatedNotesForSpace, grantsForPeer, upsertGrant, recordPeerEdit, listPeerEdits, upsertMirrorRequest, getMirrorRequest,
+} from "../src/db";
+import { installFakeVault, resetDb, makeSession, sessionCookie, type FakeVault } from "./helpers";
+import { createHash } from "node:crypto";
+
+let fv: FakeVault;
+beforeEach(() => {
+  resetDb();
+  fv = installFakeVault();
+});
+afterEach(() => fv.restore());
+
+/** Read a JSON response body with a caller-supplied shape (json() is `unknown`). */
+async function readJson<T = any>(res: Response): Promise<T> {
+  return (await res.json()) as T;
+}
+
+// ── peer-conn tokens ─────────────────────────────────────────────────────────
+test("peer-conn token round-trips and embeds this server's pubkey", () => {
+  const tok = signPeerConnToken("space-1");
+  const claims = verifyPeerConnToken(tok);
+  assert.ok(claims, "valid token verifies");
+  assert.equal(claims!.spaceId, "space-1");
+  assert.equal(claims!.pubkey, serverKeyPair().publicKeyB64url);
+});
+
+test("peer-conn token rejects tampering, expiry, and junk", () => {
+  const tok = signPeerConnToken("space-1");
+  // tamper the signed body (flip the first body char) → signature fails.
+  const tampered = (tok[0] === "a" ? "b" : "a") + tok.slice(1);
+  assert.equal(verifyPeerConnToken(tampered), null);
+  // already-expired (negative ttl).
+  assert.equal(verifyPeerConnToken(signPeerConnToken("space-1", -1000)), null);
+  // structurally invalid.
+  assert.equal(verifyPeerConnToken("garbage"), null);
+  assert.equal(verifyPeerConnToken(""), null);
+  assert.equal(verifyPeerConnToken("no-dot-payload"), null);
+});
+
+// ── resolveLevel federation branch ───────────────────────────────────────────
+const KEY = "space-note-key-1";
+const SPACE = "space-1";
+function federatedFixture(level: "view" | "suggest" | "edit" = "edit") {
+  fv.put({ id: "local-1", tags: ["shared"], content: "# Shared" });
+  createSpace({ id: SPACE, title: "S", scope_include_tags: '["shared"]', scope_exclude_tags: null, path_prefix: null, created_by: "owner@test.local" });
+  upsertFederatedNote({ space_note_key: KEY, space_id: SPACE, local_id: "local-1", kind: "document", peer_synced_at: null, source_updated_at: null });
+  const peer = serverKeyPair().publicKeyB64url;
+  upsertPeer({ pubkey: peer, paired_at: Date.now() });
+  addGrant({ subject_type: "peer", subject: peer, resource_type: "space", resource: SPACE, level, created_by: "test" });
+  return peer;
+}
+
+test("a paired peer with a space grant resolves to that level", async () => {
+  federatedFixture("edit");
+  const level = await resolveLevel(KEY, signPeerConnToken(SPACE), null);
+  assert.equal(level, "edit");
+});
+
+test("wrong space in the token → null (token scope must match the doc's space)", async () => {
+  federatedFixture("edit");
+  const level = await resolveLevel(KEY, signPeerConnToken("some-other-space"), null);
+  assert.equal(level, null);
+});
+
+test("an unpaired peer → null even with a valid signature", async () => {
+  federatedFixture("edit");
+  removePeer(serverKeyPair().publicKeyB64url); // un-pair
+  const level = await resolveLevel(KEY, signPeerConnToken(SPACE), null);
+  assert.equal(level, null);
+});
+
+test("a paired peer with NO space grant → null", async () => {
+  fv.put({ id: "local-1", tags: ["shared"], content: "# Shared" });
+  createSpace({ id: SPACE, title: "S", scope_include_tags: null, scope_exclude_tags: null, path_prefix: null, created_by: "o" });
+  upsertFederatedNote({ space_note_key: KEY, space_id: SPACE, local_id: "local-1", kind: "document", peer_synced_at: null, source_updated_at: null });
+  upsertPeer({ pubkey: serverKeyPair().publicKeyB64url, paired_at: Date.now() }); // paired, but ungranted
+  const level = await resolveLevel(KEY, signPeerConnToken(SPACE), null);
+  assert.equal(level, null);
+});
+
+test("with FEDERATION disabled the branch is inert (the key is not a real note → null)", async () => {
+  federatedFixture("edit");
+  (config as { federationEnabled: boolean }).federationEnabled = false;
+  try {
+    // federation off → getFederatedByKey never consulted; falls through to the
+    // normal path, which getNote(KEY)s the vault (404) and finds no grants.
+    const level = await resolveLevel(KEY, signPeerConnToken(SPACE), null);
+    assert.equal(level, null, "must NOT resolve via the federation branch when gated off");
+  } finally {
+    (config as { federationEnabled: boolean }).federationEnabled = true;
+  }
+});
+
+// ── federationTarget (document routing) ──────────────────────────────────────
+test("federationTarget maps a known key to the local id + pinned kind; unknown passes through", () => {
+  upsertFederatedNote({ space_note_key: KEY, space_id: SPACE, local_id: "local-1", kind: "spreadsheet", peer_synced_at: null, source_updated_at: null });
+  assert.deepEqual(federationTarget(KEY), { noteId: "local-1", vaultId: "primary", kind: "spreadsheet" });
+  // an ordinary (non-federated) document name decodes to the primary vault + bare id.
+  assert.deepEqual(federationTarget("just-a-note-id"), { noteId: "just-a-note-id", vaultId: "primary" });
+  // a vault-prefixed document name decodes to that vault + the bare note id.
+  assert.deepEqual(federationTarget("teamA::42"), { noteId: "42", vaultId: "teamA" });
+});
+
+// ── effectiveLevel space matching (permissions) ──────────────────────────────
+test("a space grant matches a note only via its spaceIds", () => {
+  const grants = [{ id: "g", subject_type: "peer", subject: "pk", resource_type: "space", resource: SPACE, level: "edit", created_at: 0 } as const];
+  assert.equal(effectiveLevel(grants as never, { id: "n", tags: [], spaceIds: [SPACE] }, null), "edit");
+  assert.equal(effectiveLevel(grants as never, { id: "n", tags: [], spaceIds: ["other"] }, null), null);
+  assert.equal(effectiveLevel(grants as never, { id: "n", tags: [] }, null), null, "no spaceIds → no match");
+});
+
+// ── durable outbox ───────────────────────────────────────────────────────────
+test("outbox queues, reads back in order, and clears per item", () => {
+  const peer = "peer-pk";
+  queueOutbox(KEY, peer, new Uint8Array([1, 2, 3]));
+  queueOutbox(KEY, peer, new Uint8Array([4, 5]));
+  const items = outboxForPeer(peer);
+  assert.equal(items.length, 2);
+  assert.deepEqual([...items[0]!.update_blob], [1, 2, 3]);
+  assert.deepEqual([...items[1]!.update_blob], [4, 5]);
+  clearOutboxItem(items[0]!.id);
+  assert.equal(outboxForPeer(peer).length, 1);
+});
+
+// ── peer key helpers ─────────────────────────────────────────────────────────
+test("peer key helpers validate Ed25519 pubkeys and produce stable fingerprints", () => {
+  const { publicKeyB64url } = generateKeyPairB64url();
+  assert.ok(isValidPeerPublicKey(publicKeyB64url));
+  assert.ok(!isValidPeerPublicKey("not-a-key"));
+  assert.ok(!isValidPeerPublicKey(""));
+  // fingerprint is deterministic and formatted as colon-separated hex pairs.
+  assert.equal(fingerprint(publicKeyB64url), fingerprint(publicKeyB64url));
+  assert.match(fingerprint(publicKeyB64url), /^([0-9a-f]{2}:){7}[0-9a-f]{2}$/);
+});
+
+// ── pairing endpoint (federation.ts) ─────────────────────────────────────────
+test("pairing: valid code pairs the peer; reuse and bad inputs are rejected", async () => {
+  const { publicKeyB64url: peerPub } = generateKeyPairB64url();
+  const code = "pair-code-123";
+  storePairing(createHash("sha256").update(code).digest("hex"), "laptop", "owner@test.local", 10 * 60_000);
+
+  const ok = await federation.request("/pair", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code, pubkey: peerPub }),
+  });
+  assert.equal(ok.status, 200);
+  const body = await readJson(ok);
+  assert.equal(body.ok, true);
+  assert.equal(body.serverPublicKey, serverKeyPair().publicKeyB64url);
+
+  // single-use: the same code can't pair again.
+  const reuse = await federation.request("/pair", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code, pubkey: peerPub }),
+  });
+  assert.equal(reuse.status, 403);
+
+  // a bad pubkey is rejected up front (400), before consuming a code.
+  const badKey = await federation.request("/pair", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code: "whatever", pubkey: "not-a-key" }),
+  });
+  assert.equal(badKey.status, 400);
+});
+
+test("federation identity endpoint returns this server's pubkey + fingerprint", async () => {
+  const res = await federation.request("/identity");
+  assert.equal(res.status, 200);
+  const body = await readJson(res);
+  assert.equal(body.publicKey, serverKeyPair().publicKeyB64url);
+  assert.equal(body.fingerprint, fingerprint(serverKeyPair().publicKeyB64url));
+});
+
+// ── suggestions inbox (durable; owner-only) ──────────────────────────────────
+const OWNER = "owner@test.local";
+const ownerReq = (path: string, init?: RequestInit) =>
+  acl.request(path, { ...init, headers: { ...(init?.headers ?? {}), cookie: sessionCookie(makeSession(OWNER)) } });
+
+test("a suggestion is durable and the owner can accept/reject it", async () => {
+  const s = createSuggestion({ id: "sug-1", space_note_key: KEY, note_id: "local-1", author: "peer", author_kind: "peer", summary: "tweak", payload: "{}" });
+  assert.equal(s.status, "pending");
+  // it persists in the db independently of any live connection (survives restart).
+  assert.equal(getSuggestion("sug-1")!.status, "pending");
+
+  // owner inbox lists it.
+  const list = await readJson(await ownerReq("/suggestions"));
+  assert.equal(list.length, 1);
+  assert.equal(list[0].id, "sug-1");
+
+  // non-owner cannot reach the inbox.
+  assert.equal((await acl.request("/suggestions")).status, 403);
+
+  // accept transitions status (durably).
+  const acc = await ownerReq("/suggestions/sug-1/accept", { method: "POST" });
+  assert.equal(acc.status, 200);
+  assert.equal(getSuggestion("sug-1")!.status, "accepted");
+  assert.equal(listSuggestions("accepted").length, 1);
+  assert.equal(listSuggestions("pending").length, 0);
+
+  // accepting an unknown id → 404.
+  assert.equal((await ownerReq("/suggestions/nope/accept", { method: "POST" })).status, 404);
+});
+
+// ── "Parachute Sync": one-action per-note mirror (4.2) ────────────────────────
+const J = { "content-type": "application/json" };
+test("Parachute Sync: POST /notes/:id/mirror composes space+note+peer-grant in one call", async () => {
+  const peer = "PEERPUBKEY_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  upsertPeer({ pubkey: peer, paired_at: Date.now() });
+  fv.put({ id: "n1", content: "# sync me\n\nhi", tags: ["shared"] });
+
+  const r = await ownerReq("/notes/n1/mirror", { method: "POST", headers: J, body: JSON.stringify({ pubkey: peer, level: "edit" }) });
+  assert.equal(r.status, 200);
+  const body = (await r.json()) as { spaceId: string; spaceNoteKey: string };
+  assert.ok(body.spaceId && body.spaceNoteKey);
+
+  // Singleton "Parachute Sync" space created, note added, peer granted at edit.
+  assert.equal(listSpaces().find((s) => s.id === body.spaceId)?.title, "Parachute Sync");
+  assert.ok(federatedNotesForSpace(body.spaceId).some((f) => f.local_id === "n1"));
+  assert.equal(grantsForPeer(peer).find((g) => g.resource_type === "space" && g.resource === body.spaceId)?.level, "edit");
+
+  // Idempotent: re-mirroring the same note reuses the space + federated identity
+  // and just updates the peer level (no duplicate space / note / grant).
+  const r2 = await ownerReq("/notes/n1/mirror", { method: "POST", headers: J, body: JSON.stringify({ pubkey: peer, level: "view" }) });
+  const body2 = (await r2.json()) as { spaceId: string; spaceNoteKey: string };
+  assert.equal(body2.spaceId, body.spaceId);
+  assert.equal(body2.spaceNoteKey, body.spaceNoteKey, "same federated identity, not a new one");
+  assert.equal(listSpaces().filter((s) => s.title === "Parachute Sync").length, 1);
+  assert.equal(federatedNotesForSpace(body.spaceId).filter((f) => f.local_id === "n1").length, 1);
+  assert.equal(grantsForPeer(peer).find((g) => g.resource === body.spaceId)?.level, "view", "level updated in place");
+});
+
+test("Parachute Sync: unknown peer → 404, bad level → 400, missing note → 404", async () => {
+  fv.put({ id: "n1", content: "x", tags: [] });
+  assert.equal((await ownerReq("/notes/n1/mirror", { method: "POST", headers: J, body: JSON.stringify({ pubkey: "nope", level: "edit" }) })).status, 404);
+  upsertPeer({ pubkey: "p", paired_at: Date.now() });
+  assert.equal((await ownerReq("/notes/n1/mirror", { method: "POST", headers: J, body: JSON.stringify({ pubkey: "p", level: "bogus" }) })).status, 400);
+  assert.equal((await ownerReq("/notes/missing/mirror", { method: "POST", headers: J, body: JSON.stringify({ pubkey: "p", level: "edit" }) })).status, 404);
+});
+
+// ── peer grant TTL / expiry (4.3) ─────────────────────────────────────────────
+test("peer grant TTL: an expired peer grant stops loading + resolving; a future one works", async () => {
+  const peer = serverKeyPair().publicKeyB64url;
+  fv.put({ id: "local-1", tags: ["shared"], content: "# Shared" });
+  createSpace({ id: SPACE, title: "S", scope_include_tags: '["shared"]', scope_exclude_tags: null, path_prefix: null, created_by: "o" });
+  upsertFederatedNote({ space_note_key: KEY, space_id: SPACE, local_id: "local-1", kind: "document", peer_synced_at: null, source_updated_at: null });
+  upsertPeer({ pubkey: peer, paired_at: Date.now() });
+
+  // Granted, but expired 1s ago → doesn't load, doesn't resolve.
+  addGrant({ subject_type: "peer", subject: peer, resource_type: "space", resource: SPACE, level: "edit", created_by: "test", expires_at: Date.now() - 1000 });
+  assert.equal(grantsForPeer(peer).length, 0, "expired grant is filtered out");
+  assert.equal(await resolveLevel(KEY, signPeerConnToken(SPACE), null), null, "expired → no federation access");
+
+  // Re-grant with a future expiry (upsert refreshes the TTL) → access restored.
+  upsertGrant({ subject_type: "peer", subject: peer, resource_type: "space", resource: SPACE, level: "edit", created_by: "test", expires_at: Date.now() + 60_000 });
+  assert.equal(grantsForPeer(peer).length, 1);
+  assert.equal(await resolveLevel(KEY, signPeerConnToken(SPACE), null), "edit");
+
+  // Clearing the TTL (null) makes it permanent.
+  upsertGrant({ subject_type: "peer", subject: peer, resource_type: "space", resource: SPACE, level: "edit", created_by: "test", expires_at: null });
+  assert.equal(grantsForPeer(peer)[0]!.expires_at, null);
+});
+
+// ── peer-edit audit (4.3) ─────────────────────────────────────────────────────
+test("peer-edit audit: recordPeerEdit → listPeerEdits (DESC) + GET /acl/federation/peer-edits", async () => {
+  const pk = serverKeyPair().publicKeyB64url;
+  recordPeerEdit("snk-1", "local-1", pk);
+  recordPeerEdit("snk-2", "local-2", pk);
+  const edits = listPeerEdits(10);
+  assert.equal(edits.length, 2);
+  assert.equal(edits[0]!.space_note_key, "snk-2", "newest first");
+
+  const r = await ownerReq("/federation/peer-edits");
+  assert.equal(r.status, 200);
+  const body = (await r.json()) as Array<{ spaceNoteKey: string; localId: string; peer: string; peerFingerprint: string }>;
+  assert.equal(body.length, 2);
+  assert.equal(body[0]!.spaceNoteKey, "snk-2");
+  assert.ok(body[0]!.peerFingerprint.includes(":"), "fingerprint rendered");
+});
+
+test("peer-edit audit endpoint is admin-gated (no session → 403)", async () => {
+  assert.equal((await acl.request("/federation/peer-edits")).status, 403);
+});
+
+// ── per-note level override (4.3) ─────────────────────────────────────────────
+test("per-note override: a note-level peer grant raises the peer above the space default", async () => {
+  const peer = serverKeyPair().publicKeyB64url;
+  fv.put({ id: "local-1", tags: ["shared"], content: "# n1" });
+  fv.put({ id: "local-2", tags: ["shared"], content: "# n2" });
+  createSpace({ id: SPACE, title: "S", scope_include_tags: '["shared"]', scope_exclude_tags: null, path_prefix: null, created_by: "o" });
+  upsertFederatedNote({ space_note_key: "snk-1", space_id: SPACE, local_id: "local-1", kind: "document", peer_synced_at: null, source_updated_at: null });
+  upsertFederatedNote({ space_note_key: "snk-2", space_id: SPACE, local_id: "local-2", kind: "document", peer_synced_at: null, source_updated_at: null });
+  upsertPeer({ pubkey: peer, paired_at: Date.now() });
+  addGrant({ subject_type: "peer", subject: peer, resource_type: "space", resource: SPACE, level: "view", created_by: "t" });   // space default = view
+  addGrant({ subject_type: "peer", subject: peer, resource_type: "note", resource: "local-1", level: "edit", created_by: "t" }); // override n1 → edit
+
+  assert.equal(await resolveLevel("snk-1", signPeerConnToken(SPACE), null), "edit", "overridden note gets the higher level");
+  assert.equal(await resolveLevel("snk-2", signPeerConnToken(SPACE), null), "view", "the other note keeps the space default");
+});
+
+// ── 4.4 coverage: mirror reject + grant downgrade ─────────────────────────────
+test("mirror REJECT: a pending request is rejected and materializes nothing", async () => {
+  const peer = serverKeyPair().publicKeyB64url;
+  upsertPeer({ pubkey: peer, paired_at: Date.now() });
+  const spaceId = "11111111-1111-1111-1111-111111111111";
+  const req = upsertMirrorRequest({ peer_pubkey: peer, space_id: spaceId, space_title: "S", payload: JSON.stringify([{ spaceNoteKey: "22222222-2222-2222-2222-222222222222", kind: "document" }]) });
+
+  const r = await ownerReq(`/federation/mirrors/${req.id}/reject`, { method: "POST" });
+  assert.equal(r.status, 200);
+  assert.equal(getMirrorRequest(req.id)!.status, "rejected");
+  // Nothing materialized: no local space, no federated identity, no peer grant.
+  assert.equal(listSpaces().find((s) => s.id === spaceId), undefined);
+  assert.equal(federatedNotesForSpace(spaceId).length, 0);
+  assert.equal(grantsForPeer(peer).length, 0);
+});
+
+test("grant DOWNGRADE: lowering a peer's space grant edit→view takes effect on the next resolve", async () => {
+  federatedFixture("edit");
+  assert.equal(await resolveLevel(KEY, signPeerConnToken(SPACE), null), "edit");
+  upsertGrant({ subject_type: "peer", subject: serverKeyPair().publicKeyB64url, resource_type: "space", resource: SPACE, level: "view", created_by: "t" });
+  assert.equal(await resolveLevel(KEY, signPeerConnToken(SPACE), null), "view", "downgrade reflected");
+});

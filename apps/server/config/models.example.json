@@ -1,0 +1,58 @@
+{
+  "_readme": "Copy this file to models.json in this folder (or point PRISM_MODELS_CONFIG at any path), edit, then restart pm2 prism-server. No models.json = Prism behaves exactly as before. Plain-language guide: MODELS.md at the repo root. Keys starting with _ are comments.",
+  "version": 1,
+
+  "providers": {
+    "_readme": "A provider = a kind + where to reach it. 'model' is the default when a job names only the provider. API keys: name the ENVIRONMENT VARIABLE in api_key_env (set it in apps/server/.env) — never paste a key here.",
+
+    "claude": {
+      "_readme": "The hardened claude CLI runner (signs in with the CLI's own login). The only provider that can run tool-using agent chat today.",
+      "kind": "claude-cli",
+      "model": "sonnet"
+    },
+
+    "local": {
+      "_readme": "LM Studio on THIS machine. A loopback address turns on local=true and the memory guard automatically.",
+      "kind": "openai-compatible",
+      "base_url": "http://127.0.0.1:1234/v1"
+    },
+
+    "ollama": {
+      "_readme": "Ollama on THIS machine (its OpenAI-compatible /v1 endpoint).",
+      "kind": "openai-compatible",
+      "base_url": "http://127.0.0.1:11434/v1"
+    },
+
+    "workstation": {
+      "_readme": "The NVIDIA workstation over Tailscale (vLLM / llama.cpp / Ollama). Not loopback, so say local=true yourself; memory_guard stays off (its memory is not this machine's).",
+      "kind": "openai-compatible",
+      "base_url": "http://workstation:8000/v1",
+      "api_key_env": "WORKSTATION_API_KEY",
+      "local": true,
+      "timeout_ms": 300000
+    },
+
+    "openrouter": {
+      "_readme": "Any frontier model through OpenRouter's OpenAI-compatible API. Set OPENROUTER_API_KEY in apps/server/.env.",
+      "kind": "openai-compatible",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEY"
+    }
+  },
+
+  "jobs": {
+    "_readme": "Each job lists provider:model in order of preference; the next one is tried when one fails (logged, and shown in GET /api/agent/runner). fallback: any | local-only | none.",
+
+    "chat": ["claude:sonnet"],
+
+    "drafting": { "use": ["local:qwen2.5-14b-instruct", "claude:sonnet"], "fallback": "any" },
+
+    "triage": { "use": ["local:google/gemma-4-12b-qat", "workstation:qwen2.5-32b-instruct"], "fallback": "local-only" },
+
+    "embeddings": ["ollama:nomic-embed-text"],
+
+    "summarization": ["local:qwen2.5-14b-instruct", "claude:sonnet"],
+    "extraction": ["local:qwen2.5-14b-instruct"],
+    "proactive": ["claude:sonnet"]
+  }
+}

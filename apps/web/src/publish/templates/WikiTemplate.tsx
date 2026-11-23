@@ -1,0 +1,945 @@
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, Suspense, lazy } from "react";
+import { sanitizeHtml, eligiblePublicationNavigation } from "@prism/core/shell";
+import type { PubNote, PublicationTemplateProps } from "./types";
+import { resolveTheme } from "../theme";
+import { WikiGraph } from "./WikiGraph";
+import { WikiMap } from "./WikiMap";
+import {
+  buildLinkIndex,
+  renderWikiBody,
+  extractToc,
+  headingTarget,
+  rewritePublicAttachments,
+  computeBacklinks,
+  buildTree,
+  ancestorFolders,
+  type TreeItem,
+} from "./wiki-utils";
+
+/**
+ * Quartz-parity Wiki reader. Slots: header (title + in-publication search),
+ * left path-tree nav (home pinned, active highlighted), center article (sanitized
+ * HTML with scoped wikilinks), right rail (table of contents + backlinks), and a
+ * "Published via Prism" footer. All note HTML is run through `sanitizeHtml` — it
+ * is public/untrusted. Styled with the app's CSS variables so it feels native.
+ */
+// The article's own map, mirroring the in-app geo-note editor: a note carrying
+// real GeoJSON (or a geo centroid) shows it drawn above the prose. Lazy, like
+// WikiMap, so text-only readers never pay for MapLibre.
+const ArticleCommonsMap = lazy(() => import("@prism/core/map").then((m) => ({ default: m.CommonsMap })));
+
+const GEO_KINDS = ["ecological-entity", "species", "watershed", "place", "signal", "organization", "event", "resource"];
+
+function articleFeature(note: PubNote): { id: string; kind: string; name: string; geometry?: unknown; geo?: { lat: number; lon: number } | null } | null {
+  const m = note.metadata ?? {};
+  let geometry: unknown = null;
+  for (const k of ["geometry", "boundaryGeometry", "rangeGeometry"]) {
+    const g = m[k] as { type?: unknown; coordinates?: unknown } | null | undefined;
+    if (g && typeof g === "object" && typeof g.type === "string" && g.coordinates != null) { geometry = g; break; }
+  }
+  const rawGeo = m.geo as { lat?: unknown; lon?: unknown } | null | undefined;
+  const geo = rawGeo && typeof rawGeo === "object" && typeof rawGeo.lat === "number" && typeof rawGeo.lon === "number"
+    ? { lat: rawGeo.lat, lon: rawGeo.lon } : null;
+  if (!geometry && !geo) return null;
+  const kind = (note.tags ?? []).find((t: string) => GEO_KINDS.includes(t)) ?? "place";
+  return { id: note.id, kind, name: (typeof m.name === "string" && m.name) || note.title, geometry, geo };
+}
+
+/** Below this width the wiki renders its single-column phone layout. */
+const MOBILE_BP = 880;
+
+// Keep reader typography with its rendered tree, including the private iframe.
+// A missing font leaves legacy defaults intact; code retains its monospace rule.
+const PUBLICATION_FONT_CSS = `[data-publication-font="custom"] .prose-editor :is(h1, h2, h3, h4, h5, h6) { font-family: inherit; }`;
+
+function useIsMobile(viewportWidth?: number): boolean {
+  const [mobile, setMobile] = useState(
+    () => typeof window !== "undefined" && window.matchMedia(`(max-width: ${MOBILE_BP}px)`).matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${MOBILE_BP}px)`);
+    const on = (e: MediaQueryListEvent) => setMobile(e.matches);
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
+  return viewportWidth === undefined ? mobile : viewportWidth <= MOBILE_BP;
+}
+
+/** Phone chrome styles: the drawer slide, trailhead chips, readable prose. One
+ *  block, scoped under .pubwiki-m, honoring prefers-reduced-motion. */
+const MOBILE_CSS = `
+.pubwiki-m article.prose-editor { font-size: 16px; line-height: 1.7; }
+.pubwiki-m article.prose-editor h1, .pubwiki-m article.prose-editor h2 { text-wrap: balance; }
+/* Use the reader's own viewport (including the private iframe), not the studio
+ * width. Preserve body size and long-token wrapping at these narrow widths. */
+@media (max-width: 390px) {
+  .pubwiki-m { --pubwiki-narrow-heading: clamp(22px, 7vw, 28px); }
+  .pubwiki-m article.prose-editor h1 { font-size: var(--pubwiki-narrow-heading); }
+  .pubwiki-m article.prose-editor h2 { font-size: clamp(20px, 6vw, 22px); }
+}
+.pubwiki-scrim {
+  position: fixed; inset: 0; z-index: 40;
+  background: rgba(0,0,0,0.5);
+  animation: pubwiki-fade 200ms ease-out;
+}
+.pubwiki-drawer {
+  position: fixed; top: 0; bottom: 0; left: 0; z-index: 41;
+  width: min(85vw, 340px);
+  display: flex; flex-direction: column;
+  background: var(--bg, var(--bg-base, #191a1e));
+  border-right: 1px solid var(--glass-border, rgba(255,255,255,0.1));
+  box-shadow: 12px 0 40px rgba(0,0,0,0.35);
+  padding-top: env(safe-area-inset-top);
+  padding-left: env(safe-area-inset-left);
+  animation: pubwiki-slide 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes pubwiki-slide { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+@keyframes pubwiki-fade { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .pubwiki-drawer, .pubwiki-scrim { animation: none; }
+}
+.pubwiki-drawer button { min-height: 44px; }
+.pubwiki-chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 9px 14px; border-radius: 999px;
+  border: 1px solid var(--glass-border, rgba(255,255,255,0.14));
+  background: var(--glass-bg, rgba(255,255,255,0.05));
+  color: var(--text-primary, #eee);
+  font-size: 14px; line-height: 1.2; cursor: pointer;
+  max-width: 100%;
+}
+.pubwiki-chip > span.mark { color: var(--text-muted, #888); font-size: 12px; }
+.pubwiki-chip > span.txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pubwiki-chip:active { background: var(--glass-hover, rgba(255,255,255,0.1)); }
+.pubwiki-m button:focus-visible, .pubwiki-drawer button:focus-visible, .pubwiki-m a:focus-visible {
+  outline: 2px solid var(--color-accent, #4a7dd7); outline-offset: 2px; border-radius: 6px;
+}
+.pubwiki-toc summary {
+  list-style: none; cursor: pointer;
+  text-transform: uppercase; letter-spacing: 0.6px;
+  font-size: 11px; font-weight: 700; color: var(--text-muted, #888);
+  padding: 6px 0; min-height: 32px; display: flex; align-items: center; gap: 6px;
+}
+.pubwiki-toc summary::before { content: "▸"; font-size: 9px; transition: transform 150ms; }
+.pubwiki-toc[open] summary::before { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .pubwiki-toc summary::before { transition: none; } }
+`;
+
+export default function WikiTemplate({
+  manifest,
+  viewportWidth,
+  slug,
+  activeId,
+  note,
+  noteLoading,
+  onNavigate,
+  graph,
+  mapFeatures,
+  onRequestMap,
+}: PublicationTemplateProps) {
+  const [query, setQuery] = useState("");
+  const [graphOpen, setGraphOpen] = useState(false);
+  // Map view: offered only when the publication actually has geo-bearing notes
+  // (manifest.mapFeatureCount). Opening it triggers the lazy feature fetch.
+  const [mapOpen, setMapOpen] = useState(false);
+  const isMobile = useIsMobile(viewportWidth);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  // Hub notes (the bioregion, indexes) can have hundreds of backlinks — show a
+  // page, offer the rest. Reset per note.
+  const [allBacklinks, setAllBacklinks] = useState(false);
+  useEffect(() => { setAllBacklinks(false); }, [activeId]);
+  // Drawer hygiene: close when navigation happens, lock body scroll while open,
+  // close on Escape.
+  useEffect(() => { setDrawerOpen(false); }, [activeId]);
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const prev = document.documentElement.style.overflow;
+    document.documentElement.style.overflow = "hidden";
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setDrawerOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.documentElement.style.overflow = prev;
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [drawerOpen]);
+  const hasMap = manifest.theme?.showMap !== false && (manifest.mapFeatureCount ?? 0) > 0;
+  const openMap = useCallback(() => {
+    setMapOpen(true);
+    onRequestMap();
+  }, [onRequestMap]);
+  const articleRef = useRef<HTMLDivElement>(null);
+
+  // Owner-set theme, re-validated here before it touches the page (untrusted on a
+  // public site). Applied as CSS custom properties + a body font on the wiki root.
+  const safeTheme = useMemo(() => resolveTheme(manifest.theme), [manifest.theme]);
+
+  const navigation = useMemo(() => {
+    const sections = eligiblePublicationNavigation(manifest.theme?.navigation, new Set(manifest.notes.map(n => n.id)))?.sections ?? [];
+    const byId = new Map(manifest.notes.map(n => [n.id, n]));
+    const assigned = new Set(sections.flatMap(section => section.noteIds));
+    return {
+      sections: sections.map(section => ({title: section.title, notes: section.noteIds.map(id => byId.get(id)!)})),
+      assigned,
+      remaining: manifest.notes.filter(n => !assigned.has(n.id)),
+    };
+  }, [manifest.theme?.navigation, manifest.notes]);
+  const landing = manifest.template === "landing";
+  const documentation = manifest.template === "docs";
+  const home = !activeId || activeId === manifest.homeNoteId;
+  const introduction = home && (landing || safeTheme.coverUrl || safeTheme.description) ? (
+    <section data-testid="publication-introduction" style={{marginBottom:32}}>
+      {safeTheme.coverUrl && <img src={safeTheme.coverUrl} alt="" referrerPolicy="no-referrer" style={{width:"100%",maxHeight:280,objectFit:"cover",borderRadius:16,marginBottom:24}}/>}
+      {landing && <><p style={{fontSize:12,letterSpacing:".1em",textTransform:"uppercase",color:"var(--text-secondary)"}}>A collection of ideas</p><h1 style={{fontSize:"var(--pubwiki-narrow-heading, clamp(30px,5vw,52px))",lineHeight:1.1,letterSpacing:"-.035em",margin:"12px 0 20px",color:"var(--text-primary)"}}>{manifest.title}</h1></>}
+      {safeTheme.description && <p style={{fontSize:18,lineHeight:1.65,color:"var(--text-secondary)",maxWidth:680}}>{safeTheme.description}</p>}
+      {landing && <nav aria-label="Collection pages">{[
+        ...navigation.sections,
+        ...(navigation.remaining.length ? [{title: navigation.sections.length ? "More pages" : "", notes: navigation.remaining}] : []),
+      ].map((section, i) => <section key={i} style={{marginTop:24}}>
+        {section.title && <h2 style={{fontSize:18,fontWeight:600,marginBottom:12}}>{section.title}</h2>}
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(min(100%,220px),1fr))",gap:12}}>{section.notes.map(n=><button key={n.id} onClick={()=>onNavigate(n.id)} style={{minWidth:0,minHeight:88,textAlign:"left",border:"1px solid var(--glass-border)",background:"var(--glass)",borderRadius:12,padding:18,color:"var(--text-primary)",cursor:"pointer"}}><span style={{fontWeight:600}}>{n.title}</span><span aria-hidden="true" style={{float:"right",color:"var(--accent)"}}>↗</span></button>)}</div>
+      </section>)}</nav>}
+    </section>
+  ) : null;
+
+  const linkIndex = useMemo(() => buildLinkIndex(manifest.notes), [manifest.notes]);
+
+  // Render → sanitize → extract TOC (which also injects heading ids).
+  const { html, toc } = useMemo(() => {
+    if (!note) return { html: "", toc: [] as ReturnType<typeof extractToc>["toc"] };
+    const dirty = renderWikiBody(note.content, linkIndex, slug);
+    // Files of a published page come from the publication's own attachment route.
+    let clean = rewritePublicAttachments(sanitizeHtml(dirty), slug);
+    // Notes conventionally open with "# <Title>", and the chrome already shows
+    // the title — drop the body's leading h1 when it just repeats it. Before the
+    // outline is read, so neither the rail nor a table-of-contents block in the page
+    // lists (and links to) a heading that is not there.
+    const m = clean.match(/^\s*<h1[^>]*>([\s\S]*?)<\/h1>/);
+    if (m) {
+      const text = m[1].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+      if (text === note.title.replace(/\s+/g, " ").trim().toLowerCase()) clean = clean.replace(m[0], "");
+    }
+    return extractToc(clean);
+  }, [note, linkIndex, slug]);
+
+  // The /notes/<x> slot accepts a vault PATH as well as a note id (the twin's
+  // deep-link contract). Identity-keyed UI (backlinks, active nav row, map
+  // focus) must use the loaded note's REAL id, not the raw slot value.
+  const effectiveId = note?.id ?? activeId;
+
+  const backlinks = useMemo(
+    () => computeBacklinks(graph, effectiveId, manifest.notes),
+    [graph, effectiveId, manifest.notes],
+  );
+
+  const tree = useMemo(() => buildTree(navigation.remaining), [navigation.remaining]);
+  const homeNote = useMemo(
+    () =>
+      manifest.homeNoteId
+        ? manifest.notes.find((n) => n.id === manifest.homeNoteId) || null
+        : null,
+    [manifest.homeNoteId, manifest.notes],
+  );
+
+  // Client-side, in-publication search: filter the note list by title (and path).
+  const q = query.trim().toLowerCase();
+  const searchResults = useMemo(() => {
+    if (!q) return null;
+    return manifest.notes.filter(
+      (n) =>
+        n.title.toLowerCase().includes(q) || (n.path || "").toLowerCase().includes(q),
+    );
+  }, [q, manifest.notes]);
+
+  // Intercept clicks on resolved wikilinks: navigate in-app (preserve modifier
+  // clicks / middle-click so the real href still opens a new tab).
+  const onArticleClick = useCallback(
+    (e: MouseEvent<HTMLDivElement>) => {
+      // An in-page link — a table-of-contents block's entry, or a `#heading` link the author
+      // wrote: scroll to the heading (the address bar and the router are left alone).
+      const inPage = (e.target as HTMLElement).closest('a[href^="#"]') as HTMLAnchorElement | null;
+      if (inPage) {
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+        const heading = headingTarget(e.currentTarget as HTMLElement, inPage.getAttribute("data-toc-target") ?? (inPage.getAttribute("href") ?? "").slice(1));
+        if (!heading) return;
+        e.preventDefault();
+        heading.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
+      const a = (e.target as HTMLElement).closest("a.pub-wikilink") as HTMLAnchorElement | null;
+      if (!a) return;
+      const id = a.getAttribute("data-target");
+      if (!id) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+      e.preventDefault();
+      onNavigate(id);
+    },
+    [onNavigate],
+  );
+
+  // A link that arrives with a `#heading` fragment lands on that heading once the page is drawn
+  // (ids are prefixed, so the browser's own jump finds nothing for a bare slug).
+  useEffect(() => {
+    const fragment = typeof location !== "undefined" ? location.hash.slice(1) : "";
+    if (!html || !fragment || !articleRef.current) return;
+    headingTarget(articleRef.current, fragment)?.scrollIntoView({ block: "start" });
+  }, [html]);
+
+  const onTocClick = useCallback((e: MouseEvent<HTMLAnchorElement>, id: string) => {
+    e.preventDefault();
+    const el = articleRef.current?.querySelector(`#${CSS.escape(id)}`);
+    el?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
+
+  // Theme: CSS custom properties + (optional) font on the wiki root. Falls back
+  // to the app defaults when no theme is set.
+  const rootStyle: CSSProperties = {
+    minHeight: "100dvh",
+    minWidth: 0,
+    // Page names, URLs and imported headings may contain no spaces. Allow them
+    // to wrap at the reader's width; keep code blocks independently scrollable.
+    overflowWrap: "anywhere",
+    display: "flex",
+    flexDirection: "column",
+    ...safeTheme.vars,
+    ...(safeTheme.fontFamily ? { fontFamily: safeTheme.fontFamily, "--content-font": safeTheme.fontFamily } : null),
+    background: "var(--bg, var(--bg-base, #191a1e))",
+  };
+
+  // Search + home + tree: one nav body, rendered in the desktop column AND the
+  // phone drawer (16px input font on mobile — iOS zooms any smaller input).
+  const navBody = (
+    <>
+      {safeTheme.showSearch && <input
+        aria-label="Search this site"
+        type="search"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Search this site…"
+        style={{
+          width: "100%",
+          boxSizing: "border-box",
+          marginBottom: 10,
+          padding: isMobile ? "11px 12px" : "7px 10px",
+          borderRadius: 8,
+          border: "1px solid var(--glass-border, rgba(255,255,255,0.12))",
+          background: "var(--glass-bg, rgba(255,255,255,0.04))",
+          color: "var(--text-primary, #fff)",
+          fontSize: isMobile ? 16 : 13,
+          outline: "none",
+        }}
+      />}
+      {searchResults ? (
+        searchResults.length > 0 ? (
+          searchResults.map((n) => (
+            <NavLink key={n.id} label={n.title} active={n.id === effectiveId} depth={0} onClick={() => onNavigate(n.id)} />
+          ))
+        ) : (
+          <p style={emptyStyle}>No matches.</p>
+        )
+      ) : (
+        <>
+          {navigation.sections.map((section, i) => <section key={i} aria-label={section.title} style={{marginBottom:16}}>
+            <h3 style={{fontSize:11,fontWeight:600,color:"var(--text-muted)",padding:"6px 10px"}}>{section.title}</h3>
+            {section.notes.map(n => <NavLink key={n.id} label={n.title} active={n.id === effectiveId} depth={0} onClick={() => onNavigate(n.id)} />)}
+          </section>)}
+          {navigation.sections.length > 0 && navigation.remaining.length > 0 && <RailHeading>More pages</RailHeading>}
+          {homeNote && !navigation.assigned.has(homeNote.id) && (
+            <NavLink
+              label={`🏠 ${homeNote.title}`}
+              active={homeNote.id === effectiveId}
+              depth={0}
+              onClick={() => onNavigate(homeNote.id)}
+            />
+          )}
+          <TreeNav
+            items={tree}
+            activeId={effectiveId}
+            homeId={manifest.homeNoteId}
+            onNavigate={onNavigate}
+            defaultOpen={ancestorFolders(manifest.notes, effectiveId)}
+          />
+          {manifest.notes.length === 0 && <p style={emptyStyle}>No published notes.</p>}
+        </>
+      )}
+    </>
+  );
+
+  // ── Phone layout: one column, drawer nav, trailhead chips ──────────────────
+  if (isMobile) {
+    const f = safeTheme.showMap && !noteLoading && note ? articleFeature(note) : null;
+    return (
+      <div style={rootStyle} className="pubwiki-m" data-publication-font={safeTheme.fontFamily ? "custom" : undefined}>
+        <style>{MOBILE_CSS}{PUBLICATION_FONT_CSS}</style>
+        <header
+          style={{
+            position: "sticky", top: 0, zIndex: 30,
+            display: "flex", alignItems: "center", gap: 10,
+            padding: "calc(env(safe-area-inset-top) + 8px) 12px 8px",
+            background: safeTheme.vars["--bg"] ?? "var(--bg, var(--bg-base, #191a1e))",
+            borderBottom: "1px solid var(--glass-border, rgba(255,255,255,0.1))",
+            minHeight: 52, boxSizing: "border-box",
+          }}
+        >
+          <button
+            onClick={() => setDrawerOpen(true)}
+            aria-label="Contents"
+            data-testid="wiki-drawer-open"
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "center",
+              width: 40, height: 40, flexShrink: 0,
+              borderRadius: 10, border: "1px solid var(--glass-border, rgba(255,255,255,0.12))",
+              background: "transparent", color: "var(--text-primary, #fff)",
+              fontSize: 17, cursor: "pointer",
+            }}
+          >
+            ☰
+          </button>
+          <span
+            style={{
+              fontWeight: 600, fontSize: 15, color: "var(--text-primary, #fff)",
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, flex: 1,
+            }}
+          >
+            {manifest.title}
+          </span>
+          {hasMap && (
+            <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+              <HeaderTab label="Article" active={!mapOpen} onClick={() => setMapOpen(false)} />
+              <HeaderTab label="Map" active={mapOpen} onClick={openMap} testId="wiki-map-tab" />
+            </div>
+          )}
+        </header>
+
+        {mapOpen ? (
+          <main style={{ flex: 1, minWidth: 0, padding: 10 }}>
+            <WikiMap
+              features={mapFeatures}
+              activeId={effectiveId}
+              onNavigate={(id) => { setMapOpen(false); onNavigate(id); }}
+            />
+          </main>
+        ) : (
+          <main style={{ flex: 1, minWidth: 0, padding: "0 16px" }}>
+            <div style={{ maxWidth: safeTheme.contentWidth, margin: "0 auto", padding: "20px 0 calc(env(safe-area-inset-bottom) + 56px)" }}>
+              {introduction}
+              {note && (
+                <h1 style={{ margin: "0 0 12px", fontSize: "var(--pubwiki-narrow-heading, clamp(26px, 7vw, 32px))", fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1.25, color: "var(--text-primary, #fff)" }}>
+                  {note.title}
+                </h1>
+              )}
+              {noteLoading && <p style={{ color: "var(--text-muted, #888)" }}>Loading…</p>}
+              {!noteLoading && !manifest.notes.length && <PublicationEmpty />}
+              {!noteLoading && note && toc.length >= 3 && (
+                <details className="pubwiki-toc" style={{ marginBottom: 14 }}>
+                  <summary>On this page</summary>
+                  <div style={{ padding: "2px 0 6px" }}>
+                    {toc.map((t) => (
+                      <a
+                        key={t.id}
+                        href={`#${t.id}`}
+                        onClick={(e) => onTocClick(e, t.id)}
+                        style={{
+                          display: "block", padding: "8px 0", paddingLeft: (t.level - 1) * 14,
+                          color: "var(--text-secondary, #bbb)", textDecoration: "none",
+                          fontSize: 14, lineHeight: 1.35,
+                        }}
+                      >
+                        {t.text}
+                      </a>
+                    ))}
+                  </div>
+                </details>
+              )}
+              {f && (
+                <div style={{ margin: "0 0 18px" }}>
+                  <Suspense fallback={<div style={{ height: 240, borderRadius: 12, background: "var(--glass, rgba(128,128,128,0.08))" }} />}>
+                    <ArticleCommonsMap features={[f as never]} height={240} showControls={false} testId="article-map" />
+                  </Suspense>
+                </div>
+              )}
+              {!noteLoading && note && (
+                <article
+                  ref={articleRef}
+                  className="prose-editor"
+                  onClick={onArticleClick}
+                  dangerouslySetInnerHTML={{ __html: html }}
+                />
+              )}
+              {!noteLoading && !note && activeId && (
+                <p style={{ color: "var(--text-secondary, #aaa)" }}>This note isn’t available.</p>
+              )}
+
+              {backlinks.length > 0 && (
+                <section style={{ marginTop: 40 }}>
+                  <RailHeading>Linked references</RailHeading>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }} data-testid="wiki-backlink-chips">
+                    {(allBacklinks ? backlinks : backlinks.slice(0, 12)).map((b) => (
+                      <button key={b.id} className="pubwiki-chip" onClick={() => onNavigate(b.id)}>
+                        <span className="mark">↩</span>
+                        <span className="txt">{b.title}</span>
+                      </button>
+                    ))}
+                    {!allBacklinks && backlinks.length > 12 && (
+                      <button className="pubwiki-chip" onClick={() => setAllBacklinks(true)} style={{ color: "var(--text-secondary, #bbb)" }}>
+                        <span className="txt">Show all {backlinks.length}</span>
+                      </button>
+                    )}
+                  </div>
+                </section>
+              )}
+
+              {safeTheme.showGraph && graph && graph.nodes.length > 0 && (
+                <section style={{ marginTop: 28 }}>
+                  <details className="pubwiki-toc">
+                    <summary>Graph</summary>
+                    <div
+                      style={{
+                        marginTop: 6,
+                        border: "1px solid var(--glass-border, rgba(255,255,255,0.1))",
+                        borderRadius: 10, overflow: "hidden",
+                        background: "var(--glass-bg, rgba(255,255,255,0.02))",
+                      }}
+                    >
+                      <WikiGraph graph={graph} activeId={effectiveId} onNavigate={onNavigate} />
+                    </div>
+                  </details>
+                </section>
+              )}
+
+              <footer
+                style={{
+                  marginTop: 48, paddingTop: 16,
+                  borderTop: "1px solid var(--glass-border, rgba(255,255,255,0.1))",
+                  fontSize: 12, color: "var(--text-muted, #777)",
+                }}
+              >
+                Published via Prism
+              </footer>
+            </div>
+          </main>
+        )}
+
+        {drawerOpen && (
+          <>
+            <div className="pubwiki-scrim" onClick={() => setDrawerOpen(false)} data-testid="wiki-drawer-scrim" />
+            <div className="pubwiki-drawer" role="dialog" aria-modal="true" aria-label="Contents" data-testid="wiki-drawer">
+              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px 4px" }}>
+                <span style={{ flex: 1, fontWeight: 600, fontSize: 14, color: "var(--text-primary, #fff)" }}>Contents</span>
+                <button
+                  onClick={() => setDrawerOpen(false)}
+                  aria-label="Close contents"
+                  style={{
+                    width: 40, height: 40, borderRadius: 10, border: "none",
+                    background: "transparent", color: "var(--text-secondary, #bbb)",
+                    fontSize: 17, cursor: "pointer",
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+              <div style={{ flex: 1, overflowY: "auto", padding: "4px 10px calc(env(safe-area-inset-bottom) + 12px)" }}>
+                {navBody}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  // ── Desktop layout (unchanged) ─────────────────────────────────────────────
+  return (
+    <div style={rootStyle} data-publication-font={safeTheme.fontFamily ? "custom" : undefined}>
+      <style>{PUBLICATION_FONT_CSS}</style>
+      {/* Header: optional logo + title */}
+      <header
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          padding: "12px 20px",
+          borderBottom: "1px solid var(--glass-border, rgba(255,255,255,0.1))",
+        }}
+      >
+        {safeTheme.logoUrl && (
+          <img
+            src={safeTheme.logoUrl}
+            alt=""
+            style={{ height: 24, width: "auto", maxWidth: 160, objectFit: "contain", display: "block" }}
+          />
+        )}
+        <button onClick={()=>manifest.homeNoteId && onNavigate(manifest.homeNoteId)} style={{minWidth:0,border:0,background:"transparent",textAlign:"left",minHeight:44,cursor:"pointer",fontWeight:600,fontSize:15,color:"var(--text-primary, #fff)"}}>
+          {manifest.title}{documentation && <small style={{display:"block",fontSize:11,fontWeight:400,color:"var(--text-secondary)"}}>Documentation</small>}
+        </button>
+        {hasMap && (
+          <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+            <HeaderTab label="Article" active={!mapOpen} onClick={() => setMapOpen(false)} />
+            <HeaderTab label="Map" active={mapOpen} onClick={openMap} testId="wiki-map-tab" />
+          </div>
+        )}
+      </header>
+
+      <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
+        {/* Left column: search (above) + path tree nav */}
+        <nav
+          style={{
+            width: documentation ? 230 : 260,
+            display: landing ? "none" : undefined,
+            flexShrink: 0,
+            borderRight: "1px solid var(--glass-border, rgba(255,255,255,0.1))",
+            overflowY: "auto",
+            padding: "12px 8px",
+          }}
+        >
+          {navBody}
+        </nav>
+
+        {/* Center: article, or the publication-scoped map view */}
+        {mapOpen ? (
+          <main style={{ flex: 1, minWidth: 0, padding: 16 }}>
+            <WikiMap
+              features={mapFeatures}
+              activeId={effectiveId}
+              onNavigate={(id) => {
+                setMapOpen(false);
+                onNavigate(id);
+              }}
+            />
+          </main>
+        ) : (
+        <main style={{ flex: 1, minWidth: 0, overflowY: "auto", padding: "0 24px" }}>
+          <div style={{ maxWidth: safeTheme.contentWidth, margin: "0 auto", padding: "40px 0 96px" }}>
+            {introduction}
+            {note && (
+              <h1 style={{ marginTop: 0, fontSize: 34, fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1.2, color: "var(--text-primary, #fff)" }}>
+                {note.title}
+              </h1>
+            )}
+            {noteLoading && <p style={{ color: "var(--text-muted, #888)" }}>Loading…</p>}
+              {!noteLoading && !manifest.notes.length && <PublicationEmpty />}
+            {!noteLoading && note && (() => { const f = safeTheme.showMap ? articleFeature(note) : null; return f ? (
+              <div style={{ margin: "0 0 20px" }}>
+                <Suspense fallback={<div style={{ height: 360, borderRadius: 12, background: "var(--glass, rgba(128,128,128,0.08))" }} />}>
+                  <ArticleCommonsMap features={[f as never]} height={360} showControls={false} testId="article-map" />
+                </Suspense>
+              </div>
+            ) : null; })()}
+            {!noteLoading && note && (
+              <article
+                ref={articleRef}
+                className="prose-editor"
+                onClick={onArticleClick}
+                dangerouslySetInnerHTML={{ __html: html }}
+              />
+            )}
+            {!noteLoading && !note && activeId && (
+              <p style={{ color: "var(--text-secondary, #aaa)" }}>This note isn’t available.</p>
+            )}
+            <footer
+              style={{
+                marginTop: 64,
+                paddingTop: 16,
+                borderTop: "1px solid var(--glass-border, rgba(255,255,255,0.1))",
+                fontSize: 12,
+                color: "var(--text-muted, #777)",
+              }}
+            >
+              Published via Prism
+            </footer>
+          </div>
+        </main>
+        )}
+
+        {/* Right rail: TOC + backlinks */}
+        <aside
+          style={{
+            width: documentation ? 200 : 240,
+            display: landing ? "none" : undefined,
+            flexShrink: 0,
+            borderLeft: "1px solid var(--glass-border, rgba(255,255,255,0.1))",
+            overflowY: "auto",
+            padding: "40px 16px",
+            fontSize: 12,
+          }}
+        >
+          {toc.length > 0 && (
+            <section style={{ marginBottom: 28 }}>
+              <RailHeading>On this page</RailHeading>
+              {toc.map((t) => (
+                <a
+                  key={t.id}
+                  href={`#${t.id}`}
+                  onClick={(e) => onTocClick(e, t.id)}
+                  style={{
+                    display: "block",
+                    padding: "3px 0",
+                    paddingLeft: (t.level - 1) * 12,
+                    color: "var(--text-secondary, #bbb)",
+                    textDecoration: "none",
+                    lineHeight: 1.4,
+                  }}
+                >
+                  {t.text}
+                </a>
+              ))}
+            </section>
+          )}
+
+          <section>
+            <RailHeading>Linked references</RailHeading>
+            {backlinks.length > 0 ? (
+              backlinks.map((b) => (
+                <button
+                  key={b.id}
+                  onClick={() => onNavigate(b.id)}
+                  style={{
+                    display: "block",
+                    width: "100%",
+                    textAlign: "left",
+                    padding: "3px 0",
+                    border: "none",
+                    background: "transparent",
+                    color: "var(--text-secondary, #bbb)",
+                    cursor: "pointer",
+                    fontSize: 12,
+                    lineHeight: 1.4,
+                  }}
+                >
+                  {b.title}
+                </button>
+              ))
+            ) : (
+              <p style={{ color: "var(--text-muted, #777)", margin: 0 }}>No backlinks.</p>
+            )}
+          </section>
+
+          {/* Graph: a collapsible, in-rail force graph built ONLY from the
+              publication-scoped (leak-proof) /api/p/:slug/graph endpoint. Click a
+              node to navigate (same routing as the nav tree). */}
+          {safeTheme.showGraph && graph && graph.nodes.length > 0 && (
+            <section style={{ marginTop: 28 }}>
+              <button
+                onClick={() => setGraphOpen((o) => !o)}
+                aria-expanded={graphOpen}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  width: "100%",
+                  padding: 0,
+                  border: "none",
+                  background: "transparent",
+                  cursor: "pointer",
+                  textTransform: "uppercase",
+                  letterSpacing: 0.6,
+                  fontSize: 10,
+                  fontWeight: 700,
+                  color: "var(--text-muted, #888)",
+                  marginBottom: 8,
+                }}
+              >
+                <span style={{ fontSize: 9 }}>{graphOpen ? "▾" : "▸"}</span> Graph
+              </button>
+              {graphOpen && (
+                <div
+                  style={{
+                    border: "1px solid var(--glass-border, rgba(255,255,255,0.1))",
+                    borderRadius: 10,
+                    overflow: "hidden",
+                    background: "var(--glass-bg, rgba(255,255,255,0.02))",
+                  }}
+                >
+                  <WikiGraph graph={graph} activeId={effectiveId} onNavigate={onNavigate} />
+                </div>
+              )}
+            </section>
+          )}
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function HeaderTab({
+  label,
+  active,
+  onClick,
+  testId,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+  testId?: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      data-testid={testId}
+      style={{
+        padding: "5px 12px",
+        borderRadius: 8,
+        border: "1px solid var(--glass-border, rgba(255,255,255,0.12))",
+        background: active ? "var(--glass-hover, rgba(255,255,255,0.08))" : "transparent",
+        color: active ? "var(--text-primary, #fff)" : "var(--text-secondary, #bbb)",
+        cursor: "pointer",
+        fontSize: 13,
+        fontWeight: active ? 600 : 400,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+const emptyStyle: React.CSSProperties = {
+  color: "var(--text-muted, #777)",
+  fontSize: 12,
+  padding: "6px 10px",
+};
+
+function RailHeading({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      style={{
+        textTransform: "uppercase",
+        letterSpacing: 0.6,
+        fontSize: 10,
+        fontWeight: 700,
+        color: "var(--text-muted, #888)",
+        marginBottom: 8,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function NavLink({
+  label,
+  active,
+  depth,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  depth: number;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: "block",
+        width: "100%",
+        textAlign: "left",
+        padding: "5px 10px",
+        paddingLeft: 10 + depth * 14,
+        borderRadius: 6,
+        border: "none",
+        background: active ? "var(--glass-hover, rgba(255,255,255,0.08))" : "transparent",
+        color: active ? "var(--text-primary, #fff)" : "var(--text-secondary, #bbb)",
+        cursor: "pointer",
+        fontSize: 13,
+        lineHeight: 1.3,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+function TreeNav({
+  items,
+  activeId,
+  homeId,
+  onNavigate,
+  defaultOpen,
+  depth = 0,
+}: {
+  items: TreeItem[];
+  activeId: string | null;
+  homeId: string | null;
+  onNavigate: (id: string) => void;
+  defaultOpen: Set<string>;
+  depth?: number;
+}) {
+  return (
+    <>
+      {items.map((item) =>
+        item.type === "folder" ? (
+          <Folder
+            key={`f:${item.path}`}
+            name={item.name}
+            path={item.path}
+            depth={depth}
+            defaultOpen={defaultOpen.has(item.path)}
+          >
+            <TreeNav
+              items={item.children}
+              activeId={activeId}
+              homeId={homeId}
+              onNavigate={onNavigate}
+              defaultOpen={defaultOpen}
+              depth={depth + 1}
+            />
+          </Folder>
+        ) : item.id === homeId ? null : ( // home is pinned separately at top
+          <NavLink
+            key={`l:${item.id}`}
+            label={item.name}
+            active={item.id === activeId}
+            depth={depth}
+            onClick={() => onNavigate(item.id)}
+          />
+        ),
+      )}
+    </>
+  );
+}
+
+function Folder({
+  name,
+  depth,
+  defaultOpen,
+  children,
+}: {
+  name: string;
+  path: string;
+  depth: number;
+  defaultOpen: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          display: "block",
+          width: "100%",
+          textAlign: "left",
+          padding: "5px 10px",
+          paddingLeft: 10 + depth * 14,
+          borderRadius: 6,
+          border: "none",
+          background: "transparent",
+          color: "var(--text-secondary, #bbb)",
+          cursor: "pointer",
+          fontSize: 13,
+          fontWeight: 600,
+        }}
+      >
+        {open ? "▾" : "▸"} {name}
+      </button>
+      {open && children}
+    </div>
+  );
+}
+
+
+function PublicationEmpty() {
+  return <section style={{ padding: "40px 0", color: "var(--text-secondary, #888)" }}>
+    <h1 style={{ margin: "0 0 12px", fontSize: 24, color: "var(--text-primary, #eee)" }}>No pages published yet</h1>
+    <p style={{ margin: 0, fontSize: 15, lineHeight: 1.6 }}>This site doesn’t have any visible pages yet.</p>
+  </section>;
+}

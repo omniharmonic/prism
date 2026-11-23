@@ -1,0 +1,425 @@
+[
+  {
+    "remote": "ANE-v3/decoder/KokoroDecoderPre_120.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/decoder/KokoroDecoderPre_120.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+    "revision": "6c0750dd02ef9d981fb82f147d784a3f171755ee",
+    "size": 87461,
+    "sha256": "cd1fc5ed538f7fb6f57e38dc30c71cbe498344fde764720ec41d8d9b868887ba"
+  },
+  {
+    "remote": "ANE-v3/decoder/KokoroDecoderPre_120.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/decoder/KokoroDecoderPre_120.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+    "revision": "6c0750dd02ef9d981fb82f147d784a3f171755ee",
+    "size": 33642176,
+    "sha256": "7f4ba8ddae5d4b6e73bdd19f2d79489963ab41fc1a57d1606001f3cfe5fe82dc"
+  },
+  {
+    "remote": "ANE-v3/decoder/KokoroDecoderPre_120.mlpackage/Manifest.json",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/decoder/KokoroDecoderPre_120.mlpackage/Manifest.json",
+    "revision": "6c0750dd02ef9d981fb82f147d784a3f171755ee",
+    "size": 617,
+    "sha256": "72d8e9e63859d9df75d74692dd280ffb9f5a106d12f5d25980ab85ecb7a8aefa"
+  },
+  {
+    "remote": "ANE-v3/decoder/KokoroDecoderPre_200.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/decoder/KokoroDecoderPre_200.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+    "revision": "6c0750dd02ef9d981fb82f147d784a3f171755ee",
+    "size": 87594,
+    "sha256": "1f85ffa9dce80aee4a24392b41aa41d765e39dd55748b1e0b69df6c1b9d0fa60"
+  },
+  {
+    "remote": "ANE-v3/decoder/KokoroDecoderPre_200.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/decoder/KokoroDecoderPre_200.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+    "revision": "6c0750dd02ef9d981fb82f147d784a3f171755ee",
+    "size": 33642176,
+    "sha256": "0b758dd755a4fab0c1f4a0a16f302d59e8bb38b2200a8bd29f21acfa61e6547c"
+  },
+  {
+    "remote": "ANE-v3/decoder/KokoroDecoderPre_200.mlpackage/Manifest.json",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/decoder/KokoroDecoderPre_200.mlpackage/Manifest.json",
+    "revision": "6c0750dd02ef9d981fb82f147d784a3f171755ee",
+    "size": 617,
+    "sha256": "97d52d353b1229c955316a14e056688b1d742b27fe5736d3ff4e1fbe2189539a"
+  },
+  {
+    "remote": "ANE-v3/fast/KokoroAlbert_32.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/fast/KokoroAlbert_32.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+    "revision": "6c0750dd02ef9d981fb82f147d784a3f171755ee",
+    "size": 90614,
+    "sha256": "445dc9bcfa196da380a3b47bf602307cbec01a529b407df4ba31c34ba9980b86"
+  },
+  {
+    "remote": "ANE-v3/fast/KokoroAlbert_32.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/fast/KokoroAlbert_32.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+    "revision": "6c0750dd02ef9d981fb82f147d784a3f171755ee",
+    "size": 5718848,
+    "sha256": "36089a39359b800d3e2c60e5e8ac9217d8f2d1010a8b9273192290e621f1fabc"
+  },
+  {
+    "remote": "ANE-v3/fast/KokoroAlbert_32.mlpackage/Manifest.json",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/fast/KokoroAlbert_32.mlpackage/Manifest.json",
+    "revision": "6c0750dd02ef9d981fb82f147d784a3f171755ee",
+    "size": 617,
+    "sha256": "7275b5a061ed9a95dfa8b182a553e0e97c64d619000899f14a8d922d75d0b9e8"
+  },
+  {
+    "remote": "ANE-v3/fast/KokoroAlbert_64.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/fast/KokoroAlbert_64.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+    "revision": "6c0750dd02ef9d981fb82f147d784a3f171755ee",
+    "size": 90646,
+    "sha256": "8dacdea951068efa8dd1370b4d8b7156fcdcef6c34f0f8d15e4d35070db8e645"
+  },
+  {
+    "remote": "ANE-v3/fast/KokoroAlbert_64.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/fast/KokoroAlbert_64.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+    "revision": "6c0750dd02ef9d981fb82f147d784a3f171755ee",
+    "size": 5718848,
+    "sha256": "36089a39359b800d3e2c60e5e8ac9217d8f2d1010a8b9273192290e621f1fabc"
+  },
+  {
+    "remote": "ANE-v3/fast/KokoroAlbert_64.mlpackage/Manifest.json",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/fast/KokoroAlbert_64.mlpackage/Manifest.json",
+    "revision": "6c0750dd02ef9d981fb82f147d784a3f171755ee",
+    "size": 617,
+    "sha256": "3a99d60a9b318f65caa4918799e69fe7a1548f15dbf38d0cdc3c95afa6f66561"
+  },
+  {
+    "remote": "ANE-v3/fast/KokoroSourceGenerator.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/fast/KokoroSourceGenerator.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+    "revision": "6c0750dd02ef9d981fb82f147d784a3f171755ee",
+    "size": 357002,
+    "sha256": "e2fadc3aba5d8ff69b2473fcd69e9a4d988d4d6c7ca8c383e5902d2b68338cab"
+  },
+  {
+    "remote": "ANE-v3/fast/KokoroSourceGenerator.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/fast/KokoroSourceGenerator.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+    "revision": "6c0750dd02ef9d981fb82f147d784a3f171755ee",
+    "size": 39353848,
+    "sha256": "e4ada8b28c56a4acda6a88e7c6d076aa65a39051841597bc0c4c07a60afe5ac2"
+  },
+  {
+    "remote": "ANE-v3/fast/KokoroSourceGenerator.mlpackage/Manifest.json",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/fast/KokoroSourceGenerator.mlpackage/Manifest.json",
+    "revision": "6c0750dd02ef9d981fb82f147d784a3f171755ee",
+    "size": 617,
+    "sha256": "c33fd43b96f425410f39d1b5b2fb805ddba985b543f04b6fa6b516bc96caeddb"
+  },
+  {
+    "remote": "ANE-v3/fast/native-source.json",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/fast/native-source.json",
+    "revision": "6c0750dd02ef9d981fb82f147d784a3f171755ee",
+    "size": 8340,
+    "sha256": "8c673a8a177056db2a91f214b40ab9033f7a3221bd1be5ef4282c6403cff0de3"
+  },
+  {
+    "remote": "ANE/KokoroAlbert.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/base/KokoroAlbert.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 92156,
+    "sha256": "1efeed89cf916ee5fd38a7b4aef8d79a6444eef6b5521514c5ab34e7164f36a2",
+    "gitBlob": "e34b4d1b7a82d0d2e25110b7cbd05f6d8fc67ac1"
+  },
+  {
+    "remote": "ANE/KokoroAlbert.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/base/KokoroAlbert.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 5718848,
+    "sha256": "36089a39359b800d3e2c60e5e8ac9217d8f2d1010a8b9273192290e621f1fabc",
+    "gitBlob": "3ea054a139169a5f302b6326f08b9393b20a2818"
+  },
+  {
+    "remote": "ANE/KokoroAlbert.mlpackage/Manifest.json",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/base/KokoroAlbert.mlpackage/Manifest.json",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 617,
+    "gitBlob": "e25699d8505057bd948dc7cdc94c165d3132917f"
+  },
+  {
+    "remote": "ANE/KokoroAlignment.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/base/KokoroAlignment.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 6971,
+    "sha256": "2d87764d55eb2bdf4ea9ced45b63ff51b4a0e139d5440b2d52c03076f06d8512",
+    "gitBlob": "e780e55688c0640578a90a1d7d149f7726070bed"
+  },
+  {
+    "remote": "ANE/KokoroAlignment.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/base/KokoroAlignment.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 4128,
+    "sha256": "2e7d69128b59d615fc3d3cf85637a687235fc086b1eb136359adb11a61615f6b",
+    "gitBlob": "6104dbdaf764de798e11c12c90ac8fa596b41bd5"
+  },
+  {
+    "remote": "ANE/KokoroAlignment.mlpackage/Manifest.json",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/base/KokoroAlignment.mlpackage/Manifest.json",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 617,
+    "gitBlob": "2f2208d744d6efc9ddea31784f94f429189aff5b"
+  },
+  {
+    "remote": "ANE/KokoroNoise_v2.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/base/KokoroNoise_v2.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 76250,
+    "sha256": "894168c950938e0b776f010b4278b1aae65aa1ce3dd8bdfa4c4170ca80362d0d",
+    "gitBlob": "5cc566d7ff5899f37afeb4cdbe00ff3e2656049c"
+  },
+  {
+    "remote": "ANE/KokoroNoise_v2.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/base/KokoroNoise_v2.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 4580160,
+    "sha256": "1102fc2d31dfcfe3de3978a4c78b65202ff8b0a4d55a9304213bd4e8bda66bc2",
+    "gitBlob": "d81342c6856d163be9c9f601092883f763f8170a"
+  },
+  {
+    "remote": "ANE/KokoroNoise_v2.mlpackage/Manifest.json",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/base/KokoroNoise_v2.mlpackage/Manifest.json",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 617,
+    "gitBlob": "2d85221aacada2e984c45d5243bf95c2ff83e032"
+  },
+  {
+    "remote": "ANE/KokoroPostAlbert.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/base/KokoroPostAlbert.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 49183,
+    "sha256": "5b1ec258a17ca6419da5c90c66e147a7c3699ea3ed620c4b0db715f6b3f5aa26",
+    "gitBlob": "138c538a596c5627044223454e60931a95637224"
+  },
+  {
+    "remote": "ANE/KokoroPostAlbert.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/base/KokoroPostAlbert.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 13806464,
+    "sha256": "e4f300a23cc2e05d38680d9fc94681cc722d445076d1d248f83255122ba091c8",
+    "gitBlob": "b69a4f75779298b1bbd5c56a3ef3d68c980f2eb3"
+  },
+  {
+    "remote": "ANE/KokoroPostAlbert.mlpackage/Manifest.json",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/base/KokoroPostAlbert.mlpackage/Manifest.json",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 617,
+    "gitBlob": "c7eb11b86c1ed2c05ea6e4962a5402a6a0697996"
+  },
+  {
+    "remote": "ANE/KokoroProsody_v2.mlmodelc/analytics/coremldata.bin",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/base/KokoroProsody_v2.mlmodelc/analytics/coremldata.bin",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 243,
+    "sha256": "804d7d2e9a8fed345cedb57da61bd27fdd95db22a070cfa7d42ccd4f8e80a443",
+    "gitBlob": "55c5a25a5080666919c9363717cecbd628e96f9e"
+  },
+  {
+    "remote": "ANE/KokoroProsody_v2.mlmodelc/coremldata.bin",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/base/KokoroProsody_v2.mlmodelc/coremldata.bin",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 421,
+    "sha256": "db8776a4896f690fd254cdb68a4551c168411c9b3fb98219630215bc3c357986",
+    "gitBlob": "48dd20e5e80818a8a1c92b5ece72d73c111ea42a"
+  },
+  {
+    "remote": "ANE/KokoroProsody_v2.mlmodelc/model.mil",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/base/KokoroProsody_v2.mlmodelc/model.mil",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 73353,
+    "gitBlob": "989a67f877974a78dae29fb5b9a331783df55be8"
+  },
+  {
+    "remote": "ANE/KokoroProsody_v2.mlmodelc/weights/weight.bin",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/base/KokoroProsody_v2.mlmodelc/weights/weight.bin",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 8513664,
+    "sha256": "70eea4cd2523992fa1fea840e31ab6f4fdd69c1598e220985a2ae6ea5da1e944",
+    "gitBlob": "626371a81839764315507f8319b53fe19c262a67"
+  },
+  {
+    "remote": "ANE/KokoroTail_v2.mlmodelc/analytics/coremldata.bin",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/base/KokoroTail_v2.mlmodelc/analytics/coremldata.bin",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 243,
+    "sha256": "a06e4b91c2b8a8be3ff701558a5f1f6484921f948202663fe6df78f248d42222",
+    "gitBlob": "e0d13de333d78cb4e5d4c25df52dab4d447457c1"
+  },
+  {
+    "remote": "ANE/KokoroTail_v2.mlmodelc/coremldata.bin",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/base/KokoroTail_v2.mlmodelc/coremldata.bin",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 392,
+    "sha256": "527271f6df56cc308a5f89374c92108aef7b837ab15f0ba4900d555588dbd905",
+    "gitBlob": "104166a1da8fae22b2d0fbaab0aef355915f3151"
+  },
+  {
+    "remote": "ANE/KokoroTail_v2.mlmodelc/metadata.json",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/base/KokoroTail_v2.mlmodelc/metadata.json",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 1872,
+    "gitBlob": "7b64b026357b111557d44d7b80f14f27b01c39f2"
+  },
+  {
+    "remote": "ANE/KokoroTail_v2.mlmodelc/model.mil",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/base/KokoroTail_v2.mlmodelc/model.mil",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 7014,
+    "gitBlob": "24c17efb2e66b789ab3329a6b00bdaa29fc1695e"
+  },
+  {
+    "remote": "ANE/KokoroTail_v2.mlmodelc/weights/weight.bin",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/base/KokoroTail_v2.mlmodelc/weights/weight.bin",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 81088,
+    "sha256": "8ede31ec20df7d86a124287ac12d13507651e2a693e9d4f35f0e7f92cba422c7",
+    "gitBlob": "21f8ff72d34f81c715fa7c952cd483a60fccd1b0"
+  },
+  {
+    "remote": "ANE/KokoroVocoder.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/base/KokoroVocoder.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 255741,
+    "sha256": "18481f9531abd0d01cf6fe6b8837b98263e8a63d87db56324d49ed57cc5c75fa",
+    "gitBlob": "138bfd648044bbc2573fea879fef6de8fd4cf1a1"
+  },
+  {
+    "remote": "ANE/KokoroVocoder.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/base/KokoroVocoder.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 48889920,
+    "sha256": "6d1f96eb50218ab687b12d6d862d2ae854c12b7165c3cd9b6b5cef261ef02ff1",
+    "gitBlob": "fb88aab245ab34ccf07fc8f69bba1f78c2f20e86"
+  },
+  {
+    "remote": "ANE/KokoroVocoder.mlpackage/Manifest.json",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/base/KokoroVocoder.mlpackage/Manifest.json",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 617,
+    "gitBlob": "6286acebfa580f4abed593c3337d42c917b3e9da"
+  },
+  {
+    "remote": "G2PEncoder.mlmodelc/analytics/coremldata.bin",
+    "local": "Models/kokoro/G2PEncoder.mlmodelc/analytics/coremldata.bin",
+    "revision": "d93c5f3eed11847fb81bd6d6a76665e133d7ca77",
+    "size": 243,
+    "sha256": "cf7fbd7e7a65529b2d2bf3941e458a0ab6dff7a298bf48e205a1727c81c26a99",
+    "gitBlob": "e9344e499b612514b32da57ae4039fa67c3ffbe3"
+  },
+  {
+    "remote": "G2PEncoder.mlmodelc/coremldata.bin",
+    "local": "Models/kokoro/G2PEncoder.mlmodelc/coremldata.bin",
+    "revision": "d93c5f3eed11847fb81bd6d6a76665e133d7ca77",
+    "size": 398,
+    "sha256": "0f14d46ca9fd06c68b4717294575b2b99449e67d40b7a2c56f926bf05cd90b11",
+    "gitBlob": "c46bd79935a0d55714afb36fd8ff6febd4a4b2c7"
+  },
+  {
+    "remote": "G2PEncoder.mlmodelc/metadata.json",
+    "local": "Models/kokoro/G2PEncoder.mlmodelc/metadata.json",
+    "revision": "d93c5f3eed11847fb81bd6d6a76665e133d7ca77",
+    "size": 2034,
+    "gitBlob": "a6976b81bf2ac9adedef1dfe76950e5bc67f510e"
+  },
+  {
+    "remote": "G2PEncoder.mlmodelc/model.mil",
+    "local": "Models/kokoro/G2PEncoder.mlmodelc/model.mil",
+    "revision": "d93c5f3eed11847fb81bd6d6a76665e133d7ca77",
+    "size": 20392,
+    "gitBlob": "aa1fcfca108654608989936bd1412d3d416c7457"
+  },
+  {
+    "remote": "G2PEncoder.mlmodelc/weights/weight.bin",
+    "local": "Models/kokoro/G2PEncoder.mlmodelc/weights/weight.bin",
+    "revision": "d93c5f3eed11847fb81bd6d6a76665e133d7ca77",
+    "size": 694592,
+    "sha256": "6926bcd2827d21fec82839487b987e06f85fd8a6a5bb896bc4f6062461d014ec",
+    "gitBlob": "d8e23a106b824ee7373a1b9dc142a3588fda9167"
+  },
+  {
+    "remote": "G2PDecoder.mlmodelc/analytics/coremldata.bin",
+    "local": "Models/kokoro/G2PDecoder.mlmodelc/analytics/coremldata.bin",
+    "revision": "d93c5f3eed11847fb81bd6d6a76665e133d7ca77",
+    "size": 243,
+    "sha256": "dbf1767747fdc188222d467a45b04608b396c76c71db3abb18a5fb3680ef9827",
+    "gitBlob": "c84340b0ccb949dce940a54b3078ed7b0e11f375"
+  },
+  {
+    "remote": "G2PDecoder.mlmodelc/coremldata.bin",
+    "local": "Models/kokoro/G2PDecoder.mlmodelc/coremldata.bin",
+    "revision": "d93c5f3eed11847fb81bd6d6a76665e133d7ca77",
+    "size": 545,
+    "sha256": "607e960f19b4d9a30317a5a11869fcce84b300a909fcab2cc756c0d98e2dacd9",
+    "gitBlob": "f008fd814b5b3680c0e1319f0413498547550c87"
+  },
+  {
+    "remote": "G2PDecoder.mlmodelc/metadata.json",
+    "local": "Models/kokoro/G2PDecoder.mlmodelc/metadata.json",
+    "revision": "d93c5f3eed11847fb81bd6d6a76665e133d7ca77",
+    "size": 3064,
+    "gitBlob": "14a7991cc66167e7d70ad3cae487e9f272e1a337"
+  },
+  {
+    "remote": "G2PDecoder.mlmodelc/model.mil",
+    "local": "Models/kokoro/G2PDecoder.mlmodelc/model.mil",
+    "revision": "d93c5f3eed11847fb81bd6d6a76665e133d7ca77",
+    "size": 19737,
+    "gitBlob": "1ebf9a6a97bafe433918f7104acf7e81cd62ba51"
+  },
+  {
+    "remote": "G2PDecoder.mlmodelc/weights/weight.bin",
+    "local": "Models/kokoro/G2PDecoder.mlmodelc/weights/weight.bin",
+    "revision": "d93c5f3eed11847fb81bd6d6a76665e133d7ca77",
+    "size": 828030,
+    "sha256": "cbaeb4e743359f607ab161af0c6d8a817462fdaec622ee788ef8ef952c5f8214",
+    "gitBlob": "5e8b8fbfe1ddfab9d2966dcab454e508730984b8"
+  },
+  {
+    "remote": "g2p_vocab.json",
+    "local": "Models/kokoro/g2p_vocab.json",
+    "revision": "d93c5f3eed11847fb81bd6d6a76665e133d7ca77",
+    "size": 1665,
+    "gitBlob": "32f4c8035afbfe2ff30b5a4ff39b4441de876c7b"
+  },
+  {
+    "remote": "us_lexicon_cache.json",
+    "local": "Models/kokoro/us_lexicon_cache.json",
+    "revision": "d93c5f3eed11847fb81bd6d6a76665e133d7ca77",
+    "size": 10444631,
+    "sha256": "6b36ba313202227d6914ad32cd684a0304bd2757e9ec4158ea7bc36ec40e224e",
+    "gitBlob": "58b22ebce0ebddbde48b08a09e22e8baab13f4b4"
+  },
+  {
+    "remote": "ANE/af_heart.bin",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/af_heart.bin",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 522240,
+    "sha256": "d583ccff3cdca2f7fae535cb998ac07e9fcb90f09737b9a41fa2734ec44a8f0b",
+    "gitBlob": "e256d26664ef513affbcf7bace1246bbcffea5c3"
+  },
+  {
+    "remote": "ANE/vocab.json",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/vocab.json",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 1416,
+    "gitBlob": "a487b6d23202e7fbd78f3a1bd9f2a5cd9381e01f"
+  },
+  {
+    "remote": "ANE/LICENSE",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/LICENSE",
+    "revision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+    "size": 11339,
+    "gitBlob": "f795c299c648d3ce5a6cfa4ab5c5f1f903d16dfa"
+  },
+  {
+    "remote": "ANE-v3/manifest.json",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/manifest.json",
+    "revision": "6c0750dd02ef9d981fb82f147d784a3f171755ee",
+    "size": 20416,
+    "gitBlob": "ab8479f55cef07c265490e2a34ed9f0b8be40f95"
+  },
+  {
+    "remote": "ANE-v3/mattmireles-LICENSE",
+    "local": "Models/kokoro-82m-coreml/ANE-v3/6c0750dd02ef9d981fb82f147d784a3f171755ee/en/mattmireles-LICENSE",
+    "revision": "6c0750dd02ef9d981fb82f147d784a3f171755ee",
+    "size": 11357,
+    "gitBlob": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64"
+  }
+]

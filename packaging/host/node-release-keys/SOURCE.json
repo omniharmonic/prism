@@ -1,0 +1,15 @@
+{
+  "comment": "Public OpenPGP keys of the ACTIVE Node.js releasers, copied verbatim from the repository below at the commit below (its README's 'Active releasers keys' list). packaging/host/build/node-signature.ts imports only these files into a throwaway GnuPG home and accepts nodejs.org's SHASUMS256.txt.sig only from a key whose primary fingerprint is listed here. When Node adds a releaser (a build then fails: 'not a pinned Node.js release key'), copy their keys/<FPR>.asc from the new commit, add the fingerprint, and bump the commit.",
+  "repository": "https://github.com/nodejs/release-keys",
+  "commit": "481637f813e912c4aa3622d7964ab426c97b8e8d",
+  "fingerprints": [
+    "5BE8A3F6C8A5C01D106C0AD820B1A390B168D356",
+    "DD792F5973C6DE52C432CBDAC77ABFA00DDBF2B7",
+    "CC68F5A3106FF448322E48ED27F5E38D5B0A215F",
+    "890C08DB8579162FEE0DF9DB8BEAB4DFCF555EF4",
+    "C82FA3AE1CBEDC6BE46B9360C43CEC45C17AB93C",
+    "108F52B48DB57BB0CC439B2997B01419BD92F80A",
+    "655F3B5C1FB3FA8D1A0CA6BDE4A7D232B936D2FD",
+    "A363A499291CBBC940DD62E41F10027AF002F8B0"
+  ]
+}

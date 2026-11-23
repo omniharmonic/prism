@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-export-note"
+description = "Enables the export_note command without any pre-configured scope."
+commands.allow = ["export_note"]
+
+[[permission]]
+identifier = "deny-export-note"
+description = "Denies the export_note command without any pre-configured scope."
+commands.deny = ["export_note"]

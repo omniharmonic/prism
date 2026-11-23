@@ -1,0 +1,275 @@
+//! Prism Client — a thin Tauri 2 shell (docs/client-app.md).
+//!
+//! It bundles the native build of apps/web, signs in through the system
+//! browser (PKCE, docs/native-auth.md), keeps the device token in the
+//! keychain, and talks to exactly one Prism Server. It holds no vault token,
+//! runs no ingest, spawns no CLI, and has no fs/shell capability.
+//!
+//! Layout (platform code kept separate so iOS can join in WP5):
+//!   shared   origin, pkce, auth, secure_store, settings, state, host, commands
+//!   desktop  loopback (RFC 8252 redirect), menu, window::geometry
+//!   iOS      signin.rs's ASWebAuthenticationSession arm, ios.rs + mobile_cmds.rs
+//!            (server setup, app lock, APNs) over plugins/prism-ios (Swift)
+
+mod attachment_save;
+mod auth;
+mod capture;
+#[cfg(desktop)]
+mod capture_window;
+mod commands;
+mod confirm;
+mod dropfiles;
+mod export;
+mod export_archive;
+mod host;
+mod links;
+#[cfg(target_os = "ios")]
+mod ios;
+#[cfg(desktop)]
+mod loopback;
+#[cfg(desktop)]
+mod menu;
+mod mobile_cmds;
+mod native_cmds;
+mod notify;
+mod origin;
+mod pairing;
+mod pkce;
+mod secure_store;
+mod settings;
+#[cfg(desktop)]
+mod shortcut;
+mod signin;
+mod state;
+#[cfg(desktop)]
+mod tray;
+#[cfg(target_os = "macos")]
+mod updater;
+mod window;
+
+use tauri::utils::config::Csp;
+use tauri::Manager;
+
+use crate::origin::{build_csp_for, ServerOrigin};
+use crate::state::AppState;
+
+pub const MAIN_WINDOW: &str = "main";
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let mut context = tauri::generate_context!();
+
+    // Resolve the server origin BEFORE building the app: the CSP is derived
+    // from it (desktop: fixed for the life of the process; iOS: re-applied to
+    // every page load, window.rs).
+    let identifier = context.config().identifier.clone();
+    let settings_dir = settings::settings_dir(&identifier);
+    let saved = settings_dir
+        .as_deref()
+        .map(settings::load)
+        .and_then(|s| s.server_origin)
+        .and_then(|o| match ServerOrigin::parse(&o) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                log::warn!("ignoring saved server origin: {e}");
+                None
+            }
+        });
+    // There is no built-in server. Desktop may carry one baked in at build
+    // time (`PRISM_SERVER_ORIGIN`); otherwise — and always on iOS — the app
+    // starts with none and the page asks ("Enter your server").
+    #[cfg(desktop)]
+    let origin = saved.or_else(ServerOrigin::build_default);
+    #[cfg(mobile)]
+    let origin = saved;
+    context.config_mut().app.security.csp = Some(Csp::Policy(build_csp_for(origin.as_ref())));
+    // In-app updates: configured only when build.rs compiled in the committed key + an endpoint
+    // (updater.rs; fail closed). It runs in Rust, so nothing about it touches the page's CSP.
+    #[cfg(target_os = "macos")]
+    if let Some(u) = updater::built_in() {
+        context
+            .config_mut()
+            .plugins
+            .0
+            .insert("updater".into(), updater::plugin_config(&u));
+    }
+
+    let state = AppState::new(origin, identifier, settings_dir);
+
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .manage(state)
+        .manage(notify::NotifyState::default())
+        .manage(links::LinkState::default())
+        .manage(pairing::PairingState::default())
+        .manage(export_archive::SaveState::default())
+        .manage(attachment_save::AttachmentSaves::default())
+        .invoke_handler(tauri::generate_handler![
+            commands::get_token,
+            commands::sign_in,
+            commands::sign_out,
+            commands::get_server_origin,
+            commands::set_server_origin,
+            commands::open_external,
+            native_cmds::quick_capture,
+            native_cmds::notify,
+            native_cmds::export_note,
+            native_cmds::save_export,
+            attachment_save::save_attachment,
+            mobile_cmds::reset_server,
+            mobile_cmds::get_app_settings,
+            mobile_cmds::set_app_lock,
+            mobile_cmds::push_register,
+            mobile_cmds::push_status,
+            mobile_cmds::push_take_opened,
+        ])
+        .setup(|app| {
+            #[cfg(desktop)]
+            {
+                let menu = menu::build(app.handle())?;
+                app.set_menu(menu)?;
+                app.on_menu_event(|app, event| menu::on_event(app, event.id().as_ref()));
+            }
+            let _w = window::create_main_window(app)?;
+            #[cfg(desktop)]
+            {
+                window::geometry::ensure_visible(&_w);
+                // WP4.2: menu-bar icon + global quick-capture shortcut.
+                if let Err(e) = tray::init(app.handle()) {
+                    log::warn!("could not create the tray icon: {e}");
+                }
+                let dir = app.state::<AppState>().settings_dir.clone();
+                shortcut::register(app.handle(), dir.as_deref());
+            }
+            #[cfg(target_os = "macos")]
+            updater::schedule(app.handle());
+            // iOS: apply the saved app lock before the first frame (a cover
+            // view goes up and Face ID runs as soon as the app is active).
+            #[cfg(target_os = "ios")]
+            {
+                let lock = app
+                    .state::<AppState>()
+                    .settings_dir
+                    .as_deref()
+                    .map(settings::load)
+                    .and_then(|s| s.app_lock)
+                    .unwrap_or_default();
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Ok(ios) = ios::plugin(&handle) {
+                        if let Err(e) = ios
+                            .configure_lock(lock.mode.as_str(), lock.minutes, true)
+                            .await
+                        {
+                            log::warn!("app lock: {e}");
+                        }
+                    }
+                    // Only now may an incoming link be handed to the page: the
+                    // lock (if any) is up, and links::deliver waits for the unlock.
+                    handle.state::<links::LinkState>().set_lock_ready();
+                    links::deliver(&handle);
+                });
+                // An export whose share sheet never closed (the app was killed)
+                // must not stay in the app's tmp folder.
+                export_archive::purge_share_root(&std::env::temp_dir());
+            }
+            Ok(())
+        });
+
+    #[cfg(target_os = "ios")]
+    {
+        builder = builder.plugin(tauri_plugin_prism_ios::init());
+    }
+
+    #[cfg(desktop)]
+    {
+        builder = builder
+            .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+            .on_window_event(on_window_event);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        builder = updater::register(builder);
+    }
+
+    let app = builder
+        .build(context)
+        .expect("error while building Prism Client");
+    app.run(|_app, _event| {
+        // A universal link or a prism:// deep link (NP-NA-04). Validated in
+        // links.rs; the app never navigates to what it is handed.
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        if let tauri::RunEvent::Opened { urls } = &_event {
+            links::on_opened(_app, urls);
+        }
+        #[cfg(desktop)]
+        match _event {
+            tauri::RunEvent::ExitRequested { .. } => save_geometry(_app),
+            // Dock-icon click while the main window is hidden (WP4.2: closing
+            // the main window hides it so the tray keeps working).
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => tray::show_main(_app),
+            _ => {}
+        }
+    });
+}
+
+#[cfg(desktop)]
+fn on_window_event(w: &tauri::Window, event: &tauri::WindowEvent) {
+    if w.label() != MAIN_WINDOW {
+        return;
+    }
+    let app = w.app_handle();
+    match event {
+        // Closing the main window hides it: the app lives on in the menu bar
+        // (tray). Quit = Cmd-Q / tray "Quit Prism".
+        tauri::WindowEvent::CloseRequested { api, .. } => {
+            save_geometry(app);
+            api.prevent_close();
+            let _ = w.hide();
+        }
+        // A notification click activates the app; if one for an agent session
+        // was shown moments ago, open that session (a DOM event, not a
+        // navigation: see notify.rs).
+        tauri::WindowEvent::Focused(true) => {
+            let pending = app
+                .state::<notify::NotifyState>()
+                .take_pending(std::time::Instant::now());
+            if let (Some(id), Some(win)) = (pending, app.get_webview_window(MAIN_WINDOW)) {
+                let _ = win.eval(notify::open_session_js(&id));
+            }
+        }
+        // Files dropped on the window: the shell reads the text ones (caps in
+        // dropfiles.rs) and hands CONTENT to the page as a DOM event.
+        tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
+            let paths = paths.clone();
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let outcome =
+                    tauri::async_runtime::spawn_blocking(move || dropfiles::process(&paths))
+                        .await
+                        .unwrap_or_default();
+                if outcome.notes.is_empty() && outcome.skipped.is_empty() {
+                    return;
+                }
+                if let Some(win) = app.get_webview_window(MAIN_WINDOW) {
+                    let _ = win.eval(dropfiles::deliver_js(&outcome));
+                }
+            });
+        }
+        _ => {}
+    }
+}
+
+#[cfg(desktop)]
+pub(crate) fn save_geometry<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let state = app.state::<AppState>();
+    if let (Some(dir), Some(w)) = (
+        state.settings_dir.as_deref(),
+        app.get_webview_window(MAIN_WINDOW),
+    ) {
+        window::geometry::save(&w, dir);
+    }
+}

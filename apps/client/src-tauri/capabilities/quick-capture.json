@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "quick-capture",
+  "description": "The quick-capture window (WP4.2) may call exactly one command, quick_capture: it POSTs the typed note from Rust with the stored device token. It is NOT granted get_token (the bearer never enters this webview), nor any other command, plugin or core:* permission.",
+  "windows": ["quick-capture"],
+  "platforms": ["macOS", "windows", "linux"],
+  "permissions": ["allow-quick-capture"]
+}

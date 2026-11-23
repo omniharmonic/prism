@@ -1,0 +1,339 @@
+import { create } from "zustand";
+import type { ContentType, TabState } from "../../lib/types";
+import type { ContentFont } from "../../components/renderers/DocumentChrome";
+
+/** Push a newly-active tab onto the nav history: truncate any forward entries,
+ *  skip consecutive duplicates, and cap length. Returns the new history slice. */
+function pushNav(history: string[], index: number, tabId: string): { navHistory: string[]; navIndex: number } {
+  const base = history.slice(0, index + 1);
+  if (base[base.length - 1] !== tabId) base.push(tabId);
+  const capped = base.slice(-100);
+  return { navHistory: capped, navIndex: capped.length - 1 };
+}
+
+/** NP-SB-11: the desktop sidebar's width and collapsed state persist per device. */
+const SIDEBAR_KEY = "prism:sidebar";
+const clampSidebar = (width: number) => Math.max(200, Math.min(400, Math.round(width)));
+function readSidebar(): { open: boolean; width: number } {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SIDEBAR_KEY) ?? "null") as { open?: unknown; width?: unknown } | null;
+    if (raw && typeof raw === "object") {
+      return { open: raw.open !== false, width: typeof raw.width === "number" && Number.isFinite(raw.width) ? clampSidebar(raw.width) : 224 };
+    }
+  } catch { /* private window / no storage: defaults */ }
+  return { open: true, width: 224 };
+}
+/** Called by the desktop shell only — the phone drawer's open state is never persisted. */
+export function persistSidebar(open: boolean, width: number): void {
+  try { localStorage.setItem(SIDEBAR_KEY, JSON.stringify({ open, width: clampSidebar(width) })); } catch { /* ignore */ }
+}
+const savedSidebar = readSidebar();
+
+export interface PendingEdit {
+  noteId: string;
+  content: string;
+  mode: "append" | "replace";
+}
+
+interface UIStore {
+  // Focus is transient; saved sidebar preferences stay intact.
+  focusMode: boolean;
+  toggleFocusMode: () => void;
+  // Sidebar
+  sidebarOpen: boolean;
+  sidebarWidth: number;
+
+  // Context panel
+  contextPanelOpen: boolean;
+  contextPanelWidth: number;
+  contextPanelTab: "agent" | "metadata" | "links" | "history" | "graph";
+
+  // Tabs
+  openTabs: TabState[];
+  activeTabId: string | null;
+  /** Visit history of active tab ids (for back/forward navigation). */
+  navHistory: string[];
+  navIndex: number;
+  /** Bumped by back/forward: the canvas restores that page's scroll position (NP-SR-07). */
+  navRestore: number;
+
+  // Command bar
+  commandBarOpen: boolean;
+  settingsOpen: boolean;
+  setSettingsOpen: (open: boolean) => void;
+
+  // Inline prompt
+  inlinePromptOpen: boolean;
+  inlinePromptPosition: { x: number; y: number } | null;
+  inlinePromptSelection: string;
+
+  // Pending editor edit (agent → editor communication)
+  pendingEdit: PendingEdit | null;
+
+  // Graph fullscreen
+  graphFullscreen: boolean;
+
+  // Project-tree "collapse all" signal — a monotonic counter the nav button
+  // bumps; ProjectTree's folder rows watch it and reset to closed. (The open
+  // state is local to each tree row, so a shared signal is the simplest way to
+  // collapse the whole tree at once — mirrors the prism:vault-changed pattern.)
+  navCollapseSignal: number;
+
+  // Active document's reading font — mirrored here so the control can live in the
+  // bottom bar (desktop) / More sheet (mobile) instead of the cluttered top bar.
+  // The open document stays the source of truth and registers its setter.
+  docFont: ContentFont;
+  docFontSetter: ((f: ContentFont) => void) | null;
+
+  // Ghost text: agent-generated content waiting for accept/reject
+  ghostText: { noteId: string; content: string; position: "cursor" | "end" } | null;
+  /** Bumped when a note's content is replaced out-of-band (a version restore) —
+   *  Canvas keys the renderer on it so the editor remounts on the new content. */
+  noteRevisions: Record<string, number>;
+
+  // Actions
+  toggleSidebar: () => void;
+  setSidebarWidth: (width: number) => void;
+  toggleContextPanel: () => void;
+  setContextPanelWidth: (width: number) => void;
+  setContextPanelTab: (tab: UIStore["contextPanelTab"]) => void;
+
+  openTab: (noteId: string, title: string, type: ContentType) => void;
+  /** NP-SB-07 "Open in new tab": add the page as a tab WITHOUT leaving the current one. */
+  openTabInBackground: (noteId: string, title: string, type: ContentType) => void;
+  closeTab: (tabId: string) => void;
+  /** Reopen the tab closed last (and not open again since), where it was. False when there is none. */
+  reopenClosedTab: () => boolean;
+  closeTabs: (noteId: string) => void;
+  closeAllTabs: () => void;
+  setActiveTab: (tabId: string) => void;
+  markTabDirty: (tabId: string, isDirty: boolean) => void;
+  renameTab: (noteId: string, newTitle: string) => void;
+  /** Reorder open tabs by moving the dragged tab to the target tab's position. */
+  reorderTabs: (fromId: string, toId: string) => void;
+  /** Step back/forward through the active-tab visit history. */
+  navBack: () => void;
+  navForward: () => void;
+
+  openCommandBar: () => void;
+  closeCommandBar: () => void;
+
+  openInlinePrompt: (position: { x: number; y: number }, selection: string) => void;
+  closeInlinePrompt: () => void;
+
+  setGraphFullscreen: (open: boolean) => void;
+
+  /** Bump the collapse signal so every project-tree folder closes. */
+  collapseNav: () => void;
+
+  /** The active document registers its current font + setter (null = no document
+   *  with a font control is open, so the bottom-bar/sheet control hides). */
+  registerDocFont: (value: ContentFont | null, setter: ((f: ContentFont) => void) | null) => void;
+
+  setPendingEdit: (edit: PendingEdit) => void;
+  clearPendingEdit: () => void;
+
+  setGhostText: (ghost: { noteId: string; content: string; position: "cursor" | "end" }) => void;
+  bumpNoteRevision: (noteId: string) => void;
+  acceptGhostText: () => void;
+  rejectGhostText: () => void;
+}
+
+/** Tabs closed in this session, newest last, with where each stood ("Reopen closed tab"). In memory
+ *  only, and emptied with the tabs when the account or vault changes (`closeAllTabs`). */
+const CLOSED_TABS_MAX = 20;
+let closedTabs: Array<{ tab: TabState; index: number }> = [];
+/** Is there a closed tab to bring back? (Not reactive: read when a menu or palette is built.) */
+export const hasClosedTab = (): boolean => closedTabs.some((c) => !useUIStore.getState().openTabs.some((t) => t.noteId === c.tab.noteId));
+
+export const useUIStore = create<UIStore>((set, get) => ({
+  focusMode: false,
+  toggleFocusMode: () => set(s => ({ focusMode: !s.focusMode })),
+  sidebarOpen: savedSidebar.open,
+  sidebarWidth: savedSidebar.width,
+  contextPanelOpen: false,
+  contextPanelWidth: 320,
+  contextPanelTab: "metadata",
+  openTabs: [],
+  navHistory: [],
+  navIndex: -1,
+  navRestore: 0,
+  activeTabId: null,
+  commandBarOpen: false,
+  settingsOpen: false,
+  setSettingsOpen: (open) => set({ settingsOpen: open }),
+  inlinePromptOpen: false,
+  inlinePromptPosition: null,
+  inlinePromptSelection: "",
+  graphFullscreen: false,
+  navCollapseSignal: 0,
+  docFont: "sans",
+  docFontSetter: null,
+  pendingEdit: null,
+  ghostText: null,
+  noteRevisions: {},
+
+  toggleSidebar: () => set((s) => ({ focusMode: false, sidebarOpen: s.focusMode || !s.sidebarOpen })),
+  setSidebarWidth: (width) => set({ sidebarWidth: clampSidebar(width) }),
+
+  toggleContextPanel: () => set((s) => ({ focusMode: false, contextPanelOpen: s.focusMode || !s.contextPanelOpen })),
+  setContextPanelWidth: (width) => set({ contextPanelWidth: Math.max(260, Math.min(480, width)) }),
+  setContextPanelTab: (tab) => set({ contextPanelTab: tab }),
+  setGraphFullscreen: (open) => set({ graphFullscreen: open }),
+  collapseNav: () => set((s) => ({ navCollapseSignal: s.navCollapseSignal + 1 })),
+
+  registerDocFont: (value, setter) =>
+    set({ docFont: value ?? "sans", docFontSetter: setter }),
+
+  openTab: (noteId, title, type) => {
+    const s = get();
+    const existing = s.openTabs.find((t) => t.noteId === noteId);
+    if (existing) {
+      set({ activeTabId: existing.id, ...pushNav(s.navHistory, s.navIndex, existing.id) });
+      return;
+    }
+    const newTab: TabState = {
+      id: `tab-${noteId}`,
+      noteId,
+      title,
+      type,
+      isDirty: false,
+    };
+    set({
+      openTabs: [...s.openTabs, newTab],
+      activeTabId: newTab.id,
+      ...pushNav(s.navHistory, s.navIndex, newTab.id),
+    });
+  },
+
+  openTabInBackground: (noteId, title, type) => {
+    const s = get();
+    if (s.openTabs.some((t) => t.noteId === noteId)) return;
+    // With nothing open there is no "current page" to stay on.
+    if (!s.activeTabId) { s.openTab(noteId, title, type); return; }
+    set({ openTabs: [...s.openTabs, { id: `tab-${noteId}`, noteId, title, type, isDirty: false }] });
+  },
+
+  closeTab: (tabId) => {
+    const { openTabs, activeTabId } = get();
+    const idx = openTabs.findIndex((t) => t.id === tabId);
+    const filtered = openTabs.filter((t) => t.id !== tabId);
+
+    let nextActive = activeTabId;
+    if (activeTabId === tabId) {
+      if (filtered.length === 0) {
+        nextActive = null;
+      } else {
+        nextActive = filtered[Math.min(idx, filtered.length - 1)].id;
+      }
+    }
+
+    // Remembered for "Reopen closed tab" (this session only; `closeTabs` — a page that was
+    // trashed or lost — deliberately is not).
+    const closed = openTabs[idx];
+    if (closed) closedTabs = [...closedTabs.filter((c) => c.tab.noteId !== closed.noteId), { tab: { ...closed, isDirty: false }, index: idx }].slice(-CLOSED_TABS_MAX);
+    set({ openTabs: filtered, activeTabId: nextActive });
+  },
+
+  reopenClosedTab: () => {
+    const s = get();
+    for (;;) {
+      const last = closedTabs.pop();
+      if (!last) return false;
+      if (s.openTabs.some((t) => t.noteId === last.tab.noteId)) continue; // opened again since
+      const openTabs = s.openTabs.slice();
+      openTabs.splice(Math.min(last.index, openTabs.length), 0, last.tab);
+      set({ openTabs, activeTabId: last.tab.id, ...pushNav(s.navHistory, s.navIndex, last.tab.id) });
+      return true;
+    }
+  },
+
+  closeAllTabs: () => { closedTabs = []; set({ openTabs: [], activeTabId: null, navHistory: [], navIndex: -1 }); },
+
+  closeTabs: (noteId) => {
+    const { openTabs, activeTabId } = get();
+    const filtered = openTabs.filter((t) => t.noteId !== noteId);
+    let nextActive = activeTabId;
+    if (activeTabId && !filtered.find((t) => t.id === activeTabId)) {
+      nextActive = filtered.length > 0 ? filtered[filtered.length - 1].id : null;
+    }
+    set({ openTabs: filtered, activeTabId: nextActive });
+  },
+
+  setActiveTab: (tabId) =>
+    set((s) => ({ activeTabId: tabId, ...pushNav(s.navHistory, s.navIndex, tabId) })),
+
+  markTabDirty: (tabId, isDirty) =>
+    set((s) => ({
+      openTabs: s.openTabs.map((t) =>
+        t.id === tabId ? { ...t, isDirty } : t,
+      ),
+    })),
+
+  renameTab: (noteId, newTitle) =>
+    set((s) => ({
+      openTabs: s.openTabs.map((t) =>
+        t.noteId === noteId ? { ...t, title: newTitle } : t,
+      ),
+    })),
+
+  reorderTabs: (fromId, toId) =>
+    set((s) => {
+      if (fromId === toId) return s;
+      const from = s.openTabs.findIndex((t) => t.id === fromId);
+      const to = s.openTabs.findIndex((t) => t.id === toId);
+      if (from === -1 || to === -1) return s;
+      const next = s.openTabs.slice();
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return { openTabs: next };
+    }),
+
+  navBack: () =>
+    set((s) => {
+      let i = s.navIndex - 1;
+      while (i >= 0 && !s.openTabs.find((t) => t.id === s.navHistory[i])) i--;
+      if (i < 0) return s;
+      return { navIndex: i, activeTabId: s.navHistory[i], navRestore: s.navRestore + 1 };
+    }),
+
+  navForward: () =>
+    set((s) => {
+      let i = s.navIndex + 1;
+      while (i < s.navHistory.length && !s.openTabs.find((t) => t.id === s.navHistory[i])) i++;
+      if (i >= s.navHistory.length) return s;
+      return { navIndex: i, activeTabId: s.navHistory[i], navRestore: s.navRestore + 1 };
+    }),
+
+  openCommandBar: () => set({ commandBarOpen: true }),
+  closeCommandBar: () => set({ commandBarOpen: false }),
+
+  openInlinePrompt: (position, selection) => set({
+    inlinePromptOpen: true,
+    inlinePromptPosition: position,
+    inlinePromptSelection: selection,
+  }),
+  closeInlinePrompt: () => set({
+    inlinePromptOpen: false,
+    inlinePromptPosition: null,
+    inlinePromptSelection: "",
+  }),
+
+  setPendingEdit: (edit) => set({ pendingEdit: edit }),
+  clearPendingEdit: () => set({ pendingEdit: null }),
+
+  setGhostText: (ghost) => set({ ghostText: ghost }),
+  bumpNoteRevision: (noteId) =>
+    set((st) => ({ noteRevisions: { ...st.noteRevisions, [noteId]: (st.noteRevisions[noteId] ?? 0) + 1 } })),
+  acceptGhostText: () => {
+    const { ghostText } = get();
+    if (ghostText) {
+      // Convert ghost text to a pending edit that the editor will apply
+      set({
+        pendingEdit: { noteId: ghostText.noteId, content: ghostText.content, mode: ghostText.position === "cursor" ? "replace" : "append" },
+        ghostText: null,
+      });
+    }
+  },
+  rejectGhostText: () => set({ ghostText: null }),
+}));

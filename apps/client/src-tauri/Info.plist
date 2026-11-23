@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged into the bundle's Info.plist by the Tauri bundler (macOS, and iOS once that
+     target is in the tree). Registers the prism:// deep-link scheme (NP-NA-04):
+     prism://page/<id>, prism://inbox[/<id>], prism://agent[/<id>] — validated in
+     src/links.rs; nothing else on the scheme is handled (prism://auth/callback, the
+     sign-in redirect, is refused there). Universal links need no entry here: they
+     come from the Associated Domains ENTITLEMENT, generated per install by
+     scripts/universal-links.mjs. -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleURLName</key>
+			<string>com.benjaminlife.prism.client</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>prism</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

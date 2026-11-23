@@ -1,0 +1,320 @@
+/**
+ * Auth routes — invite-only accounts with passwords.
+ *
+ *  - /login            email + password → session
+ *  - /register         accept an invite (token) → set name + password → session
+ *  - /invite-info      look up an invite token (so the register screen shows the email)
+ *  - /invite           OWNER only: invite an email (creates + emails an invite)
+ *  - /set-password     signed-in user sets/changes their password (owner bootstrap)
+ *  - /request,/callback OWNER-only magic link, for first-run bootstrap + recovery
+ *  - /logout, /me
+ *
+ * Self-signup is impossible: registration requires a valid owner-issued invite,
+ * and the magic link only works for the owner email. Strangers can't authenticate.
+ */
+import { Hono } from "hono";
+import { config, emailEnabled } from "../config";
+import { startSession, endSession, readSession } from "../auth/session";
+import { requestMagicLink, redeemMagicLink } from "../auth/magiclink";
+import { createInvite, inviteForToken, consumeInvite } from "../auth/invite";
+import { hashPassword, verifyPassword, passwordProblem } from "../auth/password";
+import { getUser, setAccount, setUserPassword, ensureUser, setUserProfile, resolveWorkspaceId, getWorkspace } from "../db";
+import { resolveActor, requestVia } from "../auth/actor";
+import { csrfRefusal } from "./actions";
+import { recordAction } from "../actions/store";
+import { trashPrivatePagesOf, removeAccount } from "../account-delete";
+import { deleteCookie } from "hono/cookie";
+import { DEVICE_TOKEN_PREFIX, bearerFromHeader, verifyDeviceToken, revokeOtherDevices } from "../auth/device";
+import { deviceAuth, pendingDeviceRequest, DEVICE_CONTINUE_PATH } from "./device";
+import { localSignin } from "./local-signin";
+import { localReach } from "./local-reach";
+import { pairing } from "./pairing";
+import { consumeRateLimit, rateLimited, rateLimitClientKey } from "../middleware/ratelimit";
+import type { Context } from "hono";
+
+export const auth = new Hono();
+
+// Native sign-in (WP2.1): /auth/device/* + /auth/devices — see routes/device.ts.
+auth.route("/", deviceAuth);
+// Owner sign-in without email: /auth/local/link (host CLI) + /auth/local/signin — routes/local-signin.ts.
+auth.route("/", localSignin);
+// Reachability record from the host CLI (`prism reach`): /auth/local/reach — routes/local-reach.ts.
+auth.route("/", localReach);
+// QR pairing of a phone (D-G): /auth/pair/* — routes/pairing.ts, rules in auth/pairing.ts.
+auth.route("/", pairing);
+
+/** The signed-in email from a browser session, else from a native device token
+ *  (`Authorization: Bearer pd_…`). Used by the self-service account routes a
+ *  native client needs; bootstrap-only routes (/set-password) stay session-only. */
+function accountIdentity(c: Context): { email: string; deviceId: string | null } | null {
+  const s = readSession(c);
+  if (s) return { email: s.email, deviceId: null };
+  const b = bearerFromHeader(c.req.header("authorization"));
+  const dev = b?.startsWith(DEVICE_TOKEN_PREFIX) ? verifyDeviceToken(b) : null;
+  return dev ? { email: dev.email, deviceId: dev.id } : null;
+}
+const accountEmail = (c: Context): string | null => accountIdentity(c)?.email ?? null;
+
+const norm = (e: string) => e.trim().toLowerCase();
+const validEmail = (e?: string): e is string => !!e && /.+@.+\..+/.test(e);
+
+// ---- password login ----
+auth.post("/login", async (c) => {
+  const { email, password } = await c.req.json<{ email?: string; password?: string }>();
+  if (!validEmail(email) || !password) return c.json({ error: "invalid_credentials" }, 401);
+  const u = getUser(norm(email));
+  // Constant-ish path + generic error: never reveal whether the account exists.
+  if (!u || !verifyPassword(password, u.password_hash)) return c.json({ error: "invalid_credentials" }, 401);
+  startSession(c, u.email);
+  return c.json({ ok: true, email: u.email, isOwner: u.email === config.ownerEmail });
+});
+
+// ---- registration via invite ----
+auth.get("/invite-info", (c) => {
+  const token = c.req.query("token");
+  const inv = token ? inviteForToken(token) : null;
+  if (!inv) return c.json({ valid: false }, 404);
+  return c.json({ valid: true, email: inv.email, name: inv.name });
+});
+
+auth.post("/register", async (c) => {
+  const { token, name, password } = await c.req.json<{ token?: string; name?: string; password?: string }>();
+  if (!token || !name?.trim()) return c.json({ error: "bad_request" }, 400);
+  const pwErr = passwordProblem(password ?? "");
+  if (pwErr) return c.json({ error: pwErr }, 400);
+  // One door (review R4 I-a): an invite never REPLACES an existing password. Checked before
+  // the invite is consumed, so a refused attempt changes nothing.
+  const peek = inviteForToken(token);
+  if (peek && getUser(peek.email)?.password_hash) return c.json({ error: "account_exists", detail: "This account already has a password. Sign in, or change it with the current one." }, 409);
+  const inv = consumeInvite(token);
+  if (!inv) return c.json({ error: "invalid_or_expired_invite" }, 400);
+  if (getUser(inv.email)?.password_hash) return c.json({ error: "account_exists" }, 409);
+  setAccount(inv.email, name.trim(), hashPassword(password!));
+  startSession(c, inv.email);
+  return c.json({ ok: true, email: inv.email });
+});
+
+// ---- owner bootstrap: set/replace your password while signed in ----
+auth.post("/set-password", async (c) => {
+  const s = readSession(c);
+  if (!s) return c.json({ error: "unauthorized" }, 401);
+  // First password only (review C1): once one exists, only /change-password — which
+  // checks the current password — may replace it. A lifted session cannot take over.
+  if (getUser(s.email)?.password_hash) return c.json({ error: "password_exists", detail: "Change your password with your current one (Settings → Account)." }, 409);
+  const { password, name } = await c.req.json<{ password?: string; name?: string }>();
+  const pwErr = passwordProblem(password ?? "");
+  if (pwErr) return c.json({ error: pwErr }, 400);
+  if (name?.trim()) setAccount(s.email, name.trim(), hashPassword(password!));
+  else setUserPassword(s.email, hashPassword(password!));
+  return c.json({ ok: true });
+});
+
+// ---- account settings: update your own profile (name + avatar) ----
+// Session-gated; anyone signed in manages their OWN account. Email is the account
+// identity (primary key) and is NOT changed here. Same endpoint for owner + members.
+const MAX_AVATAR_CHARS = 350_000; // ~256KB as a data: URL (client resizes small)
+auth.put("/profile", async (c) => {
+  const email = accountEmail(c);
+  if (!email) return c.json({ error: "unauthorized" }, 401);
+  const s = { email };
+  const { name, avatar } = await c.req.json<{ name?: string; avatar?: string | null }>().catch(() => ({}) as { name?: string; avatar?: string | null });
+  const patch: { name?: string; avatar?: string | null } = {};
+  if (name !== undefined) {
+    if (typeof name !== "string" || !name.trim() || name.length > 120) return c.json({ error: "invalid_name" }, 400);
+    patch.name = name.trim();
+  }
+  if (avatar !== undefined) {
+    if (avatar === null || avatar === "") {
+      patch.avatar = null;
+    } else if (typeof avatar !== "string" || !avatar.startsWith("data:image/") || avatar.length > MAX_AVATAR_CHARS) {
+      return c.json({ error: "invalid_avatar", detail: "avatar must be a small data:image/ URL" }, 400);
+    } else {
+      patch.avatar = avatar;
+    }
+  }
+  if (patch.name === undefined && patch.avatar === undefined) return c.json({ error: "nothing_to_update" }, 400);
+  setUserProfile(s.email, patch);
+  const u = getUser(s.email);
+  return c.json({ ok: true, name: u?.name ?? null, avatar: u?.avatar ?? null });
+});
+
+// ---- change your password (verifies the current one) ----
+// Distinct from /set-password (owner/first-run bootstrap, no current password):
+// this requires the existing password, so a hijacked session can't silently
+// change it. If the account has no password yet, a browser SESSION may set the
+// first one; a native device token may NOT (WP2.1 L2 — a stolen device token must
+// never be able to mint a password, i.e. a new login method). On success every
+// OTHER device token of the account is revoked ONLY when the change is made from a
+// device (the calling device is kept); a change made with a browser session revokes no
+// device (one door, review C1 — it must not be able to reopen first-device sign-in).
+export const CHANGE_PASSWORD_FAILURES = { account: 5, client: 10 } as const;
+const CHANGE_PASSWORD_WINDOW_MS = 10 * 60_000;
+export const changePasswordKeys = (email: string, client: string) => ({
+  account: `auth-change-password:acct:${norm(email)}`,
+  client: `auth-change-password:ip:${client}`,
+});
+auth.post("/change-password", async (c) => {
+  const who = accountIdentity(c);
+  if (!who) return c.json({ error: "unauthorized" }, 401);
+  const s = { email: who.email };
+  const { currentPassword, newPassword } = await c.req.json<{ currentPassword?: string; newPassword?: string }>().catch(() => ({}) as { currentPassword?: string; newPassword?: string });
+  const pwErr = passwordProblem(newPassword ?? "");
+  if (pwErr) return c.json({ error: pwErr }, 400);
+  const u = getUser(s.email);
+  if (!u?.password_hash && who.deviceId) {
+    return c.json({ error: "password_setup_requires_browser", detail: "Set your first password from a signed-in browser." }, 403);
+  }
+  if (u?.password_hash) {
+    // Wrong current passwords are rate-limited per account AND per client (security review):
+    // a lifted session or device token must not be a password-guessing oracle. Only failures
+    // count; while either budget is spent even the right password answers 429.
+    const keys = changePasswordKeys(s.email, rateLimitClientKey(c));
+    const wait = Math.max(rateLimited(keys.account, CHANGE_PASSWORD_FAILURES.account) ?? 0, rateLimited(keys.client, CHANGE_PASSWORD_FAILURES.client) ?? 0);
+    if (wait > 0) {
+      c.header("Retry-After", String(wait));
+      return c.json({ error: "rate_limited", retryAfter: wait }, 429);
+    }
+    if (!verifyPassword(currentPassword ?? "", u.password_hash)) {
+      consumeRateLimit(keys.account, CHANGE_PASSWORD_FAILURES.account, CHANGE_PASSWORD_WINDOW_MS);
+      consumeRateLimit(keys.client, CHANGE_PASSWORD_FAILURES.client, CHANGE_PASSWORD_WINDOW_MS);
+      return c.json({ error: "wrong_password" }, 403);
+    }
+  }
+  setUserPassword(s.email, hashPassword(newPassword!));
+  // Devices are revoked only from a DEVICE credential (review C1): a password change made
+  // with a browser session must not be able to empty the account of devices, which would
+  // reopen first-device sign-in. Revoke devices from a signed-in device instead.
+  const revokedDevices = who.deviceId ? await revokeOtherDevices(s.email, who.deviceId) : 0;
+  return c.json({ ok: true, revokedDevices, ...(who.deviceId ? {} : { devicesKept: true }) });
+});
+
+// ---- delete your own account (App Store 5.1.1(v); docs/account-deletion.md) ----
+// A person, signed in with a browser session or a native device token — never an agent
+// (MCP / PAT), the loopback owner token or a capability link. A password account re-enters
+// its password (a device token alone is not enough); an account with no password may delete
+// itself only from a browser session. The SERVER OWNER cannot: the server would be left
+// without its owner (409 owner_account — they remove the server instead).
+const deletingAccounts = new Set<string>();
+auth.post("/account/delete", async (c) => {
+  const via = requestVia(c);
+  if (via !== "session" && via !== "device") {
+    const bearer = bearerFromHeader(c.req.header("authorization"));
+    // A credential that is not a person's (agent, host token, share link) → 403; nothing, or a
+    // session / device token that no longer exists (e.g. after the account was deleted) → 401.
+    const notAPerson = via === "mcp" || via === "local-token" || via === "capability" || (!!bearer && !bearer.startsWith(DEVICE_TOKEN_PREFIX));
+    return notAPerson
+      ? c.json({ error: "human_origin_required", detail: "Delete an account from the app or a signed-in browser." }, 403)
+      : c.json({ error: "unauthorized" }, 401);
+  }
+  const who = accountIdentity(c);
+  if (!who) return c.json({ error: "unauthorized" }, 401);
+  const csrf = csrfRefusal(c, via);
+  if (csrf) return csrf;
+  const email = norm(who.email);
+  if (email === config.ownerEmail) {
+    return c.json({ error: "owner_account", detail: "This is the server owner's account. It cannot be deleted from here — removing the server removes it." }, 409);
+  }
+  const body = await c.req.json<{ confirm?: unknown; password?: unknown }>().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error: "bad_request" }, 400);
+  if (typeof body.confirm !== "string" || norm(body.confirm) !== email) {
+    return c.json({ error: "confirm_mismatch", detail: "Type your account's email address to confirm." }, 400);
+  }
+  const u = getUser(email);
+  if (!u) return c.json({ error: "unauthorized" }, 401);
+  if (u.password_hash) {
+    if (typeof body.password !== "string" || !verifyPassword(body.password, u.password_hash)) return c.json({ error: "wrong_password" }, 403);
+  } else if (via !== "session") {
+    return c.json({ error: "browser_session_required", detail: "This account has no password. Delete it from a signed-in browser." }, 403);
+  }
+  if (deletingAccounts.has(email)) return c.json({ error: "busy", detail: "Your account is already being deleted." }, 409);
+  deletingAccounts.add(email);
+  try {
+    let pages;
+    try {
+      pages = await trashPrivatePagesOf(email);
+    } catch {
+      recordAction({ actorEmail: DELETED_ACTOR, via, origin: "human", action: "account.delete", vaultId: "primary", target: {}, status: "failed", error: "a vault could not be reached" });
+      return c.json({ error: "vault_unavailable", detail: "Your private pages could not be moved to the Trash, so nothing was deleted. Try again in a moment." }, 503);
+    }
+    const rows = await removeAccount(email);
+    // Counts only — the audit row names no account.
+    recordAction({ actorEmail: DELETED_ACTOR, via, origin: "human", action: "account.delete", vaultId: "primary", target: { privatePagesTrashed: pages.trashed, privatePagesReassigned: pages.reassigned, vaults: pages.vaults, ...rows }, status: "ok" });
+    deleteCookie(c, "prism_session", { path: "/" });
+    return c.json({ ok: true, deleted: true, privatePagesTrashed: pages.trashed + pages.reassigned });
+  } finally {
+    deletingAccounts.delete(email);
+  }
+});
+/** `action_audit.actor_email` of an account deletion — never the deleted address. */
+export const DELETED_ACTOR = "[deleted account]";
+
+// ---- owner issues an invite ----
+auth.post("/invite", async (c) => {
+  const s = readSession(c);
+  if (!s || s.email !== config.ownerEmail) return c.json({ error: "forbidden" }, 403);
+  const { email, name } = await c.req.json<{ email?: string; name?: string }>();
+  if (!validEmail(email)) return c.json({ error: "invalid_email" }, 400);
+  // An invite is for a NEW account: never the owner's own address, never an account that
+  // already has a password (R4 I-a — register would otherwise overwrite it).
+  if (norm(email) === config.ownerEmail || getUser(norm(email))?.password_hash) return c.json({ error: "account_exists", detail: "That address already has an account." }, 409);
+  const url = await createInvite(norm(email), name?.trim() ?? null, s.email);
+  return c.json({ ok: true, url });
+});
+
+// ---- owner-only magic link (first-run bootstrap + recovery) ----
+auth.post("/request", async (c) => {
+  const { email } = await c.req.json<{ email?: string }>();
+  if (!validEmail(email)) return c.json({ error: "invalid_email" }, 400);
+  if (norm(email) === config.ownerEmail) await requestMagicLink(email);
+  // `emailDelivery` is a server-wide config fact (is Resend set?), NOT per-user —
+  // so it leaks nothing about who's allowed, but lets the UI tell a no-Resend
+  // operator to read the link from the server console instead of waiting on email.
+  return c.json({ ok: true, emailDelivery: emailEnabled() }); // never reveal who is allowed
+});
+
+auth.get("/callback", (c) => {
+  const token = c.req.query("token");
+  if (!token) return c.redirect("/?login=error");
+  const email = redeemMagicLink(token);
+  // Defense in depth: even a valid magic link only authenticates the owner.
+  if (!email || norm(email) !== config.ownerEmail) return c.redirect("/?login=expired");
+  ensureUser(email);
+  startSession(c, email);
+  // Native sign-in in progress in this browser (WP2.1)? Resume its consent page.
+  if (pendingDeviceRequest(c)) return c.redirect(DEVICE_CONTINUE_PATH);
+  // First-time owner (no password yet) → nudge them to set one for password login.
+  return c.redirect(getUser(email)?.password_hash ? "/" : "/set-password");
+});
+
+auth.post("/logout", (c) => {
+  endSession(c);
+  return c.json({ ok: true });
+});
+
+auth.get("/me", (c) => {
+  const email = accountEmail(c);
+  if (!email) return c.json({ authenticated: false }, 401);
+  const s = { email };
+  const u = getUser(s.email);
+  // The viewer's role is PER-VAULT (the X-Prism-Vault header, resolved by
+  // resolveActor). `isOwner` stays the global server-owner flag; `role` is what
+  // the active workspace grants them (owner/admin/member/guest) — this is what
+  // the frontend gates its management surfaces on, so a member never fires
+  // admin-only /acl/* calls (and gets 403 noise) for a vault they can't manage.
+  const actor = resolveActor(c);
+  // The active workspace (X-Prism-Workspace header → Host subdomain → default),
+  // so the UI can show which workspace is in context + drive the switcher.
+  const workspaceId = resolveWorkspaceId({ workspaceHeader: c.req.header("x-prism-workspace"), hostHeader: c.req.header("host") });
+  const ws = getWorkspace(workspaceId);
+  return c.json({
+    authenticated: true,
+    email: s.email,
+    name: u?.name ?? null,
+    avatar: u?.avatar ?? null,
+    isOwner: s.email === config.ownerEmail,
+    role: actor.kind === "user" ? actor.role : "guest",
+    vaultId: actor.vaultId,
+    workspace: ws ? { id: ws.id, name: ws.name } : { id: workspaceId, name: workspaceId },
+    hasPassword: !!u?.password_hash,
+  });
+});

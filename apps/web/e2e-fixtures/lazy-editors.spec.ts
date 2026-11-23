@@ -1,0 +1,196 @@
+import { fileURLToPath } from "node:url";
+import { test, expect, type Page } from "@playwright/test";
+import { Server } from "@hocuspocus/server";
+import WebSocket from "ws";
+import * as Y from "yjs";
+
+async function collaborativeFixture(page: Page, kind: "code" | "spreadsheet" | "canvas" | "document") {
+  let saved: Uint8Array | undefined;
+  let level: "own" | "view" = "own";
+  const server = new Server({ address: "127.0.0.1", port: 0, quiet: true, debounce: 10,
+    async onAuthenticate({ connectionConfig }) { connectionConfig.readOnly = level === "view"; return { fixture: true }; },
+    async onLoadDocument({ document }) {
+      if (saved) Y.applyUpdate(document, saved);
+      else if (kind === "code") document.getText("codemirror").insert(0, "// LAZY_CODE_BASE");
+      else if (kind === "spreadsheet") {
+        for (const values of [["Name", "Status"], ["LAZY_SHEET_BASE", "Open"]]) {
+          const row = new Y.Array<string>(); row.insert(0, values);
+          document.getArray("rows").push([row]);
+        }
+      }
+      saved = Y.encodeStateAsUpdate(document);
+      document.on("update", () => { saved = Y.encodeStateAsUpdate(document); });
+      return document;
+    },
+  });
+  await server.listen();
+  const sockets: WebSocket[] = [];
+  await page.routeWebSocket(/\/collab(\?|$)/, route => {
+    const socket = new WebSocket(server.webSocketURL); sockets.push(socket);
+    const pending: (string | Buffer)[] = [];
+    route.onMessage(message => socket.readyState === WebSocket.OPEN ? socket.send(message) : pending.push(message));
+    socket.on("open", () => { for (const message of pending) socket.send(message); });
+    socket.on("message", (message, binary) => route.send(binary ? Buffer.from(message as Buffer) : message.toString()));
+    route.onClose(() => socket.close()); socket.on("close", () => route.close({ code: 1000 }));
+  });
+  await page.route("**/auth/me", route => route.fulfill({ json: { authenticated: true, email: "alice@example.test", vaultId: "primary", workspace: { id: "lazy-workspace" } } }));
+  await page.route("**/api/notes/denied-note", route => route.fulfill({ json: { id: "denied-note", path: "Lazy fixture", content: "", _level: level, metadata: { type: kind, language: "typescript" }, tags: [] } }));
+  await page.route("**/api/federated/**", route => route.fulfill({ status: 204 }));
+  return {
+    server,
+    downgrade() {
+      level = "view";
+      for (const doc of server.hocuspocus.documents.values()) for (const connection of doc.getConnections())
+        connection.close({ code: 4403, reason: "Access changed. Reconnect to check your permissions." });
+    },
+    doc: () => [...server.hocuspocus.documents.values()][0]!,
+    async close() { await page.goto("about:blank"); for (const socket of sockets) socket.terminate(); await server.destroy(); },
+  };
+}
+
+test("prose startup requests none of the specialized collaborative editing engines", async ({ page }) => {
+  const engines: string[] = [];
+  page.on("request", request => { if (/\/Collab(Canvas|CodeEditor|Spreadsheet)\.tsx/.test(request.url())) engines.push(request.url()); });
+  const fixture = await collaborativeFixture(page, "document");
+  try {
+    await page.goto("/e2e-fixtures/collab-storage.html?live");
+    await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+    await expect(page.getByText(/^Live(?: · Editing)?$/)).toBeVisible();
+    expect(engines).toEqual([]);
+  } finally { await fixture.close(); }
+});
+
+for (const platform of ["native", "linux"] as const) {
+ test(`a delayed code engine retains its live session and receives remote edits before opening — ${platform}`, async ({ page }) => {
+  if (platform === "linux") await page.addInitScript(() => Object.defineProperty(navigator, "platform", { get: () => "Linux x86_64" }));
+  const modifier = platform === "linux" ? "Control" : "ControlOrMeta";
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  await page.route("**/CollabCodeEditor.tsx*", async route => { await blocked; await route.continue(); });
+  const fixture = await collaborativeFixture(page, "code");
+  try {
+    await page.goto("/e2e-fixtures/collab-storage.html?live");
+    await expect(page.getByRole("status")).toHaveText("Loading code editor…");
+    await expect(page.getByText(/^Live(?: · Editing)?$/)).toBeVisible();
+    const doc = fixture.doc();
+    doc.getText("codemirror").insert(doc.getText("codemirror").length, "\n// REMOTE_DURING_LOAD");
+    const connections = [...doc.getConnections()];
+    release();
+    const editor = page.locator(".cm-content[contenteditable=true]");
+    await expect(editor).toContainText("REMOTE_DURING_LOAD");
+    expect([...doc.getConnections()]).toEqual(connections);
+    await editor.press(`${modifier}+End`);
+    await editor.pressSequentially(" LOCAL_LAZY_EDIT");
+    await expect.poll(() => doc.getText("codemirror").toString()).toContain("LOCAL_LAZY_EDIT");
+    await page.evaluate(() => (window as any).prismCodeBeforeResize = document.querySelector(".cm-content"));
+    for (const width of [390, 1280]) {
+      await page.setViewportSize({ width, height: 844 });
+      await expect(editor).toHaveCSS("font-size", width === 390 ? "16px" : "13px");
+      expect(await page.evaluate(() => (window as any).prismCodeBeforeResize === document.querySelector(".cm-content"))).toBe(true);
+      await expect(editor).toBeFocused();
+    }
+    await editor.press(`${modifier}+z`);
+    await expect(editor).not.toContainText("LOCAL_LAZY_EDIT");
+    await expect(editor).toContainText("REMOTE_DURING_LOAD");
+    // Use the collaborative editor's platform-default redo binding (yUndoManagerKeymap).
+    await editor.press(platform === "native" && process.platform === "darwin" ? "Meta+Shift+z" : `${modifier}+y`);
+    await expect(editor).toContainText("LOCAL_LAZY_EDIT");
+    await page.reload();
+    await expect(editor).toContainText("LOCAL_LAZY_EDIT");
+    await expect(editor).toContainText("REMOTE_DURING_LOAD");
+    fixture.downgrade();
+    const reader = page.locator(".cm-content[contenteditable=false]");
+    await expect(reader).toContainText("LOCAL_LAZY_EDIT");
+    await expect(page.getByText("Live · View only", { exact: true })).toBeVisible();
+    const source = fixture.doc().getText("codemirror").toString();
+    await reader.dispatchEvent("beforeinput", { inputType: "historyUndo", bubbles: true, cancelable: true });
+    await reader.press(`${modifier}+z`);
+    expect(fixture.doc().getText("codemirror").toString()).toBe(source);
+    await expect(reader).toContainText("LOCAL_LAZY_EDIT");
+  } finally { release(); await fixture.close(); }
+});
+}
+
+test("a failed sheet import offers explicit reload and preserves remote cells", async ({ page }) => {
+  let attempts = 0;
+  // The first request and both automatic retries (retryImport) fail; the reload then succeeds.
+  await page.route("**/CollabSpreadsheet.tsx*", route => ++attempts <= 3 ? route.abort("failed") : route.continue());
+  const fixture = await collaborativeFixture(page, "spreadsheet");
+  try {
+    await page.goto("/e2e-fixtures/collab-storage.html?live");
+    await expect(page.getByRole("alert")).toContainText("spreadsheet couldn’t open");
+    await expect(page.getByText(/^Live(?: · Editing)?$/)).toBeVisible();
+    const doc = fixture.doc();
+    const connections = [...doc.getConnections()];
+    const row = doc.getArray<Y.Array<string>>("rows").get(1);
+    doc.transact(() => { row.delete(1, 1); row.insert(1, ["REMOTE_DURING_RETRY"]); });
+    expect([...doc.getConnections()]).toEqual(connections);
+    // Each automatic retry was a REAL request. Safari remembers a failed import like Chromium does but its
+    // error names no URL: the retries used to re-ask the page's own memory (one request in all), so nothing
+    // was retried there — and this test's reload met the route's second and third failure.
+    expect(attempts, "the first request and two fresh retries").toBe(3);
+    await page.getByRole("button", { name: "Reload Prism" }).click();
+    await expect(page.locator('input[value="REMOTE_DURING_RETRY"]')).toBeVisible();
+    const restoredRow = fixture.doc().getArray<Y.Array<string>>("rows").get(1);
+    await page.locator('input[value="LAZY_SHEET_BASE"]').fill("LOCAL_SHEET_EDIT");
+    await expect.poll(() => restoredRow.get(0)).toBe("LOCAL_SHEET_EDIT");
+    await page.reload();
+    await expect(page.locator('input[value="LOCAL_SHEET_EDIT"]')).toBeVisible();
+  } finally { await fixture.close(); }
+});
+
+test("one failed download of an editor is retried with a fresh request and the editor opens — no card, in every browser", async ({ page }) => {
+  let attempts = 0;
+  const urls: string[] = [];
+  await page.route("**/CollabSpreadsheet.tsx*", route => { urls.push(route.request().url()); return ++attempts <= 1 ? route.abort("failed") : route.continue(); });
+  const fixture = await collaborativeFixture(page, "spreadsheet");
+  try {
+    await page.goto("/e2e-fixtures/collab-storage.html?live");
+    await expect(page.locator('input[value="LAZY_SHEET_BASE"]')).toBeVisible();
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    expect(attempts).toBe(2);
+    expect(new URL(urls[1]!).searchParams.get("t"), "the retry is a different URL, so the page's memory of the failure is not what answers").toBeTruthy();
+    expect(new URL(urls[1]!).pathname).toBe(new URL(urls[0]!).pathname);
+  } finally { await fixture.close(); }
+});
+
+test("importedUrl reads exactly one same-origin script from a loader and nothing else", async ({ page }) => {
+  await page.goto("/e2e-fixtures/harness.html");
+  const modulePath = "/@fs" + fileURLToPath(new URL("../../../packages/core/src/lib/retryImport.ts", import.meta.url));
+  const got = await page.evaluate(async (modulePath) => {
+    const { importedUrl } = await import(/* @vite-ignore */ modulePath);
+    const base = location.origin + "/assets/index-abc.js";
+    const f = (source: string) => new Function(`return ${source}`)();
+    return {
+      plain: importedUrl(f('() => import("./Sheet-1a2b.js")'), base),
+      built: importedUrl(f('() => __vitePreload(() => import("./Sheet-1a2b.js"), __vite__mapDeps([0,1]), chunkBase)'), base),
+      dev: importedUrl(f('() => import("/@fs/Users/x/Sheet.tsx?v=1")'), base),
+      commented: importedUrl(f('() => import(/* @vite-ignore */ "./Sheet-1a2b.js")'), base),
+      wrapper: importedUrl(f("() => loader()"), base),
+      two: importedUrl(f('() => cond ? import("./A.js") : import("./B.js")'), base),
+      bare: importedUrl(f('() => import("react")'), base),
+      foreign: importedUrl(f('() => import("https://elsewhere.test/x.js")'), base),
+      notScript: importedUrl(f('() => import("./data.json")'), base),
+      notFunction: importedUrl("() => import('./x.js')", base),
+    };
+  }, modulePath);
+  const origin = new URL(page.url()).origin;
+  expect(got).toEqual({
+    plain: `${origin}/assets/Sheet-1a2b.js`, built: `${origin}/assets/Sheet-1a2b.js`, dev: `${origin}/@fs/Users/x/Sheet.tsx?v=1`, commented: `${origin}/assets/Sheet-1a2b.js`,
+    wrapper: null, two: null, bare: null, foreign: null, notScript: null, notFunction: null,
+  });
+});
+
+test("the deferred canvas opens with its own tools and keeps the live connection in focus mode", async ({ page }) => {
+  const fixture = await collaborativeFixture(page, "canvas");
+  try {
+    await page.goto("/e2e-fixtures/collab-storage.html?live");
+    await expect(page.getByRole("button", { name: "Focus canvas", exact: true })).toBeVisible();
+    await expect(page.getByText(/^Live(?: · Editing)?$/)).toBeVisible();
+    const connections = [...fixture.doc().getConnections()];
+    await page.getByRole("button", { name: "Focus canvas", exact: true }).click();
+    await expect(page.getByRole("dialog", { name: "Focused canvas" })).toBeVisible();
+    await page.getByRole("button", { name: "Back to document", exact: true }).click();
+    expect([...fixture.doc().getConnections()]).toEqual(connections);
+  } finally { await fixture.close(); }
+});

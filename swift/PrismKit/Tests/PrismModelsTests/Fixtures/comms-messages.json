@@ -1,0 +1,248 @@
+{
+  "messages": [
+    {
+      "id": "$join",
+      "threadId": "th_room1",
+      "channel": {
+        "network": "whatsapp",
+        "accountLabel": null
+      },
+      "source": {
+        "network": "whatsapp",
+        "eventId": "$join",
+        "ref": "$join"
+      },
+      "sender": {
+        "id": "@whatsapp_111:example.test",
+        "name": "Alex",
+        "avatar": {
+          "token": "eyJ2IjoxLCJtIjoibXhjOi8vZXhhbXBsZS50ZXN0L3BpY3R1cmUiLCJ0Ijp7InciOjEyOCwiaCI6MTI4fSwiZCI6InNlc3Npb24iLCJ4IjoxNzk1MzQ1MjAwMDAwfQ.gxWM34jGzalG2SsquXbqwT0UWEyRUtxZ8z_wTP0Q9WA"
+        },
+        "isSelf": false,
+        "isOmni": false
+      },
+      "sentAt": "2026-09-21T14:13:32.000Z",
+      "body": null,
+      "attachments": [],
+      "linkPreviews": [],
+      "reactions": [],
+      "delivery": null,
+      "redacted": false,
+      "system": {
+        "kind": "member",
+        "text": "Alex joined"
+      }
+    },
+    {
+      "id": "$hello",
+      "threadId": "th_room1",
+      "channel": {
+        "network": "whatsapp",
+        "accountLabel": null
+      },
+      "source": {
+        "network": "whatsapp",
+        "eventId": "$hello",
+        "ref": "$hello"
+      },
+      "sender": {
+        "id": "@me:example.test",
+        "name": "Me",
+        "avatar": null,
+        "isSelf": true,
+        "isOmni": false
+      },
+      "sentAt": "2026-09-21T14:13:33.000Z",
+      "body": {
+        "spans": [
+          {
+            "t": "text",
+            "v": "hello there"
+          }
+        ],
+        "plain": "hello there",
+        "jumboEmoji": false,
+        "truncated": false
+      },
+      "attachments": [],
+      "linkPreviews": [],
+      "reactions": [
+        {
+          "key": "👍",
+          "count": 1,
+          "mine": false,
+          "senders": [
+            {
+              "id": "@whatsapp_111:example.test",
+              "name": "Alex",
+              "eventId": "$react1"
+            }
+          ]
+        }
+      ],
+      "delivery": "sent",
+      "redacted": false,
+      "editedAt": "2026-09-21T14:13:37.000Z"
+    },
+    {
+      "id": "$photo",
+      "threadId": "th_room1",
+      "channel": {
+        "network": "whatsapp",
+        "accountLabel": null
+      },
+      "source": {
+        "network": "whatsapp",
+        "eventId": "$photo",
+        "ref": "$photo"
+      },
+      "sender": {
+        "id": "@whatsapp_111:example.test",
+        "name": "Alex",
+        "avatar": {
+          "token": "eyJ2IjoxLCJtIjoibXhjOi8vZXhhbXBsZS50ZXN0L3BpY3R1cmUiLCJ0Ijp7InciOjEyOCwiaCI6MTI4fSwiZCI6InNlc3Npb24iLCJ4IjoxNzk1MzQ1MjAwMDAwfQ.gxWM34jGzalG2SsquXbqwT0UWEyRUtxZ8z_wTP0Q9WA"
+        },
+        "isSelf": false,
+        "isOmni": false
+      },
+      "sentAt": "2026-09-21T14:13:34.000Z",
+      "body": null,
+      "attachments": [
+        {
+          "kind": "image",
+          "mime": "image/jpeg",
+          "size": 1234,
+          "w": 800,
+          "h": 600,
+          "name": "photo.jpg",
+          "mediaToken": "eyJ2IjoxLCJtIjoibXhjOi8vZXhhbXBsZS50ZXN0L3Bob3RvIiwidCI6bnVsbCwiZCI6InNlc3Npb24iLCJ4IjoxNzk1MzQ1MjAwMDAwfQ.RBkW-j5Ya8YF7gBsHCaPAxNGGqh9AmBDgi_0oJDbEYc",
+          "thumbToken": "eyJ2IjoxLCJtIjoibXhjOi8vZXhhbXBsZS50ZXN0L3Bob3RvIiwidCI6eyJ3Ijo1MTIsImgiOjUxMn0sImQiOiJzZXNzaW9uIiwieCI6MTc5NTM0NTIwMDAwMH0.5yLforaiAqUpuOK3T7PvtLuPX7AQtZow5s8ec7BUio8"
+        }
+      ],
+      "linkPreviews": [],
+      "reactions": [],
+      "delivery": null,
+      "redacted": false
+    },
+    {
+      "id": "$link",
+      "threadId": "th_room1",
+      "channel": {
+        "network": "whatsapp",
+        "accountLabel": null
+      },
+      "source": {
+        "network": "whatsapp",
+        "eventId": "$link",
+        "ref": "$link"
+      },
+      "sender": {
+        "id": "@whatsapp_111:example.test",
+        "name": "Alex",
+        "avatar": {
+          "token": "eyJ2IjoxLCJtIjoibXhjOi8vZXhhbXBsZS50ZXN0L3BpY3R1cmUiLCJ0Ijp7InciOjEyOCwiaCI6MTI4fSwiZCI6InNlc3Npb24iLCJ4IjoxNzk1MzQ1MjAwMDAwfQ.gxWM34jGzalG2SsquXbqwT0UWEyRUtxZ8z_wTP0Q9WA"
+        },
+        "isSelf": false,
+        "isOmni": false
+      },
+      "sentAt": "2026-09-21T14:13:35.000Z",
+      "body": {
+        "spans": [
+          {
+            "t": "text",
+            "v": "look https://example.org"
+          }
+        ],
+        "plain": "look https://example.org",
+        "jumboEmoji": false,
+        "truncated": false
+      },
+      "attachments": [],
+      "linkPreviews": [
+        {
+          "url": "https://example.org",
+          "title": "Example",
+          "imageToken": "eyJ2IjoxLCJtIjoibXhjOi8vZXhhbXBsZS50ZXN0L29nIiwidCI6eyJ3Ijo1MTIsImgiOjUxMn0sImQiOiJzZXNzaW9uIiwieCI6MTc5NTM0NTIwMDAwMH0.9Eo9gyZ5GYdW8nCNx-JbnxBvC0bYnWi6l4BPKgnmA4A"
+        }
+      ],
+      "reactions": [],
+      "delivery": null,
+      "redacted": false
+    },
+    {
+      "id": "$reply",
+      "threadId": "th_room1",
+      "channel": {
+        "network": "whatsapp",
+        "accountLabel": null
+      },
+      "source": {
+        "network": "whatsapp",
+        "eventId": "$reply",
+        "ref": "$reply"
+      },
+      "sender": {
+        "id": "@whatsapp_111:example.test",
+        "name": "Alex",
+        "avatar": {
+          "token": "eyJ2IjoxLCJtIjoibXhjOi8vZXhhbXBsZS50ZXN0L3BpY3R1cmUiLCJ0Ijp7InciOjEyOCwiaCI6MTI4fSwiZCI6InNlc3Npb24iLCJ4IjoxNzk1MzQ1MjAwMDAwfQ.gxWM34jGzalG2SsquXbqwT0UWEyRUtxZ8z_wTP0Q9WA"
+        },
+        "isSelf": false,
+        "isOmni": false
+      },
+      "sentAt": "2026-09-21T14:13:36.000Z",
+      "body": {
+        "spans": [
+          {
+            "t": "text",
+            "v": "sure thing"
+          }
+        ],
+        "plain": "sure thing",
+        "jumboEmoji": false,
+        "truncated": false
+      },
+      "attachments": [],
+      "linkPreviews": [],
+      "reactions": [],
+      "delivery": null,
+      "redacted": false,
+      "replyTo": {
+        "messageId": "$hello",
+        "snippet": "hello there",
+        "senderName": "Me"
+      }
+    },
+    {
+      "id": "$gone",
+      "threadId": "th_room1",
+      "channel": {
+        "network": "whatsapp",
+        "accountLabel": null
+      },
+      "source": {
+        "network": "whatsapp",
+        "eventId": "$gone",
+        "ref": "$gone"
+      },
+      "sender": {
+        "id": "@whatsapp_111:example.test",
+        "name": "Alex",
+        "avatar": {
+          "token": "eyJ2IjoxLCJtIjoibXhjOi8vZXhhbXBsZS50ZXN0L3BpY3R1cmUiLCJ0Ijp7InciOjEyOCwiaCI6MTI4fSwiZCI6InNlc3Npb24iLCJ4IjoxNzk1MzQ1MjAwMDAwfQ.gxWM34jGzalG2SsquXbqwT0UWEyRUtxZ8z_wTP0Q9WA"
+        },
+        "isSelf": false,
+        "isOmni": false
+      },
+      "sentAt": "2026-09-21T14:13:38.000Z",
+      "body": null,
+      "attachments": [],
+      "linkPreviews": [],
+      "reactions": [],
+      "delivery": null,
+      "redacted": true
+    }
+  ],
+  "before": "tc_TXLcJIqFu0NyvjlYxbwlF-BZ",
+  "hasMore": true
+}

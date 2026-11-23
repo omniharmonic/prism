@@ -1,0 +1,323 @@
+/**
+ * The governance store seam — the thin, I/O-bearing bridge between the vault's
+ * `governance-*` notes (Decision §1 — governance state dogfooded as governed
+ * notes) and the pure `governance.ts` engine. This file does the parsing and
+ * serialization; the engine does the deciding. Nothing here makes a governance
+ * decision — it only turns notes into structures and back.
+ *
+ * INTEGRITY (WP0.3): every loader here filters through `verifiedGovNotes`, so
+ * when GOVERNANCE_SIGNING_SECRET is set a note without a valid `gov_sig` (one
+ * written straight to the vault rather than through the governance service)
+ * never reaches the engine. Parsers themselves stay pure and unfiltered — callers
+ * that read single notes must verify (see governance-service.ts).
+ *
+ * Note metadata is untrusted `unknown`, so every field is coerced defensively:
+ * a malformed governance note degrades to safe defaults (e.g. a policy with a
+ * missing threshold reads as threshold 1, distinct-required) rather than throwing
+ * and taking the gateway down.
+ */
+import type { Note } from "./parachute";
+import type {
+  GovernanceConfig,
+  GovernanceState,
+  Membership,
+  Policy,
+  Power,
+  Proposal,
+  ProposalState,
+  Role,
+  Vote,
+} from "./governance";
+import { POWERS } from "./governance";
+import { isCap, type Cap } from "./permissions";
+import { GOV_TAGS, bool, num, revisionPublished, str, strArr } from "./governance-fields";
+import { governanceIntegrityEnabled, verifiedGovNotes } from "./governance-integrity";
+
+/** The minimum vault surface the store needs — satisfied by parachute.ts `vault`. */
+export interface GovernanceVault {
+  listNotes(opts: { tags?: string[]; includeContent?: boolean; limit?: number }): Promise<Note[]>;
+}
+
+// Tag names + defensive coercers live in governance-fields.ts, shared with the
+// integrity signer so a parser can only ever read what the signature covers.
+export { GOV_TAGS } from "./governance-fields";
+
+const oneOf = <T extends string>(value: string, allowed: readonly T[], fallback: T): T =>
+  (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
+
+// ── parsers (note → structure) ────────────────────────────────────────────────
+
+export function parseConfig(note: Note): GovernanceConfig {
+  const m = note.metadata;
+  return {
+    enabled: bool(m, "enabled", false),
+    bootstrapOwner: str(m, "bootstrap_owner"),
+    amendPolicy: str(m, "amend_policy"),
+    defaultThresholdN: num(m, "default_threshold_n", 1),
+    defaultEligibleRole: str(m, "default_eligible_role"),
+  };
+}
+
+export function parseRole(note: Note): Role {
+  const m = note.metadata;
+  // Unknown names are DROPPED, not rejected: a role note written under an older
+  // vocabulary (P2 cut `review`/`arbitrate` and renamed `certify_gardener` →
+  // `assign_roles`) still loads, minus the powers/caps that no longer exist. A
+  // constitution must degrade, never fail to parse.
+  const powers = strArr(m, "powers").filter((p): p is Power => (POWERS as readonly string[]).includes(p));
+  const capabilities = strArr(m, "capabilities").filter((x): x is Cap => isCap(x));
+  return {
+    id: note.id,
+    name: str(m, "name") || note.id,
+    powers,
+    scopeType: oneOf(str(m, "scope_type", "global"), ["global", "tag"] as const, "global"),
+    scope: str(m, "scope"),
+    capabilities,
+    assigns: strArr(m, "assigns"),
+  };
+}
+
+export function parseMembership(note: Note): Membership {
+  const m = note.metadata;
+  return {
+    subject: str(m, "subject"),
+    role: str(m, "role"),
+    grantedBy: str(m, "granted_by") || undefined,
+    expiresAt: str(m, "expires_at") || null,
+  };
+}
+
+export function parsePolicy(note: Note): Policy {
+  const m = note.metadata;
+  return {
+    id: note.id,
+    action: str(m, "action"),
+    scopeType: oneOf(str(m, "scope_type", "global"), ["global", "tag", "note"] as const, "global"),
+    scope: str(m, "scope"),
+    thresholdN: Math.max(1, num(m, "threshold_n", 1)),
+    quorum: Math.max(0, num(m, "quorum", 0)),
+    distinctRequired: bool(m, "distinct_required", true),
+    eligibleRole: str(m, "eligible_role"),
+    windowSeconds: Math.max(0, num(m, "window_seconds", 0)),
+    autoPublish: bool(m, "auto_publish", false),
+  };
+}
+
+const PROPOSAL_STATES = ["open", "approved", "rejected", "applied", "withdrawn"] as const;
+
+export function parseProposal(note: Note): Proposal {
+  const m = note.metadata;
+  return {
+    id: note.id,
+    action: str(m, "action"),
+    target: str(m, "target"),
+    state: oneOf(str(m, "state", "open"), PROPOSAL_STATES, "open") as ProposalState,
+    openedBy: str(m, "opened_by"),
+    openedAt: str(m, "opened_at"),
+  };
+}
+
+export interface AuditEntry {
+  id: string;
+  action: string;
+  actor: string;
+  before: string;
+  after: string;
+  at: string;
+}
+
+export function parseAudit(note: Note): AuditEntry {
+  const m = note.metadata;
+  return {
+    id: note.id,
+    action: str(m, "action"),
+    actor: str(m, "actor"),
+    before: str(m, "before"),
+    after: str(m, "after"),
+    at: str(m, "at"),
+  };
+}
+
+export function parseVote(note: Note): Vote {
+  const m = note.metadata;
+  const reason = str(m, "reason");
+  return {
+    proposal: str(m, "proposal"),
+    voter: str(m, "voter"),
+    vote: oneOf(str(m, "vote", "approve"), ["approve", "reject"] as const, "approve"),
+    at: str(m, "at"),
+    ...(reason ? { reason } : {}),
+  };
+}
+
+// ── serializers (structure → note metadata) ───────────────────────────────────
+// Used by the write path (G1+) so a proposal/vote/membership can be created as a
+// governance-* note. Field names mirror tag-schemas.json exactly, so
+// parse(serialize(x)) round-trips.
+
+export function configToMetadata(c: GovernanceConfig): Record<string, unknown> {
+  return {
+    enabled: c.enabled,
+    bootstrap_owner: c.bootstrapOwner,
+    amend_policy: c.amendPolicy,
+    default_threshold_n: c.defaultThresholdN,
+    default_eligible_role: c.defaultEligibleRole,
+  };
+}
+export function roleToMetadata(r: Omit<Role, "id">): Record<string, unknown> {
+  return {
+    name: r.name,
+    powers: r.powers,
+    scope_type: r.scopeType,
+    scope: r.scope,
+    // P2: the content caps this role confers (compiled into grants) and the roles
+    // its holders may staff. Written unconditionally so parse(serialize(x)) still
+    // round-trips exactly.
+    capabilities: r.capabilities ?? [],
+    assigns: r.assigns ?? [],
+  };
+}
+export function membershipToMetadata(m: Membership): Record<string, unknown> {
+  return { subject: m.subject, role: m.role, granted_by: m.grantedBy ?? "", expires_at: m.expiresAt ?? "" };
+}
+export function policyToMetadata(p: Omit<Policy, "id">): Record<string, unknown> {
+  return {
+    action: p.action,
+    scope_type: p.scopeType,
+    scope: p.scope,
+    threshold_n: p.thresholdN,
+    quorum: p.quorum,
+    distinct_required: p.distinctRequired,
+    eligible_role: p.eligibleRole,
+    window_seconds: p.windowSeconds,
+    auto_publish: p.autoPublish,
+  };
+}
+export function proposalToMetadata(p: Omit<Proposal, "id">): Record<string, unknown> {
+  return { action: p.action, target: p.target, state: p.state, opened_by: p.openedBy, opened_at: p.openedAt };
+}
+export function voteToMetadata(v: Vote): Record<string, unknown> {
+  return { proposal: v.proposal, voter: v.voter, vote: v.vote, at: v.at, reason: v.reason ?? "" };
+}
+export function auditToMetadata(e: {
+  action: string;
+  actor: string;
+  before?: string;
+  after?: string;
+  at: string;
+}): Record<string, unknown> {
+  return { action: e.action, actor: e.actor, before: e.before ?? "", after: e.after ?? "", at: e.at };
+}
+
+// ── loaders (vault → engine state) ─────────────────────────────────────────────
+
+/** A safe disabled constitution when no `governance-config` note exists yet. */
+export function disabledConfig(fallbackOwner = ""): GovernanceConfig {
+  return {
+    enabled: false,
+    bootstrapOwner: fallbackOwner,
+    amendPolicy: "",
+    defaultThresholdN: 1,
+    defaultEligibleRole: "",
+  };
+}
+
+/**
+ * Assemble the full governance state from the vault. The config is a singleton:
+ * `listNotes` returns newest-first, so the most recently updated
+ * `governance-config` note wins; absent any, governance is treated as disabled
+ * (unlocked) with the fallback owner as bootstrap root.
+ */
+export async function loadState(
+  vault: GovernanceVault,
+  opts: { fallbackOwner?: string } = {},
+): Promise<GovernanceState> {
+  const [configs, roles, memberships, policies] = await Promise.all([
+    vault.listNotes({ tags: [GOV_TAGS.config] }).then((n) => verifiedGovNotes(GOV_TAGS.config, n)),
+    vault.listNotes({ tags: [GOV_TAGS.role] }).then((n) => verifiedGovNotes(GOV_TAGS.role, n)),
+    vault.listNotes({ tags: [GOV_TAGS.membership] }).then((n) => verifiedGovNotes(GOV_TAGS.membership, n)),
+    vault.listNotes({ tags: [GOV_TAGS.policy] }).then((n) => verifiedGovNotes(GOV_TAGS.policy, n)),
+  ]);
+  // Newest VERIFIED config wins — a forged, newer config note is skipped.
+  const first = configs[0];
+  const config = first ? parseConfig(first) : disabledConfig(opts.fallbackOwner);
+  return {
+    config,
+    roles: roles.map(parseRole),
+    memberships: memberships.map(parseMembership),
+    policies: policies.map(parsePolicy),
+  };
+}
+
+/** Load the votes cast on a given proposal. */
+export async function loadVotesFor(vault: GovernanceVault, proposalId: string): Promise<Vote[]> {
+  const notes = verifiedGovNotes(GOV_TAGS.vote, await vault.listNotes({ tags: [GOV_TAGS.vote] }));
+  return notes.map(parseVote).filter((v) => v.proposal === proposalId);
+}
+
+/** Load the audit trail, newest first — the commons's legible memory (Ostrom #4). */
+export async function listAudit(vault: GovernanceVault, limit = 100): Promise<AuditEntry[]> {
+  const notes = verifiedGovNotes(GOV_TAGS.audit, await vault.listNotes({ tags: [GOV_TAGS.audit], limit }));
+  return notes.map(parseAudit).sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+}
+
+// ── revisions (approval ≠ publishing, G4) ─────────────────────────────────────
+
+/** A content revision snapshot. The revision NOTE's content is the snapshot;
+ *  this is its metadata. `published=false` = approved/staged, not live. */
+export interface Revision {
+  id: string;
+  note: string; // target note id ("" while a staged new_entry is uncreated)
+  parent: string;
+  proposal: string;
+  author: string;
+  origin: "proposal" | "rollback" | "publish";
+  published: boolean;
+  at: string;
+  payload: string; // staged new_entry: JSON {path,tags,metadata}
+}
+
+export function parseRevision(note: Note): Revision {
+  const m = note.metadata;
+  return {
+    id: note.id,
+    note: str(m, "note"),
+    parent: str(m, "parent"),
+    proposal: str(m, "proposal"),
+    author: str(m, "author"),
+    origin: oneOf(str(m, "origin", "proposal"), ["proposal", "rollback", "publish"] as const, "proposal"),
+    published: revisionPublished(m),
+    at: str(m, "at"),
+    payload: str(m, "payload"),
+  };
+}
+
+export function revisionToMetadata(r: Omit<Revision, "id">): Record<string, unknown> {
+  return {
+    note: r.note,
+    parent: r.parent,
+    proposal: r.proposal,
+    author: r.author,
+    origin: r.origin,
+    is_published: r.published,
+    // Mirror of `is_published` under the legacy name, ONLY so an older build (after a rollback)
+    // reads — and verifies — revisions this one wrote. Drop it once no supported build reads it.
+    published: r.published,
+    at: r.at,
+    payload: r.payload,
+  };
+}
+
+/** Revision history for a note, newest first. */
+export async function listRevisionsFor(vault: GovernanceVault, noteId: string): Promise<Revision[]> {
+  // Content is part of a revision's signature (it is the snapshot that gets
+  // published), so the list must carry it.
+  const notes = verifiedGovNotes(
+    GOV_TAGS.revision,
+    await vault.listNotes({ tags: [GOV_TAGS.revision], includeContent: governanceIntegrityEnabled() }),
+  );
+  return notes
+    .map(parseRevision)
+    .filter((r) => r.note === noteId)
+    .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+}

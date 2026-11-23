@@ -1,0 +1,4 @@
+{ "type": "FeatureCollection", "features": [
+  { "type": "Feature", "properties": { "huc12": "101900050101", "name": "Upper Saint Vrain", "areasqkm": 142.3 }, "geometry": { "type": "Polygon", "coordinates": [[[-105.55,39.92],[-104.98,39.92],[-104.98,40.32],[-105.55,40.32],[-105.55,39.92]]] } },
+  { "type": "Feature", "properties": { "name": "no huc" }, "geometry": null }
+] }

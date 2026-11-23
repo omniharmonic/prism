@@ -1,0 +1,120 @@
+#!/usr/bin/env node
+/**
+ * check:sw — guard against the service-worker shadowing footgun.
+ *
+ * The PWA service worker uses `navigateFallback: index.html`, which makes the SPA
+ * shell answer ANY navigation that isn't excluded by `navigateFallbackDenylist`.
+ * A server-owned route (auth callback, gateway, public publication JSON) that is
+ * NOT denylisted will be silently shadowed by the SPA — and ONLY in the browser
+ * (curl still hits the server), which makes it a nightmare to debug.
+ *
+ * This check parses apps/web/vite.config.ts (no eval, just regex) and asserts:
+ *   1. every server-owned route prefix below is present in navigateFallbackDenylist;
+ *   2. the public publication DATA path lives under /api (so it's covered by the
+ *      /api denylist entry — the human /p/:slug URL is intentionally a CLIENT route).
+ *
+ * Dependency-free (node:fs + regex). Exits non-zero with a clear message on a miss.
+ */
+import { readFileSync, readdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const VITE_CONFIG = resolve(__dirname, "../vite.config.ts");
+
+/** Route prefixes the SERVER owns. Each must be in navigateFallbackDenylist or
+ *  it will be shadowed by the SPA shell in the browser. Keep in sync with the
+ *  server mounts in apps/server/src/app.ts (`app.route("/auth"...)`, etc.). */
+const SERVER_ROUTE_PREFIXES = ["/auth", "/api", "/health", "/mcp", "/.well-known", "/apple-app-site-association"];
+
+/** The public publication JSON path. It must live under one of the denylisted
+ *  prefixes (it's /api/p/*), NOT be its own un-denylisted prefix like /p. */
+const PUBLICATION_DATA_PATH = "/api/p";
+
+function fail(msg) {
+  console.error(`✗ check:sw — ${msg}`);
+  process.exit(1);
+}
+
+let src;
+try {
+  src = readFileSync(VITE_CONFIG, "utf8");
+} catch (e) {
+  fail(`cannot read ${VITE_CONFIG}: ${e.message}`);
+}
+
+// Pull the navigateFallbackDenylist array literal out of the config text.
+const m = src.match(/navigateFallbackDenylist\s*:\s*\[([^\]]*)\]/);
+if (!m) {
+  fail(
+    "no `navigateFallbackDenylist: [...]` found in vite.config.ts — without it " +
+      "every server route is shadowed by the SPA shell in the browser.",
+  );
+}
+const denylistBody = m[1];
+
+/** Does the denylist cover navigations to `prefix`? Each entry is a RegExp
+ *  literal anchored at the start, e.g. `/^\/auth\//`. We normalize escaped
+ *  slashes in the denylist text and check for a start-anchored entry on the
+ *  prefix's first path segment — so `^\/api\/` covers `/api` AND `/api/p`. */
+function covered(prefix) {
+  const seg = prefix.replace(/^\//, "").split("/")[0]; // "auth" from "/auth"
+  const normalized = denylistBody.replace(/\\\//g, "/").replace(/\\\./g, "."); // \/ → /, \. → .
+  return normalized.includes(`^/${seg}`);
+}
+
+const missing = SERVER_ROUTE_PREFIXES.filter((p) => !covered(p));
+if (missing.length > 0) {
+  fail(
+    `server route prefix(es) ${missing.join(", ")} are NOT in navigateFallbackDenylist ` +
+      `(found: ${denylistBody.trim() || "<empty>"}). Add a RegExp like /^\\/${missing[0]
+        .replace(/^\//, "")
+        .split("/")[0]}\\// or those routes break only in the browser.`,
+  );
+}
+
+// Workbox tests a denylist entry against pathname + SEARCH, so `/^\/health$/` did
+// not cover the watchdog probe `/health?live=1`. Evaluate the real entries.
+const entries = [...denylistBody.matchAll(/\/((?:\\.|[^/\\])+)\/([a-z]*)/g)].map((x) => new RegExp(x[1], x[2]));
+const denied = (url) => entries.some((re) => re.test(url));
+for (const url of ["/health", "/health?live=1", "/health?live=0"]) {
+  if (!denied(url)) fail(`navigateFallbackDenylist does not cover ${url} (entries are tested against pathname + search) — use /^\\/health(\\?|$)/.`);
+}
+// Universal links: Apple's association file (both locations) is server-owned; client routes are not.
+for (const url of ["/.well-known/apple-app-site-association", "/apple-app-site-association"]) {
+  if (!denied(url)) fail(`navigateFallbackDenylist does not cover ${url}.`);
+}
+for (const url of ["/page/abc", "/inbox", "/agent", "/collab/abc"]) {
+  if (denied(url)) fail(`navigateFallbackDenylist swallows the client route ${url}.`);
+}
+if (denied("/healthy") || denied("/health/notes")) fail("the /health denylist entry is too wide: it must not swallow client routes that merely start with /health.");
+
+// The publication data path must fall under a denylisted prefix.
+if (!covered(PUBLICATION_DATA_PATH)) {
+  fail(
+    `publication data path ${PUBLICATION_DATA_PATH} is not covered by the denylist — ` +
+      `it must stay under /api (the human /p/:slug URL is the SPA client route).`,
+  );
+}
+
+console.log(
+  `✓ check:sw — navigateFallbackDenylist covers ${SERVER_ROUTE_PREFIXES.join(", ")} ` +
+    `(and ${PUBLICATION_DATA_PATH} is under /api).`,
+);
+
+// Authenticated API data must be cached only by the scoped read-cache layer.
+if (/cacheName:\s*["']vault-api["']/.test(src)) {
+  fail("URL-only vault-api runtime caching can expose another account/vault's response. Use the scoped IndexedDB cache.");
+}
+
+// A successful PWA build must actually retain the boot dependency offline.
+// Rollup previously named it after a lazy math chunk excluded by globIgnores.
+if (process.argv.includes("--built")) {
+  const dist = resolve(__dirname, "../dist");
+  const workspaces = readdirSync(resolve(dist, "assets")).filter((name) => /^workspace-.*\.js$/.test(name));
+  const worker = readFileSync(resolve(dist, "sw.js"), "utf8");
+  if (workspaces.length !== 1 || !worker.includes(`assets/${workspaces[0]}`)) {
+    fail("the workspace boot chunk is missing from the generated service-worker precache");
+  }
+  console.log("✓ check:sw — built workspace boot chunk is precached");
+}

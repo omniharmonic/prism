@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Privacy — Prism, Comms, Omni and Minutes</title>
+  <meta name="description" content="Prism, Comms, Omni and Minutes collect no data. Your notes, messages and meetings stay on a server or device you control. No tracking, no third-party sharing.">
+  <meta name="color-scheme" content="dark light">
+  <link rel="canonical" href="https://prism.pub/privacy.html">
+  <link rel="icon" href="assets/img/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/site.css">
+</head>
+<body>
+  <header class="site-header site-header-static">
+    <div class="wrap header-row">
+      <a class="brand" href="./" aria-label="Prism home">
+        <img src="assets/img/mark.svg" alt="" width="26" height="28">
+        <span>Prism</span>
+      </a>
+      <nav class="nav" aria-label="Apps">
+        <a href="prism/">Prism</a>
+        <a href="comms/">Comms</a>
+        <a href="omni/">Omni</a>
+        <a href="minutes/">Minutes</a>
+        <a href="download/">Download</a>
+      </nav>
+      <a class="btn btn-small btn-ghost" href="./">All apps</a>
+    </div>
+  </header>
+  <main id="main" class="wrap legal">
+    <h1>Privacy</h1>
+    <p class="legal-date">Last updated 23 November 2026</p>
+    <p><b>The short version, for every app:</b> we, the people who make Prism, Comms, Omni and Minutes, do not collect your data. Your notes, messages and meetings stay on a server you run or on your own device. No app has analytics, advertising or tracking, and none shares your data with third parties. Each app has its own section below.</p>
+    <ul class="toc" role="list" aria-label="Apps">
+      <li><a href="#prism">Prism</a></li>
+      <li><a href="#comms">Comms</a></li>
+      <li><a href="#omni">Omni</a></li>
+      <li><a href="#minutes">Minutes</a></li>
+    </ul>
+
+    <section class="app-sec" id="prism" aria-labelledby="prism-h">
+    <h2 id="prism-h"><img src="assets/img/app-prism.png" alt="" width="32" height="32">Prism and Prism Server</h2>
+    <p>Prism does not collect your data. Your notes, messages, files and account live on a server <em>you</em> run (Prism Server, on your own Mac or computer). The Prism apps for Mac, iPhone and iPad talk only to the server you point them at. We, the people who make Prism, never receive your content and run no analytics, advertising or tracking of any kind.</p>
+
+    <h3>What the apps store</h3>
+    <ul>
+      <li><b>The address of your server</b>, saved on the device.</li>
+      <li><b>A sign-in token</b> for that server, kept in the device's Keychain. It is sent only to your server.</li>
+      <li><b>Copies of pages you opened</b> and changes not yet sent, kept on the device so Prism works offline. Signing out deletes them.</li>
+    </ul>
+    <p>None of this is sent to us.</p>
+
+    <h3>Your server</h3>
+    <p>Everything you put in Prism is stored by your Prism Server and its Parachute vault, on hardware you control. Whoever runs a server (you, or the person who invited you) is responsible for it. If someone else runs the server you use, their own privacy terms apply to what you store there.</p>
+
+    <h3>Notifications</h3>
+    <p>If you turn on notifications in the iPhone or iPad app, your device gets a push token from Apple, and the app gives it to <em>your</em> server. To reach Apple, a self-hosted server sends the token, plus a notification kind and an ID number, through the Prism push relay that we run. The relay never receives any content (no titles, names or text), and it does not store your token. It writes a generic message ("You have a new notification") and hands it to Apple. Like any web service, the relay and its host (Cloudflare) see the time of each request and your server's IP address. Turn notifications off at any time in Settings.</p>
+
+    </section>
+
+    <section class="app-sec" id="comms" aria-labelledby="comms-h">
+    <h2 id="comms-h"><img src="assets/img/app-comms.png" alt="" width="32" height="32">Comms</h2>
+    <p>Comms (“Comms - an omni-messenger”) is an app for Mac and iPhone that shows the conversations your own Prism Server brings in. It talks only to the server you sign in to. We never receive your messages, contacts or attachments.</p>
+    <h3>What the app stores</h3>
+    <ul>
+      <li><b>The address of your server</b> and your display settings, saved on the device.</li>
+      <li><b>A sign-in token</b> for that server, kept in the device's Keychain and sent only to your server. This token can reach the messaging part of your server only.</li>
+    </ul>
+    <p>Conversations, photos and contacts are loaded from your server as you read them. Apart from the system's ordinary temporary caches, the app keeps no copy of its own. Signing out removes the token.</p>
+    <h3>Where your messages go</h3>
+    <p>Your server stores conversations in your own vault. It brings them in from the accounts you connect yourself: your mail server, a Mac of yours that runs Messages (for iMessage and SMS), and chat bridges you run for networks like WhatsApp, Signal, Telegram or Slack. A message you send travels over that network as it normally would. Comms cannot send anything until the person who runs the server switches sending on, and every message goes out through that one switch.</p>
+    <h3>Notifications</h3>
+    <p>If you allow notifications, your device gets a push token from Apple and the app gives it to your server. Your server sends notifications straight to Apple's push service with its own Apple key. By default a notification shows the sender and the start of the message, so that text passes through Apple's push service on its way to your device. Choose to hide previews in Comms' notification settings and a notification says only “New message”, with no name or text.</p>
+    <h3>Sorting with AI</h3>
+    <p>If the person who runs your server sets up an agent to sort conversations (urgent, needs a reply, and so on), the agent reads message text with the AI model chosen on that server: a model running on the server's own Mac, or a provider the server's owner signs up with, under that provider's terms. Without an agent, nothing is sorted and nothing is sent to a model.</p>
+    </section>
+
+    <section class="app-sec" id="omni" aria-labelledby="omni-h">
+    <h2 id="omni-h"><img src="assets/img/app-omni.png" alt="" width="32" height="32">Omni</h2>
+    <p>Omni is a personal-agent app for Mac and iPhone. It talks only to your Prism Server, which passes your requests to an agent that runs on hardware you control. We never receive your requests, drafts or vault.</p>
+    <h3>What the app stores</h3>
+    <ul>
+      <li><b>The address of your server</b>, saved on the device.</li>
+      <li><b>A sign-in token</b> for that server, kept in the Keychain and sent only to your server.</li>
+    </ul>
+    <h3>The AI model</h3>
+    <p>To answer you, the agent sends the text a request needs (your message and the notes it looked up) to the AI model configured on your server: a local model on your own Mac, or a provider you have an account with, under that provider's terms. Nothing else is shared.</p>
+    <h3>Nothing leaves without you</h3>
+    <p>Anything Omni would send or post for you, such as an email or a chat reply, waits as a card until you approve it. Omni asks before it joins a call.</p>
+    <h3>Notifications</h3>
+    <p>If you allow notifications, your server sends them straight to Apple's push service with its own Apple key. In Omni's notification settings you choose what they show: a short summary (the default), a headline only, or no content at all.</p>
+    </section>
+
+    <section class="app-sec" id="minutes" aria-labelledby="minutes-h">
+    <h2 id="minutes-h"><img src="assets/img/app-minutes.png" alt="" width="32" height="32">Minutes</h2>
+    <p>Minutes records and transcribes meetings on your Mac or iPhone. There is no Minutes account and no Minutes server: your recordings and notes stay on your device.</p>
+    <ul>
+      <li><b>Recording starts only when you start it.</b> On a Mac, recording a call uses the system's audio recording permission and saves audio, never images of your screen.</li>
+      <li><b>Transcription runs on the device</b> with Apple's on-device speech recognition. If a device can't do that, Minutes reports an error instead of using a cloud service.</li>
+      <li><b>Speaker separation runs on the device</b>, with models you download yourself. Remembering a voice is a separate choice, and you can remove a remembered voice at any time.</li>
+      <li><b>Summaries</b> use Apple's on-device model where available. Minutes sets up no cloud summary service.</li>
+    </ul>
+    <h3>When data leaves the device</h3>
+    <p>Only when you turn on one of these:</p>
+    <ul>
+      <li><b>iCloud sync</b>, into your own private iCloud storage.</li>
+      <li><b>A calendar</b>: Apple Calendar on the device, or Google Calendar, which you sign in to in your browser. Calendar access is read only, and the Google sign-in is kept in the Keychain.</li>
+      <li><b>Delivery to Prism</b>: a meeting's notes, transcript and participants go to the Prism Server you paired, and nowhere else. Raw audio and voiceprints are not sent.</li>
+      <li><b>An export</b> you make yourself.</li>
+    </ul>
+    <p>Minutes has no analytics or advertising code.</p>
+    </section>
+
+    <h2>What we never do</h2>
+    <ul>
+      <li>No accounts with us: there is nothing to sign up for.</li>
+      <li>No analytics, crash reporting, advertising identifiers or third-party trackers in any of the apps.</li>
+      <li>No selling or sharing of data, because we don't have any.</li>
+    </ul>
+
+    <h2>This website</h2>
+    <p>prism.pub is a static page served by GitHub Pages. It sets no cookies and loads nothing from other sites. GitHub may keep standard server logs, such as IP addresses, under <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">its own privacy statement</a>.</p>
+
+    <h2>Children</h2>
+    <p>None of the apps is directed at children, and none collects data from anyone.</p>
+
+    <h2>Changes and questions</h2>
+    <p>If this policy changes, the new version will be published on this page, with a new date. The page's full history is <a href="https://github.com/omniharmonic/prism/commits/main/site/privacy.html">public on GitHub</a>. For questions, see <a href="support.html">Support</a>.</p>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap footer-row">
+      <nav aria-label="Footer">
+        <a href="./">Home</a>
+        <a href="privacy.html">Privacy</a>
+        <a href="support.html">Support</a>
+        <a href="https://github.com/omniharmonic/prism">Source</a>
+        <a href="https://github.com/omniharmonic/prism/blob/main/LICENSE.md">Licence (AGPL-3.0)</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

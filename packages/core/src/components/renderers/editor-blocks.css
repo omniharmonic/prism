@@ -1,0 +1,538 @@
+/* Block editor surfaces shared by the plain and the live collaborative editor.
+   Colours come from existing tokens only (tokens.css / workspace.css). */
+
+/* The writing surface is a focus target (TipTap gives it tabindex=0), so the
+   global :focus-visible ring drew a box around the whole document. The caret
+   and selection already show focus; keep the ring for real controls only. */
+.tiptap:focus,
+.tiptap:focus-visible,
+.prose-editor:focus-visible {
+  outline: none;
+}
+
+/* ── Colour vocabulary (blocks, text, highlights) — derived from status/accent tokens ── */
+:root {
+  --prism-color-gray-base: var(--text-muted);
+  --prism-color-blue-base: var(--color-accent);
+  --prism-color-green-base: var(--color-success);
+  --prism-color-yellow-base: var(--color-warning);
+  --prism-color-red-base: var(--color-danger);
+}
+:root, html.dark, html.light {
+  --prism-color-gray: var(--text-secondary);
+  --prism-color-blue: color-mix(in srgb, var(--prism-color-blue-base) 82%, var(--text-primary));
+  --prism-color-green: color-mix(in srgb, var(--prism-color-green-base) 72%, var(--text-primary));
+  --prism-color-yellow: color-mix(in srgb, var(--prism-color-yellow-base) 62%, var(--text-primary));
+  --prism-color-red: color-mix(in srgb, var(--prism-color-red-base) 82%, var(--text-primary));
+  --prism-color-gray-bg: var(--glass-hover);
+  --prism-color-blue-bg: color-mix(in srgb, var(--prism-color-blue-base) 16%, transparent);
+  --prism-color-green-bg: color-mix(in srgb, var(--prism-color-green-base) 18%, transparent);
+  --prism-color-yellow-bg: color-mix(in srgb, var(--prism-color-yellow-base) 22%, transparent);
+  --prism-color-red-bg: color-mix(in srgb, var(--prism-color-red-base) 16%, transparent);
+}
+[data-text-color="gray"], [data-block-color="gray"] { color: var(--prism-color-gray); }
+[data-text-color="blue"], [data-block-color="blue"] { color: var(--prism-color-blue); }
+[data-text-color="green"], [data-block-color="green"] { color: var(--prism-color-green); }
+[data-text-color="yellow"], [data-block-color="yellow"] { color: var(--prism-color-yellow); }
+[data-text-color="red"], [data-block-color="red"] { color: var(--prism-color-red); }
+[data-block-color$="_background"] { border-radius: var(--radius-sm); padding-left: 6px; padding-right: 6px; }
+[data-block-color="gray_background"] { background: var(--prism-color-gray-bg); }
+[data-block-color="blue_background"] { background: var(--prism-color-blue-bg); }
+[data-block-color="green_background"] { background: var(--prism-color-green-bg); }
+[data-block-color="yellow_background"] { background: var(--prism-color-yellow-bg); }
+[data-block-color="red_background"] { background: var(--prism-color-red-bg); }
+.prose-editor mark { border-radius: 3px; padding: 0 2px; color: inherit; }
+
+/* ── To-do items: checkbox on the first line of its text ── */
+.prose-editor ul[data-type="taskList"] li { display: flex; align-items: flex-start; gap: 8px; }
+.prose-editor ul[data-type="taskList"] li > label { flex: 0 0 auto; display: inline-flex; align-items: center; height: 1.75em; user-select: none; }
+.prose-editor ul[data-type="taskList"] li > label input { width: 16px; height: 16px; margin: 0; accent-color: var(--color-accent); cursor: pointer; }
+.prose-editor ul[data-type="taskList"] li > div { flex: 1; min-width: 0; }
+.prose-editor ul[data-type="taskList"] li > div > p { margin: 0; }
+.prose-editor ul[data-type="taskList"] li[data-checked="true"] > div { color: var(--text-muted); text-decoration: line-through; }
+
+/* ── Callout ── */
+.prose-editor div[data-type="callout"] {
+  position: relative;
+  margin: 0.75em 0;
+  padding: 12px 14px 12px 46px;
+  border-radius: var(--radius-sm);
+  background: var(--glass-hover);
+  border: 1px solid var(--glass-border);
+}
+/* A callout's own fill outranks the generic `[data-block-color$="_background"]` rule, so each
+   background colour is repeated here at the callout's specificity (NP-ED-08). The tints are a
+   little stronger than a plain block's (a callout is already a filled box: the default and "gray"
+   must still differ) and the border follows the colour. Text stays --text-primary: ≥ 4.5:1 on
+   every tint in both themes (parity4-colours.spec, axe). Print re-declares the light palette. */
+.prose-editor div[data-type="callout"][data-block-color="gray_background"] { background: color-mix(in srgb, var(--prism-color-gray-base) 20%, transparent); border-color: color-mix(in srgb, var(--prism-color-gray-base) 34%, transparent); }
+.prose-editor div[data-type="callout"][data-block-color="blue_background"] { background: color-mix(in srgb, var(--prism-color-blue-base) 16%, transparent); border-color: color-mix(in srgb, var(--prism-color-blue-base) 34%, transparent); }
+.prose-editor div[data-type="callout"][data-block-color="green_background"] { background: color-mix(in srgb, var(--prism-color-green-base) 18%, transparent); border-color: color-mix(in srgb, var(--prism-color-green-base) 36%, transparent); }
+.prose-editor div[data-type="callout"][data-block-color="yellow_background"] { background: color-mix(in srgb, var(--prism-color-yellow-base) 22%, transparent); border-color: color-mix(in srgb, var(--prism-color-yellow-base) 40%, transparent); }
+.prose-editor div[data-type="callout"][data-block-color="red_background"] { background: color-mix(in srgb, var(--prism-color-red-base) 16%, transparent); border-color: color-mix(in srgb, var(--prism-color-red-base) 34%, transparent); }
+.prose-editor div[data-type="callout"]::before {
+  content: attr(data-emoji);
+  position: absolute;
+  left: 14px;
+  top: 11px;
+  font-size: 1.15em;
+  line-height: 1.6;
+}
+.prose-editor div[data-type="callout"] > :first-child { margin-top: 0; }
+.prose-editor div[data-type="callout"] > :last-child { margin-bottom: 0; }
+
+/* ── Toggle ── */
+.prose-editor .prism-toggle { position: relative; margin: 0.4em 0; padding-left: 26px; }
+.prose-editor .prism-toggle-arrow {
+  position: absolute; left: 0; top: 0.2em;
+  width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 4px; color: var(--text-secondary); cursor: pointer; background: none; border: 0; padding: 0;
+}
+.prose-editor .prism-toggle-arrow::before {
+  content: ""; width: 0; height: 0; border-left: 6px solid currentColor; border-top: 4.5px solid transparent; border-bottom: 4.5px solid transparent;
+  transition: transform var(--transition-fast);
+}
+.prose-editor .prism-toggle[data-open="true"] > .prism-toggle-arrow::before { transform: rotate(90deg); }
+.prose-editor .prism-toggle-arrow:hover { background: var(--glass-hover); color: var(--text-primary); }
+.prose-editor .prism-toggle-arrow:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.prose-editor .prism-toggle-body > summary { display: block; list-style: none; font-weight: 500; cursor: text; }
+.prose-editor .prism-toggle-body > summary::-webkit-details-marker { display: none; }
+.prose-editor .prism-toggle[data-open="false"] > .prism-toggle-body > :not(summary) { display: none; }
+.prose-editor .prism-toggle-body > summary:empty::before { content: "Toggle"; color: var(--text-muted); }
+/* Stored/published HTML (no node view): a native <details>. */
+.prose-editor details[data-type="toggle"] > summary { cursor: pointer; font-weight: 500; }
+
+/* ── Columns ── */
+.prose-editor div[data-type="columns"] { display: grid; grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr)); gap: 24px; margin: 0.75em 0; }
+.prose-editor div[data-type="columns"][data-count="3"] { --cols: 3; }
+.prose-editor div[data-type="column"] { min-width: 0; padding: 2px 4px; border-radius: var(--radius-sm); }
+.prose-editor[contenteditable="true"] div[data-type="column"]:hover { box-shadow: inset 0 0 0 1px var(--glass-border); }
+.prose-editor div[data-type="column"] > :first-child { margin-top: 0; }
+@media (max-width: 767px) {
+  .prose-editor div[data-type="columns"] { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+}
+
+/* ── Tables ── */
+.prose-editor .tableWrapper { overflow-x: auto; margin: 1em 0; max-width: 100%; }
+.prose-editor table { border-collapse: collapse; table-layout: fixed; width: 100%; margin: 0; overflow: hidden; }
+.prose-editor th, .prose-editor td { position: relative; min-width: 80px; border: 1px solid var(--glass-border-strong); padding: 6px 9px; vertical-align: top; box-sizing: border-box; }
+.prose-editor th { background: var(--glass-hover); font-weight: 600; text-align: left; }
+.prose-editor th > p, .prose-editor td > p { margin: 0; }
+.prose-editor .selectedCell::after { content: ""; position: absolute; inset: 0; background: var(--surface-selected); pointer-events: none; }
+.prose-editor .column-resize-handle { position: absolute; right: -2px; top: 0; bottom: -2px; width: 4px; background: var(--color-accent); pointer-events: none; }
+.prose-editor.resize-cursor { cursor: col-resize; }
+
+/* ── Images ── */
+.prose-editor img { max-width: 100%; height: auto; border-radius: var(--radius-sm); }
+.prose-editor img.ProseMirror-selectednode { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.prose-editor img[data-uploading] { opacity: 0.55; }
+
+/* ── Block gutter (handles) ── */
+.block-gutter {
+  position: fixed; z-index: 30; display: flex; align-items: center; gap: 1px;
+  animation: block-gutter-in var(--transition-fast);
+}
+@keyframes block-gutter-in { from { opacity: 0; } to { opacity: 1; } }
+.block-gutter-button {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border-radius: 5px; border: 0; padding: 0; background: none;
+  color: var(--text-muted); cursor: pointer;
+}
+.block-gutter-button:hover, .block-gutter.is-active .block-gutter-grip { background: var(--surface-hover); color: var(--text-primary); }
+.block-gutter-grip { cursor: grab; }
+.block-gutter-grip:active { cursor: grabbing; }
+.block-gutter.is-narrow { margin-top: -4px; }
+.block-gutter.is-narrow .block-gutter-button { width: 16px; height: 32px; color: var(--text-secondary); }
+.block-drop-indicator { position: fixed; z-index: 31; height: 3px; border-radius: 2px; background: var(--color-accent); pointer-events: none; }
+
+/* ── Editor menus (block menu, slash menu, toolbar dropdowns) ── */
+.editor-menu {
+  min-width: 220px; max-width: min(300px, calc(100vw - 16px)); max-height: min(420px, calc(100dvh - 24px)); overflow-y: auto;
+  padding: 4px; border-radius: var(--radius-md);
+  background: var(--bg-elevated); color: var(--text-primary);
+  border: 1px solid var(--glass-border); box-shadow: var(--glass-shadow-elevated);
+}
+.editor-menu .editor-menu-item {
+  display: flex; align-items: center; gap: 9px; width: 100%; min-height: 32px; padding: 4px 8px;
+  border: 0; border-radius: 5px; background: none; color: var(--text-primary); font-size: 13px; text-align: left; cursor: pointer;
+}
+.editor-menu .editor-menu-item:focus { outline: none; background: var(--surface-active); }
+.editor-menu .editor-menu-item:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--focus-ring); }
+.editor-menu .editor-menu-item[aria-disabled="true"] { opacity: 0.45; cursor: default; }
+.editor-menu .editor-menu-item.is-danger { color: var(--color-danger); }
+.editor-menu-icon { display: inline-flex; width: 18px; justify-content: center; color: var(--text-secondary); flex-shrink: 0; }
+.editor-menu-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.editor-menu-hint { margin-left: auto; font-size: 11px; color: var(--text-muted); border: 0; background: none; padding: 0; }
+.editor-menu-check, .editor-menu-chevron { color: var(--text-secondary); flex-shrink: 0; }
+.editor-menu-back { color: var(--text-secondary); font-weight: 600; font-size: 12px; }
+.editor-menu-section { padding: 8px 8px 4px; font-size: 11px; font-weight: 600; color: var(--text-muted); }
+.block-color-swatch {
+  display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 4px;
+  border: 1px solid var(--glass-border-strong); font-size: 11px; font-weight: 700; padding: 0 !important;
+}
+@media (max-width: 767px) {
+  .editor-menu .editor-menu-item { min-height: 44px; font-size: 15px; }
+}
+
+/* ── Slash menu ── */
+.slash-menu { padding: 4px 4px 0; }
+/* #32: more rows below say so — a fade that sticks to the bottom while the list scrolls and sits in
+   its own space under the last row at the end (sticky ::after, not a mask). */
+.slash-menu::after { content: ""; position: sticky; bottom: 0; display: block; height: 14px; background: linear-gradient(to bottom, color-mix(in srgb, var(--bg-elevated) 0%, transparent), var(--bg-elevated)); pointer-events: none; }
+.slash-menu .editor-menu-section:first-child { padding-top: 4px; }
+.slash-menu-option { min-height: 44px; gap: 10px; }
+.slash-menu-option[data-active] { background: var(--surface-active); }
+.slash-menu-icon {
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 32px; height: 32px; border-radius: var(--radius-sm);
+  border: 1px solid var(--glass-border); background: var(--bg-surface); color: var(--text-secondary);
+}
+.slash-menu-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.slash-menu-title { font-size: 13px; font-weight: 500; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.slash-menu-subtitle { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 767px), (pointer: coarse) {
+  .editor-menu-hint { display: none; } /* keyboard hints mean nothing on touch */
+}
+
+/* ── Table controls ── */
+.table-controls {
+  position: fixed; z-index: 35; display: flex; align-items: center; gap: 2px; padding: 3px;
+  border-radius: var(--radius-md); background: var(--bg-elevated); border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow-elevated); max-width: calc(100vw - 16px);
+}
+.table-controls-row { display: flex; align-items: center; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.table-controls-row::-webkit-scrollbar { display: none; }
+.table-controls-more { display: none; flex: none; width: 18px; place-items: center; font-size: 16px; line-height: 1; color: var(--text-muted); pointer-events: none; }
+.table-controls button {
+  display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex-shrink: 0;
+  border: 0; border-radius: 6px; background: none; color: var(--text-secondary); cursor: pointer;
+}
+.table-controls button:hover:not(:disabled) { background: var(--surface-hover); color: var(--text-primary); }
+.table-controls button:disabled { opacity: 0.35; cursor: default; }
+.table-controls button.is-danger:hover:not(:disabled) { color: var(--color-danger); }
+.table-controls .selection-divider { align-self: stretch; width: 1px; margin: 4px 2px; background: var(--glass-border); flex-shrink: 0; }
+/* Phone / touch: 44 px targets; ONE row that scrolls sideways a whole button at a time (TableControls
+   sizes the row to a whole number of buttons), no dividers (they would leave a part-button at rest),
+   and a chevron BESIDE the row while there is more to the right — the keyboard toolbar's cue. */
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  .table-controls { z-index: 55; }
+  .table-controls button { width: 44px; height: 44px; scroll-snap-align: start; }
+  .table-controls-row { scroll-snap-type: x mandatory; overscroll-behavior-x: contain; }
+  .table-controls .selection-divider { display: none; }
+  .table-controls[data-more] > .table-controls-more { display: grid; }
+}
+
+/* ══ Media, embeds and editor depth (schema v3) ══════════════════════════════ */
+
+/* Shared small icon button on media chrome. */
+.prism-media-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; height: 28px; padding: 0 6px; border-radius: var(--radius-sm); color: var(--text-secondary); background: transparent; }
+.prism-media-btn:hover { background: var(--glass-hover); color: var(--text-primary); }
+.prism-media-btn[aria-pressed="true"] { color: var(--color-accent); background: var(--color-accent-dim); }
+.prism-media-btn:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.prose-editor .is-selected { outline: 2px solid var(--color-accent); outline-offset: 2px; border-radius: var(--radius-sm); }
+
+/* ── Image: align, resize, caption, lightbox ── */
+.prose-editor figure.prism-image { position: relative; margin: 0.9em 0; display: flex; flex-direction: column; align-items: center; }
+.prose-editor figure.prism-image[data-align="left"] { align-items: flex-start; }
+.prose-editor figure.prism-image[data-align="right"] { align-items: flex-end; }
+.prism-image-frame { position: relative; max-width: 100%; line-height: 0; }
+figure.prism-image[data-align="wide"] .prism-image-frame { width: 100% !important; }
+.prism-image-img { display: block; width: 100%; max-width: 100%; height: auto; border-radius: var(--radius-sm); cursor: zoom-in; }
+figure.prism-image[data-editable] .prism-image-img { cursor: default; }
+.prism-image-handle { position: absolute; top: 50%; width: 8px; height: 44px; margin-top: -22px; border-radius: 4px; background: var(--bg-elevated); border: 1px solid var(--glass-border-strong); box-shadow: var(--glass-shadow); opacity: 0; cursor: ew-resize; touch-action: none; transition: opacity 120ms; }
+.prism-image-handle[data-side="left"] { left: 6px; }
+.prism-image-handle[data-side="right"] { right: 6px; }
+figure.prism-image[data-editable]:hover .prism-image-handle,
+figure.prism-image.is-selected .prism-image-handle,
+figure.prism-image.is-resizing .prism-image-handle { opacity: 1; }
+figure.prism-image:not([data-editable]) .prism-image-handle { display: none; }
+.prism-media-toolbar { position: absolute; top: 8px; right: 8px; z-index: 2; display: flex; gap: 2px; padding: 3px; border-radius: var(--radius-md); background: var(--bg-elevated); border: 1px solid var(--glass-border); box-shadow: var(--glass-shadow-elevated); opacity: 0; pointer-events: none; transition: opacity 120ms; }
+figure.prism-image:hover .prism-media-toolbar, figure.prism-image.is-selected .prism-media-toolbar, figure.prism-image:focus-within .prism-media-toolbar { opacity: 1; pointer-events: auto; }
+figure.prism-image[data-align="left"] .prism-media-toolbar { right: auto; left: 8px; }
+.prism-image-caption { margin-top: 8px; width: 100%; max-width: 100%; font-size: 13px; line-height: 1.5; color: var(--text-secondary); text-align: center; }
+figure.prism-image[data-align="left"] .prism-image-caption { text-align: left; }
+figure.prism-image[data-align="right"] .prism-image-caption { text-align: right; }
+figure.prism-image[data-editable] .prism-image-caption { cursor: text; }
+.prism-image-caption-input { width: 100%; padding: 4px 6px; border-radius: var(--radius-sm); border: 1px solid var(--glass-border-strong); background: var(--glass); color: var(--text-primary); font: inherit; text-align: inherit; outline: none; }
+.prism-lightbox { position: fixed; inset: 0; z-index: 90; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: max(24px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom)); background: rgba(8, 9, 12, 0.88); animation: prism-fade 140ms ease-out; }
+.prism-lightbox-img { max-width: 100%; max-height: calc(100dvh - 120px); object-fit: contain; border-radius: var(--radius-sm); box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+.prism-lightbox-caption { max-width: 720px; margin: 0; color: rgba(255,255,255,.82); font-size: 14px; text-align: center; }
+.prism-lightbox-close { position: absolute; top: max(14px, env(safe-area-inset-top)); right: 14px; width: 44px; height: 44px; border-radius: 22px; color: #fff; font-size: 28px; line-height: 1; background: rgba(255,255,255,.12); }
+.prism-lightbox-close:hover, .prism-lightbox-close:focus-visible { background: rgba(255,255,255,.22); outline: none; }
+@keyframes prism-fade { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .prism-lightbox { animation: none; } }
+
+/* ── Files: card, PDF, audio, video ── */
+.prism-attachment { margin: 0.75em 0; border: 1px solid var(--glass-border); border-radius: var(--radius-md); background: var(--glass); overflow: hidden; }
+.prism-attachment-head { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 8px 8px 8px 12px; }
+.prism-attachment-icon { display: inline-flex; color: var(--text-secondary); flex: none; }
+.prism-attachment-meta { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.prism-attachment-name { font-size: 14px; font-weight: 550; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prism-attachment-size { font-size: 12px; color: var(--text-muted); }
+.prism-attachment-status { font-size: 12px; color: var(--color-danger); }
+.prism-attachment-download { flex: none; }
+.prism-attachment audio { display: block; width: calc(100% - 24px); margin: 0 12px 12px; }
+.prism-attachment video { display: block; width: 100%; max-height: 520px; background: #000; }
+.prism-attachment-pdf { display: block; width: 100%; height: 520px; border: 0; border-top: 1px solid var(--glass-border); background: var(--bg-surface); }
+.prism-attachment:hover { border-color: var(--glass-border-strong); }
+
+/* ── Bookmark card ── */
+.prism-bookmark-block { margin: 0.75em 0; }
+.prose-editor .prism-bookmark, .prism-bookmark { position: relative; cursor: pointer; display: flex; align-items: stretch; min-height: 96px; border: 1px solid var(--glass-border); border-radius: var(--radius-md); overflow: hidden; color: inherit; text-decoration: none; background: var(--glass); transition: background 120ms, border-color 120ms; }
+.prism-bookmark:hover { background: var(--glass-hover); border-color: var(--glass-border-strong); }
+/* The explicit Open control. Mouse: on hover / focus / when the block is selected. Touch: always (below). */
+.prism-bookmark-open { position: absolute; top: 6px; right: 6px; z-index: 1; background: var(--bg-elevated); border: 1px solid var(--glass-border); box-shadow: var(--glass-shadow-elevated); opacity: 0; transition: opacity 120ms; }
+.prism-bookmark-open:disabled { display: none; }
+.prism-bookmark:hover .prism-bookmark-open, .prism-bookmark-open:focus-visible, .is-selected .prism-bookmark-open { opacity: 1; }
+.prism-bookmark-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; padding: 12px 14px; }
+.prism-bookmark-title { font-size: 14px; font-weight: 550; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prism-bookmark-description { font-size: 12.5px; line-height: 1.45; color: var(--text-secondary); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.prism-bookmark-url { display: flex; align-items: center; gap: 6px; margin-top: auto; font-size: 12px; color: var(--text-muted); min-width: 0; }
+.prism-bookmark-url > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prism-bookmark-favicon { width: 16px; height: 16px; border-radius: 3px; flex: none; }
+.prism-bookmark-note { font-size: 12px; color: var(--text-muted); font-style: italic; }
+.prism-bookmark-image { flex: 0 0 34%; max-width: 240px; position: relative; border-left: 1px solid var(--glass-border); }
+.prism-bookmark-image img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+@media (max-width: 520px) { .prism-bookmark-image { display: none; } }
+
+/* ── Embed ── */
+.prism-embed { margin: 0.9em 0; border: 1px solid var(--glass-border); border-radius: var(--radius-md); overflow: hidden; background: var(--glass); }
+.prism-embed[data-fallback] { border: 0; background: transparent; }
+.prism-embed-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 34px; padding: 2px 6px 2px 12px; font-size: 12px; color: var(--text-muted); border-bottom: 1px solid var(--glass-border); }
+.prism-embed-frame { position: relative; width: 100%; background: var(--bg-surface); }
+.prism-embed-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.prism-embed.is-resizing iframe { pointer-events: none; }
+.prism-embed-resize { height: 10px; cursor: ns-resize; touch-action: none; display: flex; align-items: center; justify-content: center; }
+.prism-embed-resize::after { content: ""; width: 36px; height: 4px; border-radius: 2px; background: var(--glass-border-strong); }
+.prism-embed-resize:hover::after, .prism-embed-resize:focus-visible::after { background: var(--color-accent); }
+.prism-embed-resize:focus-visible { outline: none; }
+
+/* ── Table of contents ── */
+.prism-toc { margin: 0.75em 0; padding: 6px 0; }
+.prism-toc-list { list-style: none; margin: 0; padding: 0; }
+.prism-toc-item { display: block; width: 100%; text-align: left; padding: 4px 8px; border-radius: var(--radius-sm); font-size: 14px; color: var(--text-secondary); text-decoration: underline; text-decoration-color: var(--glass-border-strong); text-underline-offset: 3px; }
+.prism-toc-item:hover { background: var(--glass-hover); color: var(--text-primary); }
+/* A published page fills the block with links (no inline style there: the indent is a rule). */
+.prism-toc-list li[data-indent="1"] { padding-inline-start: 16px; }
+.prism-toc-list li[data-indent="2"] { padding-inline-start: 32px; }
+a.prism-toc-item { box-sizing: border-box; }
+.prism-toc-empty { margin: 0; padding: 6px 8px; font-size: 13px; color: var(--text-muted); }
+@media (max-width: 767px) { .prism-toc-item { min-height: 40px; } }
+
+/* ── Code block: toolbar, wrap, highlighting (both themes) ── */
+.prose-editor .prism-code-block { position: relative; margin: 0.9em 0; border-radius: var(--radius-md); background: var(--prism-code-bg, rgba(127,127,127,.08)); border: 1px solid var(--glass-border); }
+.prose-editor .prism-code-block pre { margin: 0; border: 0; background: transparent; border-radius: 0 0 var(--radius-md) var(--radius-md); overflow-x: auto; }
+.prose-editor .prism-code-block[data-wrap] pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.prism-code-bar { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 4px 6px 0 8px; opacity: .55; transition: opacity 120ms; user-select: none; }
+.prism-code-block:hover .prism-code-bar, .prism-code-block:focus-within .prism-code-bar { opacity: 1; }
+@media (hover: none) { .prism-code-bar { opacity: 1; } }
+.prism-code-lang { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 6px; border-radius: var(--radius-sm); font-size: 12px; color: var(--text-secondary); }
+.prism-code-lang:not(:disabled):hover { background: var(--glass-hover); color: var(--text-primary); }
+.prism-code-lang:disabled { cursor: default; }
+.prism-code-lang:disabled svg { display: none; }
+.prism-code-actions { display: inline-flex; align-items: center; gap: 2px; }
+.prism-code-copied { font-size: 12px; color: var(--text-muted); margin-right: 4px; }
+.prism-code-picker { width: 240px; max-height: 300px; display: flex; flex-direction: column; padding: 6px; }
+.prism-code-picker-search { width: 100%; height: 30px; padding: 0 8px; margin-bottom: 4px; border-radius: var(--radius-sm); border: 1px solid var(--glass-border); background: var(--glass); color: var(--text-primary); font-size: 13px; outline: none; }
+.prism-code-picker-list { overflow-y: auto; min-height: 0; }
+.prism-code-picker-option { padding: 5px 8px; font-size: 13px; border-radius: var(--radius-sm); cursor: pointer; }
+.prism-code-picker-option[aria-selected="true"] { background: var(--surface-active, var(--glass-hover)); }
+.prism-code-picker-option[data-current]::after { content: "✓"; float: right; color: var(--color-accent); }
+@media (max-width: 767px) { .prism-code-picker-search { font-size: 16px; } .prism-code-picker-option { padding: 10px 8px; } }
+/* highlight.js token colours from the status/accent tokens — legible on both themes. */
+.prose-editor pre .hljs-comment, .prose-editor pre .hljs-quote { color: var(--text-muted); font-style: italic; }
+.prose-editor pre .hljs-keyword, .prose-editor pre .hljs-selector-tag, .prose-editor pre .hljs-literal, .prose-editor pre .hljs-doctag { color: var(--prism-color-blue); }
+.prose-editor pre .hljs-string, .prose-editor pre .hljs-regexp, .prose-editor pre .hljs-addition, .prose-editor pre .hljs-template-tag { color: var(--prism-color-green); }
+.prose-editor pre .hljs-number, .prose-editor pre .hljs-symbol, .prose-editor pre .hljs-bullet, .prose-editor pre .hljs-variable.constant_ { color: var(--prism-color-yellow); }
+.prose-editor pre .hljs-title, .prose-editor pre .hljs-title.function_, .prose-editor pre .hljs-section, .prose-editor pre .hljs-name { color: color-mix(in srgb, #8b5cf6 70%, var(--text-primary)); }
+.prose-editor pre .hljs-attr, .prose-editor pre .hljs-attribute, .prose-editor pre .hljs-property, .prose-editor pre .hljs-type, .prose-editor pre .hljs-built_in { color: color-mix(in srgb, #4cc3bd 70%, var(--text-primary)); }
+.prose-editor pre .hljs-deletion, .prose-editor pre .hljs-meta { color: var(--prism-color-red); }
+.prose-editor pre .hljs-emphasis { font-style: italic; }
+.prose-editor pre .hljs-strong { font-weight: 700; }
+
+/* ── Find and replace bar ── */
+.prism-find-bar { position: fixed; top: 72px; right: calc(24px + var(--workspace-right-inset, 0px)); z-index: 60; display: flex; flex-direction: column; gap: 4px; width: min(420px, calc(100vw - 32px)); padding: 6px 8px; border-radius: var(--radius-md); border: 1px solid var(--glass-border); box-shadow: var(--glass-shadow-elevated); }
+.prism-find-row { display: flex; align-items: center; gap: 4px; }
+.prism-find-input { flex: 1; min-width: 0; height: 28px; padding: 0 8px; border-radius: var(--radius-sm); border: 1px solid var(--glass-border); background: var(--glass); color: var(--text-primary); font-size: 13px; outline: none; }
+.prism-find-input:focus { border-color: var(--color-accent); }
+.prism-find-count { min-width: 48px; padding: 0 4px; font-size: 12px; text-align: right; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.prism-find-action { height: 28px; padding: 0 10px; border-radius: var(--radius-sm); font-size: 12px; color: var(--text-primary); background: var(--glass-hover); white-space: nowrap; }
+.prism-find-action:hover:not(:disabled) { background: var(--glass-active); }
+.prism-find-action:disabled { opacity: .45; }
+.prism-find-notice { margin: 0 0 0 26px; font-size: 12px; color: var(--text-muted); }
+@media (max-width: 767px) {
+  .prism-find-bar { top: calc(env(safe-area-inset-top) + 56px); right: 16px; left: 16px; width: auto; }
+  .prism-find-input { font-size: 16px; height: 36px; }
+  .prism-find-action { height: 36px; }
+}
+
+/* ── Paste-as menu ── */
+.prism-paste-menu { padding: 4px; }
+.prism-paste-option { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: var(--radius-sm); cursor: pointer; }
+.prism-paste-option[data-active] { background: var(--surface-active, var(--glass-hover)); }
+
+/* ── Inline database block + its insert dialog ── */
+.prism-database-block { margin: 1em 0; border: 1px solid var(--glass-border); border-radius: var(--radius-md); overflow: hidden; }
+.prism-db-insert { position: fixed; top: 18vh; left: 50%; transform: translateX(-50%); z-index: 71; width: min(420px, calc(100vw - 32px)); max-height: 64vh; display: flex; flex-direction: column; gap: 10px; padding: 16px; border-radius: var(--radius-lg); border: 1px solid var(--glass-border); background: var(--bg-elevated); box-shadow: var(--glass-shadow-elevated); }
+.prism-db-insert h2 { margin: 0; font-size: 15px; font-weight: 650; color: var(--text-primary); }
+.prism-db-insert form { display: flex; flex-direction: column; gap: 8px; }
+.prism-db-insert label { font-size: 12px; color: var(--text-secondary); }
+.prism-db-insert input { height: 34px; padding: 0 10px; border-radius: var(--radius-sm); border: 1px solid var(--glass-border); background: var(--glass); color: var(--text-primary); font-size: 14px; outline: none; }
+.prism-db-insert input:focus { border-color: var(--color-accent); }
+.prism-db-insert ul { list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; }
+.prism-db-insert li button { display: block; width: 100%; text-align: left; padding: 8px 10px; border-radius: var(--radius-sm); font-size: 14px; color: var(--text-primary); }
+.prism-db-insert li button:hover { background: var(--glass-hover); }
+.prism-db-insert-empty { padding: 8px 10px; font-size: 13px; color: var(--text-muted); }
+.prism-db-insert-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.prism-db-insert-actions button { height: 32px; padding: 0 12px; border-radius: var(--radius-sm); font-size: 13px; color: var(--text-secondary); }
+.prism-db-insert-actions button:hover { background: var(--glass-hover); }
+.prism-db-insert-primary { color: #fff !important; background: var(--action-bg, var(--color-accent)) !important; font-weight: 600; }
+.prism-db-insert-primary:disabled { opacity: .5; }
+.prism-db-insert-error { margin: 0; font-size: 12px; color: var(--color-danger); }
+@media (max-width: 767px) {
+  .prism-db-insert input { font-size: 16px; height: 40px; } .prism-db-insert li button { min-height: 44px; }
+  /* Keyboard up: the dialog lives in the VISIBLE area (softKeyboard's root variables), so the list's
+     last rows and Cancel are not behind the keys. */
+  .prism-db-insert { top: calc(var(--visual-viewport-top, 0px) + 12px); max-height: calc(var(--visual-viewport-height, 100dvh) - 24px); }
+  .prism-db-insert-actions button { min-height: 44px; }
+}
+
+/* ── Wave 4A: placeholders (NP-ED-25) ──────────────────────────────────────
+   The Placeholder extension marks the empty block that holds the caret; show its
+   hint only while the editor is focused (an empty DOCUMENT shows it always). */
+.tiptap .is-empty::before {
+  content: attr(data-placeholder);
+  float: left; height: 0; pointer-events: none;
+  color: var(--text-muted); opacity: 0;
+}
+.tiptap.ProseMirror-focused .is-empty::before,
+.tiptap .is-editor-empty::before { opacity: 0.75; }
+.tiptap[contenteditable="false"] .is-empty::before { content: none; }
+.prose-editor .prism-toggle-body > summary.is-empty::before { content: attr(data-placeholder); float: none; height: auto; }
+
+/* ── Block selection (NP-ED-06 / NP-ED-01) ── */
+.prose-editor > .ProseMirror-selectednode:not(img):not(figure),
+.prose-editor > .prism-block-selected {
+  background: var(--surface-selected);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 0 0 3px var(--surface-selected);
+  outline: none;
+}
+.prose-editor > .prism-block-selected ::selection { background: transparent; }
+
+/* ── Toggle headings (NP-ED-08) ── */
+.prose-editor .prism-toggle[data-heading-level] > .prism-toggle-body > summary,
+.prose-editor details[data-heading-level] > summary { font-weight: 650; line-height: 1.25; letter-spacing: -0.01em; }
+.prose-editor .prism-toggle[data-heading-level="1"] > .prism-toggle-body > summary, .prose-editor details[data-heading-level="1"] > summary { font-size: 1.875em; }
+.prose-editor .prism-toggle[data-heading-level="2"] > .prism-toggle-body > summary, .prose-editor details[data-heading-level="2"] > summary { font-size: 1.5em; }
+.prose-editor .prism-toggle[data-heading-level="3"] > .prism-toggle-body > summary, .prose-editor details[data-heading-level="3"] > summary { font-size: 1.25em; }
+.prose-editor .prism-toggle[data-heading-level="1"] > .prism-toggle-arrow { top: 0.75em; }
+.prose-editor .prism-toggle[data-heading-level="2"] > .prism-toggle-arrow { top: 0.5em; }
+.prose-editor .prism-toggle[data-heading-level="3"] > .prism-toggle-arrow { top: 0.32em; }
+.prose-editor .prism-toggle[data-heading-level] { margin-top: 1em; }
+
+/* ── Columns: 2–5, resizable (NP-ED-09). Flex so a stored width is a grow ratio. ── */
+.prose-editor div[data-type="columns"] { display: flex; grid-template-columns: none; gap: 24px; }
+.prose-editor div[data-type="column"] { flex: 1 1 0; }
+.prose-editor .prism-columns { position: relative; margin: 0.75em 0; }
+.prose-editor .prism-columns > div[data-type="columns"] { margin: 0; }
+.prose-editor .prism-column-resize {
+  position: absolute; top: 0; bottom: 0; width: 16px; margin-left: -8px; padding: 0; border: 0; background: none;
+  cursor: col-resize; touch-action: none; z-index: 2;
+}
+.prose-editor .prism-column-resize::after { content: ""; position: absolute; top: 2px; bottom: 2px; left: 7px; width: 2px; border-radius: 2px; background: transparent; transition: background var(--transition-fast); }
+.prose-editor .prism-column-resize:hover::after, .prose-editor .prism-column-resize:focus-visible::after, .prose-editor .prism-column-resize[data-dragging]::after { background: var(--color-accent); }
+.prose-editor .prism-column-resize:focus-visible { outline: none; }
+.block-drop-indicator.is-side { width: 3px !important; }
+@media (max-width: 767px) {
+  .prose-editor div[data-type="columns"] { flex-direction: column; gap: 8px; }
+  .prose-editor div[data-type="column"] { flex: 0 0 auto !important; }
+  .prose-editor .prism-column-resize { display: none; }
+}
+
+/* ── Table cell background (NP-ED-10) ── */
+.prose-editor [data-cell-color="gray"] { background: var(--prism-color-gray-bg); }
+.prose-editor [data-cell-color="blue"] { background: var(--prism-color-blue-bg); }
+.prose-editor [data-cell-color="green"] { background: var(--prism-color-green-bg); }
+.prose-editor [data-cell-color="yellow"] { background: var(--prism-color-yellow-bg); }
+.prose-editor [data-cell-color="red"] { background: var(--prism-color-red-bg); }
+
+/* ── Sub-page row (NP-PG-15) ── */
+.prose-editor .prism-child-page { margin: 2px 0; }
+.prism-child-page-row {
+  display: flex; align-items: center; gap: 8px; width: 100%; min-height: 32px; padding: 3px 6px;
+  border: 0; border-radius: var(--radius-sm); background: none; color: var(--text-primary);
+  font: inherit; font-weight: 500; text-align: left; cursor: pointer;
+}
+.prism-child-page-row:hover { background: var(--glass-hover); }
+.prism-child-page-row:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.prism-child-page-row[aria-disabled="true"] { color: var(--text-muted); cursor: default; font-weight: 400; }
+.prism-child-page-row[aria-disabled="true"]:hover { background: none; }
+.prism-child-page-icon { flex: 0 0 auto; display: inline-flex; width: 20px; justify-content: center; color: var(--text-secondary); }
+.prism-child-page-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-decoration: underline; text-decoration-color: var(--glass-border-strong); text-underline-offset: 3px; }
+.prism-child-page-row[aria-disabled="true"] .prism-child-page-title { text-decoration: none; }
+.prose-editor .prism-child-page.ProseMirror-selectednode .prism-child-page-row { background: var(--surface-selected); }
+@media (max-width: 767px) { .prism-child-page-row { min-height: 44px; } }
+
+/* ── Editor menu search + shortcut sheet (NP-ED-02 / NP-ED-07) ── */
+.editor-menu-search { display: block; width: calc(100% - 8px); margin: 2px 4px 4px; height: 28px; padding: 0 8px; border-radius: var(--radius-sm); border: 1px solid var(--glass-border); background: var(--glass); color: var(--text-primary); font-size: 13px; outline: none; }
+.editor-menu-search:focus { border-color: var(--color-accent); }
+.editor-menu-empty { padding: 8px 10px; font-size: 12.5px; color: var(--text-muted); }
+.prism-shortcuts-backdrop { position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(0, 0, 0, 0.4); }
+.prism-shortcuts { width: min(720px, 100%); max-height: min(80dvh, 720px); display: flex; flex-direction: column; border-radius: var(--radius-lg, 14px); border: 1px solid var(--glass-border); background: var(--bg-surface); color: var(--text-primary); box-shadow: var(--glass-shadow-elevated); }
+.prism-shortcuts-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--glass-border); }
+.prism-shortcuts-head h2 { flex: 1; margin: 0; font-size: 15px; font-weight: 600; }
+.prism-shortcuts-head input { width: 200px; max-width: 45%; height: 30px; padding: 0 8px; border-radius: var(--radius-sm); border: 1px solid var(--glass-border); background: var(--glass); color: var(--text-primary); font-size: 13px; outline: none; }
+.prism-shortcuts-head input:focus { border-color: var(--color-accent); }
+.prism-shortcuts-head button { display: inline-flex; width: 30px; height: 30px; align-items: center; justify-content: center; border: 0; border-radius: var(--radius-sm); background: none; color: var(--text-secondary); cursor: pointer; }
+.prism-shortcuts-head button:hover { background: var(--glass-hover); }
+.prism-shortcuts-body { overflow: auto; padding: 6px 14px 14px; columns: 2; column-gap: 28px; }
+.prism-shortcuts-body section { break-inside: avoid; margin-top: 10px; }
+.prism-shortcuts-body h3 { margin: 0 0 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); }
+.prism-shortcuts-body dl { margin: 0; }
+.prism-shortcuts-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 4px 0; font-size: 13px; }
+.prism-shortcuts-row dt { color: var(--text-secondary); }
+.prism-shortcuts-row dd { margin: 0; white-space: nowrap; }
+.prism-shortcuts-row kbd { font: 12px/1 var(--font-mono, ui-monospace, monospace); padding: 3px 6px; border-radius: 5px; border: 1px solid var(--glass-border); background: var(--glass); color: var(--text-primary); }
+@media (max-width: 640px) { .prism-shortcuts-body { columns: 1; } .prism-shortcuts-head input { font-size: 16px; } }
+.block-notice {
+  position: fixed; left: calc(50% + (var(--workspace-left-inset, 0px) - var(--workspace-right-inset, 0px)) / 2); bottom: calc(24px + var(--workspace-bottom-inset, 0px)); transform: translateX(-50%); z-index: 80;
+  max-width: calc(100vw - 32px); padding: 8px 14px; border-radius: var(--radius-md); border: 1px solid var(--glass-border);
+  background: var(--bg-surface); color: var(--text-primary); box-shadow: var(--glass-shadow-elevated); font-size: 13px;
+}
+.block-drop-indicator.is-side { height: auto; }
+
+/* ── The in-app address field (EditorPrompt): Embed, Web bookmark, Image from URL, toolbar Link / Image.
+   Never `window.prompt` — the Prism Client's web view shows no browser dialogs. Desktop: a popover
+   under the caret. Touch / phone: it also carries `.prism-docked-composer` (docked on the keyboard). */
+.prism-editor-prompt { display: flex; flex-direction: column; gap: 8px; box-sizing: border-box; padding: 12px; border-radius: var(--radius-md); border: 1px solid var(--glass-border); background: var(--bg-elevated); color: var(--text-primary); box-shadow: var(--glass-shadow-elevated); }
+.prism-editor-prompt-label { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+.prism-editor-prompt-row { display: flex; align-items: center; gap: 6px; }
+.prism-editor-prompt input { flex: 1; min-width: 0; height: 34px; padding: 0 10px; border-radius: var(--radius-sm); border: 1px solid var(--glass-border-strong, var(--glass-border)); background: var(--bg-base); color: var(--text-primary); font-size: 14px; outline: none; }
+.prism-editor-prompt input:focus { border-color: var(--color-accent); }
+.prism-editor-prompt input[aria-invalid="true"] { border-color: var(--color-danger); }
+.prism-editor-prompt-error { margin: 0; font-size: 12px; color: var(--color-danger); }
+.prism-editor-prompt-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.prism-editor-prompt button { display: inline-flex; align-items: center; justify-content: center; min-height: 32px; padding: 0 12px; border: 0; border-radius: var(--radius-sm); background: none; font-size: 13px; color: var(--text-secondary); cursor: pointer; }
+.prism-editor-prompt button:hover { background: var(--glass-hover); }
+.prism-editor-prompt .prism-editor-prompt-icon { min-width: 32px; padding: 0; }
+.prism-editor-prompt .prism-editor-prompt-primary { color: var(--action-fg, #fff); background: var(--action-bg, var(--color-accent)); font-weight: 600; }
+.prism-editor-prompt .prism-editor-prompt-primary:hover { background: var(--action-bg, var(--color-accent)); filter: brightness(1.06); }
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  .prism-editor-prompt input { height: 44px; font-size: 16px; }
+  .prism-editor-prompt button { min-height: 44px; min-width: 44px; }
+}
+
+/* ── Touch: media actions a finger can reach (no hover there) ──
+   44 px targets; a bookmark's Open control and a read-only image's actions (View full screen /
+   Download / Copy) are always shown — on a page the reader cannot edit a tap opens the image, so
+   nothing ever revealed its toolbar. The image toolbar scrolls sideways when it is wider than the image. */
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  .prism-media-btn { min-width: 44px; height: 44px; }
+  .prism-bookmark-open { opacity: 1; }
+  .prism-bookmark-text { padding-right: 56px; }
+  .prism-media-toolbar { max-width: calc(100% - 16px); overflow-x: auto; scrollbar-width: none; }
+  .prism-media-toolbar::-webkit-scrollbar { display: none; }
+  .prism-media-toolbar .prism-media-btn { flex: none; }
+  figure.prism-image:not([data-editable]) .prism-media-toolbar { opacity: 1; pointer-events: auto; }
+}

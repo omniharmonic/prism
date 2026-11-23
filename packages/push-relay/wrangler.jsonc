@@ -1,0 +1,25 @@
+// Prism Push Relay. Deploy is the owner's step (README.md): nothing in the repo
+// deploys this. Secrets (wrangler secret put …): APNS_KEY_P8, APNS_KEY_ID,
+// APNS_TEAM_ID, APNS_TOPIC, ADMIN_TOKEN, optional REGISTRATION_SECRET.
+// No account id, team id or bundle id is written here on purpose.
+{
+  "name": "prism-push-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  "durable_objects": {
+    "bindings": [{ "name": "RELAY_SHARD", "class_name": "RelayShard" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RelayShard"] }],
+  "vars": {
+    "RELAY_PAUSED": "false",
+    "SERVER_SENDS_PER_MINUTE": "120",
+    "SERVER_SENDS_PER_DAY": "20000",
+    "DEVICE_SENDS_PER_MINUTE": "10",
+    "DEVICE_SENDS_PER_HOUR": "120",
+    "DEVICE_SERVER_SENDS_PER_MINUTE": "5",
+    "DEVICE_SERVER_SENDS_PER_HOUR": "60",
+    "REGISTRATIONS_PER_IP_PER_DAY": "5"
+  }
+}

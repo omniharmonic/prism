@@ -1,0 +1,270 @@
+pub mod error;
+pub mod models;
+pub mod clients;
+pub mod commands;
+pub mod auth;
+pub mod services;
+pub mod sync;
+
+use clients::parachute::ParachuteClient;
+use clients::matrix::MatrixClient;
+use clients::google::GoogleClient;
+use clients::anthropic::ClaudeClient;
+use clients::mcp_client::PrismMcpClient;
+use clients::local_agent::LocalAgent;
+use clients::model_router::ModelRouter;
+use commands::{vault, vaults, convert, system, matrix, google, sync_cmds, agent, config, editor, wikilinks, notion_pages, service_cmds, ollama_cmds, github_cmds, notion_db_cmds, semantic};
+use commands::github_cmds::GitHubSyncState;
+use commands::notion_db_cmds::NotionDbSyncState;
+use commands::agent::AgentSessions;
+use commands::config::AppConfig;
+use services::ServiceManager;
+use services::agent_dispatch::DispatchManager;
+use tauri::Manager;
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let _ = env_logger::try_init();
+
+    // Load configuration (prism-config.json, else defaults)
+    let app_config = AppConfig::load().unwrap_or_else(|e| {
+        log::warn!("Failed to load config: {}. Using defaults.", e);
+        AppConfig::default()
+    });
+
+    let parachute_key = if app_config.parachute_api_key.is_empty() { None } else { Some(app_config.parachute_api_key.clone()) };
+    let parachute_url = app_config.parachute_url.clone();
+    let parachute_vault = app_config.parachute_vault.clone();
+    log::info!("Parachute: url={}, vault={}, api_key_present={}", parachute_url, parachute_vault, parachute_key.is_some());
+    let parachute = ParachuteClient::new(&parachute_url, &parachute_vault, parachute_key.clone());
+
+    // Write the managed MCP config from the ACTIVE vault so `claude -p` agent runs
+    // target the current vault (regenerated on every vault switch). This is what
+    // makes Parachute MCP work in a released `.app` whose cwd has no repo `.mcp.json`.
+    if let Some(tok) = &parachute_key {
+        match crate::commands::config::AppConfig::write_managed_mcp_config(&parachute_url, &parachute_vault, tok) {
+            Ok(p) => log::info!("Managed MCP config written: {:?}", p),
+            Err(e) => log::warn!("Failed to write managed MCP config: {}", e),
+        }
+    }
+
+    // Matrix client configured from the app config
+    let matrix_client = MatrixClient::new(
+        &app_config.matrix_homeserver,
+        &app_config.matrix_access_token,
+        &app_config.matrix_user,
+    );
+
+    let google_client = GoogleClient::new();
+
+    // Claude Code CLI client — hardened (WP0.1d): runs from a fixed EMPTY cwd under
+    // the app-data dir with ONLY the active vault's MCP (per-run config built from
+    // the managed prism-mcp.json above), no built-in tools, and an env allowlist.
+    let claude_client = ClaudeClient::new();
+
+    // Build ONE shared local OpenAI-compatible agent (LM Studio / Ollama `/v1` /
+    // llama.cpp / vLLM), used by BOTH the model router (interactive skills) and
+    // the dispatch manager (recurring skills). Built whenever a base URL is set
+    // so interactive skills can select "local" even if the background default is
+    // still Claude. Optional — if MCP can't connect, local skills fall back to Claude.
+    let local_agent: Option<std::sync::Arc<LocalAgent>> = if !app_config.local_ai_base_url.is_empty() {
+        tauri::async_runtime::block_on(async {
+            let mcp_url = format!("{}/vault/{}/mcp", parachute_url, parachute_vault);
+            // Retry the startup MCP connect: this runs synchronously during app
+            // setup, which can race a still-warming Parachute/network stack right
+            // after launch. A transient failure here would otherwise disable the
+            // local provider for the entire session (forcing the Claude fallback),
+            // so we give it several attempts with a short backoff before giving up.
+            const MAX_ATTEMPTS: u32 = 5;
+            let mut last_err = String::new();
+            for attempt in 1..=MAX_ATTEMPTS {
+                match PrismMcpClient::connect(&mcp_url, parachute_key.as_deref()).await {
+                    Ok(mcp) => {
+                        log::info!(
+                            "LocalAgent ready (attempt {}): {} MCP tools, server {}",
+                            attempt,
+                            mcp.tools().len(),
+                            app_config.local_ai_base_url
+                        );
+                        return Some(std::sync::Arc::new(LocalAgent::new(
+                            app_config.local_ai_base_url.clone(),
+                            None,
+                            mcp,
+                        )));
+                    }
+                    Err(e) => {
+                        last_err = e.to_string();
+                        log::warn!("LocalAgent MCP connect attempt {}/{} failed: {}", attempt, MAX_ATTEMPTS, last_err);
+                        if attempt < MAX_ATTEMPTS {
+                            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                        }
+                    }
+                }
+            }
+            log::warn!(
+                "LocalAgent unavailable after {} attempts ({}); local skills will fall back to Claude",
+                MAX_ATTEMPTS, last_err
+            );
+            None
+        })
+    } else {
+        None
+    };
+
+    let model_router = ModelRouter::new(claude_client, local_agent.clone());
+
+    let agent_sessions = AgentSessions::new();
+
+    // Start background sync services (uses tauri::async_runtime which is always available)
+    let service_manager = ServiceManager::start(&app_config);
+    let dispatch_manager = std::sync::Arc::new(DispatchManager::new(
+        &parachute_url,
+        &parachute_vault,
+        parachute_key.clone(),
+        local_agent.clone(),
+        app_config.background_skill_provider.clone(),
+        app_config.local_ai_model.clone(),
+    ));
+
+    // Start skill scheduler (needs both ServiceManager and DispatchManager)
+    service_manager.start_scheduler(dispatch_manager.clone());
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .manage(parachute)
+        .manage(matrix_client)
+        .manage(google_client)
+        .manage(model_router)
+        .manage(agent_sessions)
+        .manage(app_config)
+        .manage(service_manager)
+        .manage(dispatch_manager)
+        .manage(GitHubSyncState::new())
+        .manage(NotionDbSyncState::new())
+        .invoke_handler(tauri::generate_handler![
+            // Vault CRUD
+            vault::vault_list_notes,
+            vault::vault_get_note,
+            vault::vault_create_note,
+            vault::vault_update_note,
+            vault::vault_delete_note,
+            vault::vault_list_note_versions,
+            vault::vault_get_note_version,
+            vault::vault_restore_note_version,
+            vault::vault_batch_delete,
+            vault::vault_search,
+            vault::vault_get_tags,
+            vault::vault_add_tags,
+            vault::vault_remove_tags,
+            vault::vault_get_stats,
+            vault::vault_list_tree,
+            vault::vault_get_info,
+            vault::vault_update_description,
+            vault::vault_get_paths,
+            vault::vault_get_links,
+            vault::vault_create_link,
+            vault::vault_delete_link,
+            vault::vault_get_graph,
+            // Semantic search (RAG via Prism Server)
+            semantic::vault_semantic_search,
+            semantic::vault_canvas_reconcile,
+            semantic::embedding_reindex,
+            // Markdown conversion
+            convert::markdown_to_html,
+            convert::html_to_markdown,
+            // System
+            system::check_services,
+            // Matrix messaging
+            matrix::matrix_get_rooms,
+            matrix::matrix_get_messages,
+            matrix::matrix_send_message,
+            matrix::matrix_get_room_members,
+            matrix::matrix_mark_read,
+            matrix::matrix_search_messages,
+            // Gmail
+            google::gmail_list_threads,
+            google::gmail_get_thread,
+            google::gmail_send,
+            google::gmail_archive,
+            google::gmail_label,
+            // Calendar
+            google::calendar_list_events,
+            google::calendar_create_event,
+            google::calendar_update_event,
+            google::calendar_delete_event,
+            google::google_check_auth,
+            // Sync
+            sync_cmds::sync_trigger,
+            sync_cmds::sync_pull,
+            sync_cmds::sync_status,
+            sync_cmds::sync_add_config,
+            sync_cmds::sync_remove_config,
+            sync_cmds::sync_resolve_conflict,
+            // Agent (Claude Code CLI)
+            agent::agent_edit,
+            agent::agent_chat,
+            agent::agent_transform,
+            agent::agent_generate,
+            // Message indexing
+            // Config + integration testing
+            config::get_config_status,
+            config::get_collab_config,
+            config::set_anthropic_key,
+            config::test_parachute,
+            config::validate_config,
+            config::test_matrix,
+            config::test_notion,
+            config::check_claude_cli,
+            config::check_google_cli,
+            config::get_full_config,
+            config::create_collab_share_link,
+            config::acl_request,
+            config::api_request,
+            config::update_config,
+            // Multi-vault registry
+            vaults::vault_list,
+            vaults::vault_set_active,
+            vaults::vault_create,
+            vaults::vault_link,
+            vaults::vault_remove,
+            // Editor events
+            editor::editor_set_content,
+            editor::editor_replace_selection,
+            // Wikilink resolution
+            wikilinks::resolve_wikilinks,
+            wikilinks::resolve_all_wikilinks,
+            // Notion
+            notion_pages::notion_list_pages,
+            // Background services
+            service_cmds::get_service_status,
+            service_cmds::calendar_sync_range,
+            service_cmds::agent_dispatch,
+            service_cmds::agent_get_dispatches,
+            service_cmds::agent_cancel_dispatch,
+            service_cmds::agent_get_skills,
+            service_cmds::agent_update_skill,
+            // Ollama / model management
+            ollama_cmds::ollama_status,
+            ollama_cmds::ollama_list_models,
+            ollama_cmds::set_skill_model,
+            ollama_cmds::get_skill_models,
+            ollama_cmds::local_ai_list_models,
+            ollama_cmds::test_local_ai,
+            // GitHub sync
+            github_cmds::github_check_auth,
+            github_cmds::github_sync_init,
+            github_cmds::github_sync_push,
+            github_cmds::github_sync_push_file,
+            github_cmds::github_sync_status,
+            github_cmds::github_sync_remove,
+            // Notion database sync
+            notion_db_cmds::notion_db_list,
+            notion_db_cmds::notion_db_schema,
+            notion_db_cmds::notion_db_sync_init,
+            notion_db_cmds::notion_db_sync,
+            notion_db_cmds::notion_db_sync_status,
+            notion_db_cmds::notion_db_sync_remove,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}

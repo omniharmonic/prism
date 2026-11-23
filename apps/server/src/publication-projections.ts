@@ -1,0 +1,155 @@
+import type { Note } from "./parachute";
+import { navTitle, deriveTitle } from "./publication-content";
+const WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
+
+/** Strip a path to its basename without extension, lowercased. */
+function pathKey(path: string | null | undefined): string {
+  const base = (path ?? "").split("/").pop() ?? "";
+  return base
+    .replace(/\.[a-z0-9]+$/i, "")
+    .trim()
+    .toLowerCase();
+}
+
+export function publicationGraph(notes: Note[]) {
+  // Nodes: the authoritative in-set list. ids only ever come from here.
+  const nodes = notes.map((n) => ({ id: n.id, title: navTitle(n) }));
+
+  // Resolver: maps various wikilink target forms → an in-set note id. ONLY
+  // in-set notes populate it, so a target that resolves at all is in-set.
+  const byKey = new Map<string, string>();
+  const put = (key: string | null | undefined, id: string) => {
+    const k = (key ?? "").trim();
+    if (k) byKey.set(k.toLowerCase(), id);
+  };
+  for (const n of notes) {
+    byKey.set(n.id, n.id); // exact id (case-sensitive)
+    put(n.path, n.id); // full path
+    put(pathKey(n.path), n.id); // path basename sans extension
+    put(deriveTitle(n.content), n.id); // derived title
+  }
+
+  const resolve = (target: string): string | undefined => {
+    const raw = target.trim();
+    if (byKey.has(raw)) return byKey.get(raw); // exact id
+    const lower = raw.toLowerCase();
+    if (byKey.has(lower)) return byKey.get(lower);
+    return byKey.get(pathKey(raw)); // treat as a path → basename
+  };
+
+  // Edges: in-set → in-set only. De-duplicated.
+  const seen = new Set<string>();
+  const edges: { source: string; target: string }[] = [];
+  for (const n of notes) {
+    const content = n.content ?? "";
+    for (const m of content.matchAll(WIKILINK_RE)) {
+      const target = (m[1] ?? "").split("|")[0] ?? ""; // drop |display
+      const resolved = resolve(target);
+      // Anti-leak rule: emit only when target resolves to an in-set id
+      // (resolver is built from in-set notes only) and isn't a self-loop.
+      if (!resolved || resolved === n.id) continue;
+      const key = `${n.id}\0${resolved}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      edges.push({ source: n.id, target: resolved });
+    }
+  }
+
+  return { nodes, edges };
+}
+const GEO_TAGS = [
+  "ecological-entity",
+  "species",
+  "watershed",
+  "place",
+  "signal",
+  "resource",
+  "event",
+  "organization",
+] as const;
+
+const metaStr = (
+  m: Record<string, unknown> | null | undefined,
+  k: string,
+): string => {
+  const v = m?.[k];
+  return typeof v === "string" ? v : "";
+};
+
+/** First real GeoJSON geometry on the note. The field name varies by type
+ *  (geometry | boundaryGeometry | rangeGeometry) and the vault default-fills
+ *  omitted schema'd fields with "" — only an object with a string `type` and
+ *  non-null `coordinates` counts as location. */
+export function geometryOf(
+  m: Record<string, unknown> | null | undefined,
+): unknown | null {
+  for (const k of ["geometry", "boundaryGeometry", "rangeGeometry"] as const) {
+    const g = m?.[k] as
+      | { type?: unknown; coordinates?: unknown }
+      | null
+      | undefined;
+    if (
+      g &&
+      typeof g === "object" &&
+      typeof g.type === "string" &&
+      g.coordinates != null
+    )
+      return g;
+  }
+  return null;
+}
+
+/** `metadata.geo` centroid ({lat, lon} numbers) — the lightweight point form. */
+export function geoOf(
+  m: Record<string, unknown> | null | undefined,
+): { lat: number; lon: number } | null {
+  const g = m?.geo;
+  if (g && typeof g === "object") {
+    const o = g as { lat?: unknown; lon?: unknown };
+    if (typeof o.lat === "number" && typeof o.lon === "number")
+      return { lat: o.lat, lon: o.lon };
+  }
+  return null;
+}
+
+/** The most specific geo tag on the note (color/legend bucket). */
+function kindOf(note: Note): string {
+  const tags = note.tags ?? [];
+  for (const t of GEO_TAGS) if (tags.includes(t)) return t;
+  return "place";
+}
+
+/** Display name for a map feature: schema'd name fields first, else the same
+ *  derived title the nav uses. */
+function featureName(note: Note): string {
+  const m = note.metadata;
+  return (
+    metaStr(m, "name") ||
+    metaStr(m, "title") ||
+    metaStr(m, "scientificName") ||
+    metaStr(m, "hucName") ||
+    navTitle(note)
+  );
+}
+
+export function publicationMap(notes: Note[]) {
+  const features = notes
+    .map((n) => {
+      const m = n.metadata as Record<string, unknown> | null;
+      const geometry = geometryOf(m);
+      const geo = geoOf(m);
+      if (!geometry && !geo) return null; // no location → not a map feature
+      return {
+        id: n.id,
+        name: featureName(n),
+        kind: kindOf(n),
+        sensing: metaStr(m, "sensing_or_responding"),
+        status: metaStr(m, "status") || metaStr(m, "severity"),
+        geometry,
+        geo,
+      };
+    })
+    .filter((f): f is NonNullable<typeof f> => f !== null);
+
+  return features;
+}

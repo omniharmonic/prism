@@ -1,0 +1,43 @@
+{
+  "$comment": "Licence policy for what the Prism Client ships (generate.mjs). A licence id that is not in `allowed` or `listed` FAILS the build, so a new dependency cannot bring an unreviewed licence in. `denied` names the copyleft families that are never shipped. `packages` overrides a component's declared licence; every entry needs a reason. Keys: crate:<name>[@<version>] or npm:<name>[@<version>].",
+  "allowed": {
+    "MIT": "permissive",
+    "MIT-0": "permissive, no attribution required",
+    "Apache-2.0": "permissive (patent grant); NOTICE files are reproduced",
+    "BSD-2-Clause": "permissive",
+    "BSD-3-Clause": "permissive",
+    "ISC": "permissive",
+    "0BSD": "permissive, no attribution required",
+    "Zlib": "permissive",
+    "BSL-1.0": "permissive (Boost)",
+    "Unicode-3.0": "permissive (Unicode data files and software)",
+    "Unicode-DFS-2016": "permissive (Unicode data files)",
+    "Unlicense": "public-domain dedication",
+    "CC0-1.0": "public-domain dedication",
+    "BlueOak-1.0.0": "permissive",
+    "Python-2.0": "permissive (PSF licence)",
+    "CC-BY-4.0": "attribution only (data and documents)",
+    "OFL-1.1": "SIL Open Font License: fonts may be bundled with software; not sold on their own"
+  },
+  "listed": {
+    "MPL-2.0": "file-level copyleft: used unmodified, source available upstream; listed in the file",
+    "EPL-2.0": "file-level copyleft: used unmodified, source available upstream; listed in the file"
+  },
+  "denied": ["GPL-*", "AGPL-*", "LGPL-*", "GPL", "AGPL", "LGPL", "SSPL-*", "EUPL-*", "OSL-*", "CPAL-*", "CC-BY-SA-*", "CC-BY-NC-*"],
+  "exceptions": {
+    "LLVM-exception": "the LLVM exception to Apache-2.0 (no attribution needed for compiled forms)"
+  },
+  "prefer": ["MIT", "Apache-2.0", "BSD-3-Clause", "BSD-2-Clause", "ISC", "Zlib", "0BSD", "MIT-0", "Unlicense", "CC0-1.0", "BSL-1.0", "Unicode-3.0"],
+  "packages": {
+    "npm:@excalidraw/excalidraw": {
+      "reason": "declared in package.json; the npm package ships no licence file — https://github.com/excalidraw/excalidraw/blob/master/LICENSE). Its build bundles the Assistant font, which the native web build copies into the app; the other Excalidraw fonts load from a CDN at run time and are not shipped.",
+      "bundles": [
+        { "what": "Assistant font (dist/prod/fonts/Assistant)", "licence": "OFL-1.1", "source": "https://fonts.google.com/specimen/Assistant" }
+      ]
+    },
+    "npm:khroma@2.1.0": {
+      "licence": "MIT",
+      "reason": "package.json declares no licence; the package's `license` file is the MIT License (Copyright (c) 2019-present Fabio Spampinato, Andrew Maney). Reached through mermaid. Pinned to this version so a new one is reviewed again."
+    }
+  }
+}

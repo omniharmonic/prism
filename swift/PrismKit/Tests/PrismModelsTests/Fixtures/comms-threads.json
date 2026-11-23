@@ -1,0 +1,226 @@
+{
+  "threads": [
+    {
+      "id": "th_c4",
+      "title": "Title c4",
+      "titleSource": "contact",
+      "avatar": {
+        "token": "eyJ2IjoxLCJtIjoibXhjOi8vZXhhbXBsZS50ZXN0L2F2LWM0IiwidCI6eyJ3IjoxMjgsImgiOjEyOH0sImQiOiJzZXNzaW9uIiwieCI6MTc5NTM0NTIwMDAwMH0.oKOvVvRfHrCGEBMg8g2OYb4pDqAgfuJzrNJIzRrtgHo"
+      },
+      "kind": "dm",
+      "networks": [
+        "telegram"
+      ],
+      "lastActivityAt": "2026-11-24T00:00:00.000Z",
+      "unread": {
+        "count": 0,
+        "trusted": false
+      },
+      "folder": "inbox",
+      "urgency": null,
+      "pinned": false,
+      "muted": false,
+      "channels": [
+        {
+          "network": "telegram",
+          "accountLabel": null,
+          "capabilities": {
+            "react": true,
+            "edit": true,
+            "unsend": true,
+            "reply": true,
+            "typing": false,
+            "receipts": true,
+            "attachments": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "th_c3",
+      "title": "Title c3",
+      "titleSource": "contact",
+      "avatar": {
+        "token": "eyJ2IjoxLCJtIjoibXhjOi8vZXhhbXBsZS50ZXN0L2F2LWMzIiwidCI6eyJ3IjoxMjgsImgiOjEyOH0sImQiOiJzZXNzaW9uIiwieCI6MTc5NTM0NTIwMDAwMH0.fApMC3JFmSzGpFncsZ9RWPhBys8EFIM13gHLsByAK7s"
+      },
+      "kind": "dm",
+      "networks": [
+        "whatsapp"
+      ],
+      "lastActivityAt": "2026-11-23T00:00:00.000Z",
+      "unread": {
+        "count": 1,
+        "trusted": false
+      },
+      "folder": "inbox",
+      "urgency": null,
+      "pinned": false,
+      "muted": false,
+      "channels": [
+        {
+          "network": "whatsapp",
+          "accountLabel": null,
+          "capabilities": {
+            "react": true,
+            "edit": true,
+            "unsend": true,
+            "reply": true,
+            "typing": false,
+            "receipts": true,
+            "attachments": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "th_c2",
+      "title": "Title c2",
+      "titleSource": "contact",
+      "avatar": {
+        "token": "eyJ2IjoxLCJtIjoibXhjOi8vZXhhbXBsZS50ZXN0L2F2LWMyIiwidCI6eyJ3IjoxMjgsImgiOjEyOH0sImQiOiJzZXNzaW9uIiwieCI6MTc5NTM0NTIwMDAwMH0.8ArrtbOpBlJzt4odgf7zuElAJYY4UQ1yIJfZA-JFu10"
+      },
+      "kind": "dm",
+      "networks": [
+        "whatsapp"
+      ],
+      "lastActivityAt": "2026-11-22T00:00:00.000Z",
+      "unread": {
+        "count": 0,
+        "trusted": false
+      },
+      "folder": "inbox",
+      "urgency": null,
+      "pinned": false,
+      "muted": false,
+      "channels": [
+        {
+          "network": "whatsapp",
+          "accountLabel": null,
+          "capabilities": {
+            "react": true,
+            "edit": true,
+            "unsend": true,
+            "reply": true,
+            "typing": false,
+            "receipts": true,
+            "attachments": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "th_c1",
+      "title": "Title c1",
+      "titleSource": "contact",
+      "avatar": {
+        "token": "eyJ2IjoxLCJtIjoibXhjOi8vZXhhbXBsZS50ZXN0L2F2LWMxIiwidCI6eyJ3IjoxMjgsImgiOjEyOH0sImQiOiJzZXNzaW9uIiwieCI6MTc5NTM0NTIwMDAwMH0.7bQb913Wd-IbaR_LRjoAd4g_QHpeSxl-sOtlsfkIZCI"
+      },
+      "kind": "dm",
+      "networks": [
+        "whatsapp"
+      ],
+      "lastActivityAt": "2026-11-21T00:00:00.000Z",
+      "unread": {
+        "count": 1,
+        "trusted": false
+      },
+      "folder": "inbox",
+      "urgency": null,
+      "pinned": false,
+      "muted": false,
+      "channels": [
+        {
+          "network": "whatsapp",
+          "accountLabel": null,
+          "capabilities": {
+            "react": true,
+            "edit": true,
+            "unsend": true,
+            "reply": true,
+            "typing": false,
+            "receipts": true,
+            "attachments": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "th_room1",
+      "title": "Title room1",
+      "titleSource": "contact",
+      "avatar": {
+        "monogram": "AL",
+        "members": [
+          {
+            "token": "eyJ2IjoxLCJtIjoibXhjOi8vZXhhbXBsZS50ZXN0L3BpY3R1cmUiLCJ0Ijp7InciOjEyOCwiaCI6MTI4fSwiZCI6InNlc3Npb24iLCJ4IjoxNzk1MzQ1MjAwMDAwfQ.gxWM34jGzalG2SsquXbqwT0UWEyRUtxZ8z_wTP0Q9WA"
+          }
+        ]
+      },
+      "kind": "dm",
+      "networks": [
+        "whatsapp"
+      ],
+      "lastActivityAt": "2026-11-20T10:00:00.000Z",
+      "unread": {
+        "count": 0,
+        "trusted": false
+      },
+      "folder": "inbox",
+      "urgency": null,
+      "pinned": false,
+      "muted": false,
+      "channels": [
+        {
+          "network": "whatsapp",
+          "accountLabel": null,
+          "capabilities": {
+            "react": true,
+            "edit": true,
+            "unsend": true,
+            "reply": true,
+            "typing": false,
+            "receipts": true,
+            "attachments": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "th_c0",
+      "title": "Title c0",
+      "titleSource": "contact",
+      "avatar": {
+        "token": "eyJ2IjoxLCJtIjoibXhjOi8vZXhhbXBsZS50ZXN0L2F2LWMwIiwidCI6eyJ3IjoxMjgsImgiOjEyOH0sImQiOiJzZXNzaW9uIiwieCI6MTc5NTM0NTIwMDAwMH0.is6a9YoV3mP9A4HByWQvlXJ3gGZlatn4r8ZxhsmM9us"
+      },
+      "kind": "dm",
+      "networks": [
+        "whatsapp"
+      ],
+      "lastActivityAt": "2026-11-20T00:00:00.000Z",
+      "unread": {
+        "count": 0,
+        "trusted": false
+      },
+      "folder": "inbox",
+      "urgency": null,
+      "pinned": false,
+      "muted": false,
+      "channels": [
+        {
+          "network": "whatsapp",
+          "accountLabel": null,
+          "capabilities": {
+            "react": true,
+            "edit": true,
+            "unsend": true,
+            "reply": true,
+            "typing": false,
+            "receipts": true,
+            "attachments": true
+          }
+        }
+      ]
+    }
+  ],
+  "next": null
+}

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements of the bundled Node runtime (runtime/node/bin/node) under the hardened runtime.
+  Why only this one, and what Node's own build carries instead: docs/host-bundle.md § Release,
+  "Entitlements". In short: V8 compiles JavaScript and WebAssembly to machine code at run time
+  into MAP_JIT memory, which the hardened runtime refuses without allow-jit. Everything else Node
+  ships with is left out on purpose: every add-on in the bundle is signed with OUR team id, so
+  library validation (kept ON) admits them and refuses any other code; no DYLD_* injection; no
+  debugger attach (get-task-allow). The release job runs the signed runtime (JIT, WebAssembly,
+  better-sqlite3, the whole server smoke test) before anything is published.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+</dict>
+</plist>

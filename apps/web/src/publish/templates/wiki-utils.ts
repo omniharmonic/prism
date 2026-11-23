@@ -1,0 +1,341 @@
+import { containerTitle, isContainerPath } from "@prism/core/pages";
+import { marked } from "marked";
+import { taskListsInHtml } from "@prism/core/task-lists";
+import type { NavNote, PubGraph } from "./types";
+
+/**
+ * Pure helpers for the Wiki template: scoped wikilink resolution, markdown/HTML
+ * body rendering, table-of-contents extraction, backlink derivation, and the
+ * left-nav path tree. Kept side-effect-free (except DOM parsing of an already
+ * sanitized string for the TOC) so they're easy to reason about and test.
+ */
+
+const WIKILINK_RE = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// ---------------------------------------------------------------------------
+// Scoped wikilink resolution
+// ---------------------------------------------------------------------------
+
+/** Lowercased lookup keys → note id. Keys per note: full path, basename (with
+ *  and without extension), and title. First write wins on collision. */
+export type LinkIndex = Map<string, string>;
+
+export function buildLinkIndex(notes: NavNote[]): LinkIndex {
+  const idx: LinkIndex = new Map();
+  const add = (raw: string | null | undefined, id: string) => {
+    if (!raw) return;
+    const key = raw.trim().toLowerCase();
+    if (key && !idx.has(key)) idx.set(key, id);
+  };
+  for (const n of notes) {
+    add(n.title, n.id);
+    if (n.path) {
+      add(n.path, n.id);
+      const base = n.path.split("/").pop() || n.path;
+      add(base, n.id);
+      add(base.replace(/\.[^.]+$/, ""), n.id);
+    }
+  }
+  return idx;
+}
+
+/** Resolve a wikilink target to an in-publication note id, or null. Tries the
+ *  full target, its basename, and the basename sans extension (all
+ *  case-insensitive). A trailing `#section` anchor is ignored for matching. */
+export function resolveTarget(idx: LinkIndex, target: string): string | null {
+  const t = (target.split("#")[0] || "").trim();
+  if (!t) return null;
+  const base = t.split("/").pop() || t;
+  const baseNoExt = base.replace(/\.[^.]+$/, "");
+  for (const k of [t.toLowerCase(), base.toLowerCase(), baseNoExt.toLowerCase()]) {
+    const id = idx.get(k);
+    if (id) return id;
+  }
+  return null;
+}
+
+/**
+ * Render a note body to HTML with scoped wikilinks. `[[target]]` /
+ * `[[target|display]]` becomes an in-app anchor (carrying `data-target=<id>`)
+ * ONLY when it resolves to a note in this publication; otherwise it collapses to
+ * inert plain text (no link, no leak), matching ShareView's flattening.
+ *
+ * We ALWAYS run `marked`. It parses markdown AND passes embedded HTML blocks
+ * through verbatim (it does NOT markdown-parse text inside an HTML block, so
+ * TipTap-saved HTML survives untouched). The old all-or-nothing "looks like
+ * HTML? skip markdown" check broke the common case of a note that LEADS with an
+ * HTML block (a Substack/Medium `<iframe>`/`<figure>`/`<img>` embed) then has a
+ * markdown body — the whole body was dumped raw (literal `##`/`**`).
+ */
+export function renderWikiBody(content: string, idx: LinkIndex, slug: string): string {
+  const c = content ?? "";
+  const sub = c.replace(WIKILINK_RE, (_m, target: string, name?: string) => {
+    const fallback = (target.split("/").pop() || target).replace(/\.[^.]+$/, "");
+    const display = (name || fallback || target).trim();
+    const id = resolveTarget(idx, target);
+    if (id) {
+      const href = `/p/${encodeURIComponent(slug)}/notes/${encodeURIComponent(id)}`;
+      return `<a class="pub-wikilink" data-target="${escapeHtml(id)}" href="${escapeHtml(href)}">${escapeHtml(display)}</a>`;
+    }
+    return escapeHtml(display);
+  });
+  // Drop broken empty-text links — Substack/Medium image exports that lost their
+  // image leave `[\n\n](url)`, which marked emits as a literal `<p>[</p>`.
+  const cleaned = sub.replace(/\[\s*\]\([^)]*\)/g, "");
+  // `- [x]` items become the to-do list the editor shows, by the one rule every Markdown reader
+  // follows (`taskListsInHtml`); a stored to-do list (`<li><label><input>…`) is left as it is.
+  return taskListsInHtml(marked.parse(cleaned) as string);
+}
+
+// ---------------------------------------------------------------------------
+// Table of contents (post-sanitize: only reads + adds id attributes)
+// ---------------------------------------------------------------------------
+
+export interface TocEntry {
+  id: string;
+  text: string;
+  level: number;
+}
+
+function slugify(text: string): string {
+  return (
+    text
+      .toLowerCase()
+      .replace(/[^\w\s-]/g, "")
+      .trim()
+      .replace(/\s+/g, "-") || "section"
+  );
+}
+
+export const HEADING_ID_PREFIX = "h-";
+const TOC_BLOCK_MAX_BLOCKS = 3;
+const TOC_BLOCK_MAX_ENTRIES = 200;
+/** The heading an in-page `#fragment` means: its id, or — links written before ids were prefixed — the prefixed one. */
+export function headingTarget(root: ParentNode, fragment: string): Element | null {
+  let id = fragment;
+  try { id = decodeURIComponent(fragment); } catch { /* as written */ }
+  if (!id) return null;
+  const find = (value: string) => root.querySelector(`[id="${typeof CSS !== "undefined" && CSS.escape ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&")}"]`);
+  return find(id) ?? (id.startsWith(HEADING_ID_PREFIX) ? null : find(HEADING_ID_PREFIX + id));
+}
+/** An id a heading already carries is kept only when it is a plain token (it becomes a URL fragment). */
+const SAFE_ID = /^[A-Za-z][A-Za-z0-9_-]{0,80}$/;
+
+/** Parse already-sanitized HTML, assign stable ids to h1–h3, and return both the
+ *  id-augmented HTML and the heading list for the right-rail TOC.
+ *
+ *  A table-of-contents BLOCK in the page (`<div data-type="toc">`, empty as stored — the
+ *  editor draws it from the document) is filled here from the same heading list, so it
+ *  stands where the author put it (NP-ED-19/24). Built with DOM calls only: heading text
+ *  goes in as text, ids are slugs (`[a-z0-9_-]`, numbered when repeated — stable for the same
+ *  page) and every link is an in-page `#fragment`; no inline style (the indent is a class rule). */
+export function extractToc(html: string): { html: string; toc: TocEntry[] } {
+  if (!html || typeof DOMParser === "undefined") return { html, toc: [] };
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const toc: TocEntry[] = [];
+  const seen = new Set<string>();
+  doc.querySelectorAll("h1, h2, h3").forEach((h) => {
+    const text = h.textContent?.trim() || "";
+    if (!text) return;
+    // Prefixed: a heading called "root" / "constructor" can never collide with an id (or a
+    // named property) the app itself uses. An in-page link to the bare slug still lands
+    // (`headingTarget`).
+    const own = (h as HTMLElement).id;
+    const baseId = HEADING_ID_PREFIX + ((own && SAFE_ID.test(own) ? own : "") || slugify(text));
+    let uid = baseId;
+    let i = 1;
+    while (seen.has(uid)) uid = `${baseId}-${i++}`;
+    seen.add(uid);
+    (h as HTMLElement).id = uid;
+    toc.push({ id: uid, text, level: Number(h.tagName[1]) });
+  });
+  const blocks = doc.querySelectorAll('div[data-type="toc"]');
+  if (blocks.length) {
+    let top = 3;
+    for (const entry of toc) if (entry.level < top) top = entry.level;
+    const listed = toc.slice(0, TOC_BLOCK_MAX_ENTRIES);
+    blocks.forEach((block, index) => {
+      block.replaceChildren();
+      // Bounded work for any page: a few blocks, a capped list each.
+      if (!listed.length || index >= TOC_BLOCK_MAX_BLOCKS) return;
+      const nav = doc.createElement("nav");
+      nav.className = "prism-toc";
+      nav.setAttribute("aria-label", "Table of contents");
+      const list = doc.createElement("ol");
+      list.className = "prism-toc-list";
+      for (const entry of listed) {
+        const item = doc.createElement("li");
+        item.setAttribute("data-indent", String(Math.min(entry.level - top, 2)));
+        const link = doc.createElement("a");
+        link.className = "prism-toc-item";
+        link.setAttribute("href", `#${encodeURIComponent(entry.id)}`);
+        link.setAttribute("data-toc-target", entry.id);
+        link.textContent = entry.text;
+        item.append(link);
+        list.append(item);
+      }
+      nav.append(list);
+      block.append(nav);
+    });
+  }
+  return { html: doc.body.innerHTML, toc };
+}
+
+// ---------------------------------------------------------------------------
+// Backlinks ("Linked references") from the publication-scoped graph
+// ---------------------------------------------------------------------------
+
+export interface Backlink {
+  id: string;
+  title: string;
+}
+
+/** Notes whose edge.target === activeId, restricted to in-publication notes
+ *  (the graph is already pub-scoped; this is belt-and-suspenders + supplies
+ *  titles for display). */
+export function computeBacklinks(
+  graph: PubGraph | null,
+  activeId: string | null,
+  notes: NavNote[],
+): Backlink[] {
+  if (!graph || !activeId) return [];
+  const titleById = new Map<string, string>();
+  for (const n of notes) titleById.set(n.id, n.title);
+  for (const n of graph.nodes) if (!titleById.has(n.id)) titleById.set(n.id, n.title);
+  const inPub = new Set(notes.map((n) => n.id));
+  const sources = new Set<string>();
+  for (const e of graph.edges) {
+    if (e.target === activeId && e.source !== activeId) sources.add(e.source);
+  }
+  return [...sources]
+    .filter((id) => inPub.has(id))
+    .map((id) => ({ id, title: titleById.get(id) || id }))
+    .sort((a, b) => a.title.localeCompare(b.title));
+}
+
+// ---------------------------------------------------------------------------
+// Left-nav path tree
+// ---------------------------------------------------------------------------
+
+export interface TreeLeaf {
+  type: "leaf";
+  name: string;
+  id: string;
+  path: string | null;
+}
+export interface TreeFolder {
+  type: "folder";
+  name: string;
+  path: string;
+  children: TreeItem[];
+}
+export type TreeItem = TreeFolder | TreeLeaf;
+
+interface RawFolder {
+  folders: Map<string, RawFolder>;
+  leaves: TreeLeaf[];
+}
+
+function leafName(n: NavNote): string {
+  if (n.path) {
+    const base = n.path.split("/").pop() || n.path;
+    // A container-named page (`…/openworks/PROJECT`) is listed by its title, else its folder — never "PROJECT".
+    if (isContainerPath(n.path)) return containerTitle(n.path, n.title && n.title !== base.replace(/\.[^.]+$/, "") ? { title: n.title } : null) ?? n.title;
+    return base.replace(/\.[^.]+$/, "") || n.title;
+  }
+  return n.title;
+}
+
+/** Build a folder tree from note `path`s. Notes without a path become top-level
+ *  leaves (the flat fallback). Folders sort before leaves, both alphabetically. */
+export function buildTree(notes: NavNote[]): TreeItem[] {
+  // If EVERY pathed note shares one leading directory (e.g. the whole
+  // publication lives under "wiki/"), strip it — a single all-encompassing root
+  // folder in the nav is pure noise for readers.
+  const pathed = notes.filter((n) => n.path);
+  const firstSeg = (p: string) => p.split("/").filter(Boolean)[0] ?? "";
+  const common = pathed.length > 1 ? firstSeg(pathed[0].path!) : "";
+  const stripCommon =
+    common !== "" &&
+    pathed.every((n) => firstSeg(n.path!) === common) &&
+    pathed.some((n) => n.path!.split("/").filter(Boolean).length > 1);
+  if (stripCommon) {
+    notes = notes.map((n) =>
+      n.path ? { ...n, path: n.path.split("/").filter(Boolean).slice(1).join("/") || n.path } : n,
+    );
+  }
+  const root: RawFolder = { folders: new Map(), leaves: [] };
+  for (const n of notes) {
+    if (!n.path) {
+      root.leaves.push({ type: "leaf", name: n.title, id: n.id, path: null });
+      continue;
+    }
+    const parts = n.path.split("/").filter(Boolean);
+    const fileParts = parts.slice(0, -1); // folders only; last segment is the file
+    let cur = root;
+    for (const seg of fileParts) {
+      let next = cur.folders.get(seg);
+      if (!next) {
+        next = { folders: new Map(), leaves: [] };
+        cur.folders.set(seg, next);
+      }
+      cur = next;
+    }
+    cur.leaves.push({ type: "leaf", name: leafName(n), id: n.id, path: n.path });
+  }
+
+  const toItems = (raw: RawFolder, prefix: string): TreeItem[] => {
+    const folders: TreeItem[] = [...raw.folders.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([name, child]) => {
+        const path = prefix ? `${prefix}/${name}` : name;
+        return { type: "folder", name, path, children: toItems(child, path) } as TreeFolder;
+      });
+    const leaves = [...raw.leaves].sort((a, b) => a.name.localeCompare(b.name));
+    return [...folders, ...leaves];
+  };
+
+  return toItems(root, "");
+}
+
+/** Folder paths that contain `activeId` (so they can default to open). */
+export function ancestorFolders(notes: NavNote[], activeId: string | null): Set<string> {
+  const out = new Set<string>();
+  if (!activeId) return out;
+  const active = notes.find((n) => n.id === activeId);
+  if (!active?.path) return out;
+  const parts = active.path.split("/").filter(Boolean).slice(0, -1);
+  let prefix = "";
+  for (const seg of parts) {
+    prefix = prefix ? `${prefix}/${seg}` : seg;
+    out.add(prefix);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Attachments on a published page (wave 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * A page stores its files as `/api/attachments/<id>` — a route for signed-in
+ * people. On a public site the same file is served by the publication-scoped
+ * `/api/p/<slug>/attachments/<id>` (only for notes in this publication, behind
+ * its password if it has one). Rewrites exactly that URL shape, as a whole
+ * attribute value, in already-sanitized HTML; anything else is left alone.
+ */
+const OWN_ATTACHMENT_ATTR = /((?:src|href|data-src|poster)=")\/api\/attachments\/([A-Za-z0-9_-]{1,64})(")/g;
+export function publicAttachmentUrl(slug: string, id: string): string {
+  return `/api/p/${encodeURIComponent(slug)}/attachments/${id}`;
+}
+export function rewritePublicAttachments(html: string, slug: string): string {
+  return html ? html.replace(OWN_ATTACHMENT_ATTR, (_m, open: string, id: string, close: string) => `${open}${publicAttachmentUrl(slug, id)}${close}`) : html;
+}

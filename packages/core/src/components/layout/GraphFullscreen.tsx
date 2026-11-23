@@ -1,0 +1,54 @@
+import { useEffect, useRef } from "react";
+import { X } from "lucide-react";
+import { useUIStore } from "../../app/stores/ui";
+import { GraphExplorer } from "./GraphExplorer";
+
+export function GraphFullscreen() {
+  const open = useUIStore((s) => s.graphFullscreen);
+  const active = useUIStore(
+    (s) => s.openTabs.find((t) => t.id === s.activeTabId)?.noteId,
+  );
+  return open && active ? <GraphDialog noteId={active} /> : null;
+}
+function GraphDialog({ noteId }: { noteId: string }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const close = () => useUIStore.getState().setGraphFullscreen(false);
+  useEffect(() => {
+    const trigger = document.activeElement as HTMLElement | null;
+    const el = dialog.current;
+    el?.showModal();
+    return () => {
+      el?.close();
+      if (trigger?.isConnected) trigger.focus();
+    };
+  }, []);
+  return (
+    <dialog
+      ref={dialog}
+      aria-label="Explore connected knowledge"
+      style={{ paddingTop: "env(safe-area-inset-top)", paddingLeft: "env(safe-area-inset-left)", paddingRight: "env(safe-area-inset-right)", paddingBottom: "env(safe-area-inset-bottom)", boxSizing: "border-box" }}
+      onCancel={(e) => {
+        e.preventDefault();
+        close();
+      }}
+      className="fixed inset-0 m-0 h-dvh max-h-[100dvh] w-screen max-w-[100vw] overflow-hidden border-0 bg-[var(--bg-surface)] p-0 text-[var(--text-primary)]"
+    >
+      <div className="flex h-full min-w-0 flex-col">
+        <header className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--glass-border)] px-4 py-2">
+          <h2 className="min-w-0 truncate text-sm font-medium">Explore your knowledge</h2>
+          <button
+            aria-label="Close graph"
+            className="focus-ring flex shrink-0 items-center justify-center rounded-lg p-3"
+            style={{ minWidth: 44, minHeight: 44 }}
+            onClick={close}
+          >
+            <X size={18} />
+          </button>
+        </header>
+        <div className="min-h-0 flex-1">
+          <GraphExplorer noteId={noteId} fullscreen />
+        </div>
+      </div>
+    </dialog>
+  );
+}

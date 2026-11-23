@@ -1,0 +1,259 @@
+import { test, expect } from "@playwright/test";
+
+test("a protected empty publication unlocks once instead of looping back to its password gate", async ({
+  page,
+}) => {
+  await page.goto("/e2e-fixtures/publication.html?protected&empty");
+  await page.getByLabel("Password", { exact: true }).fill("fixture-secret");
+  await page.getByRole("button", { name: /unlock/i }).click();
+  await expect(page.getByLabel("Password", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("No published notes.")).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => (window as any).prismPublicationFixture.authCalls,
+    ),
+  ).toBe(1);
+});
+
+test("publication loading errors offer recovery without losing the requested site", async ({
+  page,
+}) => {
+  await page.goto("/e2e-fixtures/publication.html?unavailable");
+  await expect(
+    page.getByRole("heading", { name: "Publication unavailable" }),
+  ).toBeVisible();
+  await page.evaluate(() => {
+    (window as any).prismPublicationFixture.manifestStatus = 200;
+  });
+  await page.getByRole("button", { name: "Try again", exact: true }).click();
+  await expect(
+    page.getByText("PRISM_PUBLICATION_guide_first_BODY", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Publication unavailable" }),
+  ).toHaveCount(0);
+});
+
+test("a failed page transition hides the prior body and retries the requested page", async ({
+  page,
+}) => {
+  await page.goto("/e2e-fixtures/publication.html");
+  await expect(
+    page.getByText("PRISM_PUBLICATION_guide_first_BODY", { exact: true }),
+  ).toBeVisible();
+  await page.evaluate(() => {
+    (window as any).prismPublicationFixture.noteStatus.second = 503;
+  });
+  await page.getByRole("button", { name: "second", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "This page could not be loaded",
+  );
+  await expect(
+    page.getByText("PRISM_PUBLICATION_guide_first_BODY", { exact: true }),
+  ).toHaveCount(0);
+  await page.evaluate(() => {
+    delete (window as any).prismPublicationFixture.noteStatus.second;
+  });
+  await page.getByRole("button", { name: "Retry page", exact: true }).click();
+  await expect(
+    page.getByText("PRISM_PUBLICATION_guide_second_BODY", { exact: true }),
+  ).toBeVisible();
+});
+
+test("late page reads cannot populate a different publication", async ({
+  page,
+}) => {
+  await page.goto("/e2e-fixtures/publication.html");
+  await expect(
+    page.getByText("PRISM_PUBLICATION_guide_first_BODY", { exact: true }),
+  ).toBeVisible();
+  await page.evaluate(() => {
+    (window as any).prismPublicationFixture.hold = "second";
+  });
+  await page.getByRole("button", { name: "second", exact: true }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(() => !!(window as any).prismPublicationFixture.release),
+    )
+    .toBe(true);
+  await page.evaluate(() => {
+    const f = (window as any).prismPublicationFixture;
+    f.setSlug("other");
+  });
+  await expect(
+    page.getByText("PRISM_PUBLICATION_other_first_BODY", { exact: true }),
+  ).toBeVisible();
+  await page.evaluate(() => {
+    const f = (window as any).prismPublicationFixture;
+    f.hold = "";
+    f.release();
+  });
+  await expect(
+    page.getByText("PRISM_PUBLICATION_guide_second_BODY", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("PRISM_PUBLICATION_other_first_BODY", { exact: true }),
+  ).toBeVisible();
+});
+
+test("an unlocked empty site has a readable phone landing page", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/e2e-fixtures/publication.html?protected&empty");
+  await page.getByLabel("Password", { exact: true }).fill("wrong");
+  await page.getByRole("button", { name: /unlock/i }).click();
+  await expect(
+    page.getByText("Incorrect password.", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: /unlock/i })).toBeEnabled();
+  await page.getByLabel("Password", { exact: true }).fill("fixture-secret");
+  await page.getByRole("button", { name: /unlock/i }).click();
+  await expect(
+    page.getByRole("heading", { name: "No pages published yet" }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  expect(
+    await page.evaluate(() => {
+      const root = document.querySelector(".pubwiki-m")!;
+      return (
+        getComputedStyle(root.querySelector("header")!).backgroundColor ===
+        getComputedStyle(root).backgroundColor
+      );
+    }),
+  ).toBe(true);
+  await page.screenshot({
+    path: test.info().outputPath("publication-empty-mobile.png"),
+  });
+});
+
+test("phone publication chrome and canvas follow both actual workspace theme palettes", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/e2e-fixtures/publication.html?empty");
+  await expect(
+    page.getByRole("heading", { name: "No pages published yet" }),
+  ).toBeVisible();
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate((theme) => {
+      document.documentElement.className = theme;
+    }, theme);
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const root = document.querySelector(".pubwiki-m")!;
+          const probe = document.createElement("div");
+          probe.style.backgroundColor = "var(--bg-base)";
+          root.append(probe);
+          const background = getComputedStyle(root).backgroundColor;
+          const expected = getComputedStyle(probe).backgroundColor;
+          const header = getComputedStyle(
+            root.querySelector("header")!,
+          ).backgroundColor;
+          const text = getComputedStyle(root.querySelector("h1")!).color;
+          probe.remove();
+          return (
+            background === expected &&
+            header === expected &&
+            text !== background
+          );
+        }),
+      )
+      .toBe(true);
+  }
+  await page.screenshot({
+    path: test.info().outputPath("publication-empty-dark-mobile.png"),
+  });
+});
+
+test("malformed legacy theme fields do not break the public reader", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  await page.goto("/e2e-fixtures/publication.html?malformed-theme");
+  await expect(
+    page.getByText("PRISM_PUBLICATION_guide_first_BODY", { exact: true }),
+  ).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+for (const layout of ["wiki", "docs", "landing"]) {
+  test(`${layout} reader wraps long titles, headings and links without widening the page`, async ({
+    page,
+  }) => {
+    await page.goto(
+      `/e2e-fixtures/publication.html?long-content&template=${layout}`,
+    );
+    await expect(
+      page.getByText("PRISM_PUBLICATION_guide_first_BODY", { exact: true }),
+    ).toBeVisible();
+    for (const width of [1280, 390, 320]) {
+      await page.setViewportSize({ width, height: 844 });
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        )
+        .toBe(true);
+      await expect
+        .poll(() =>
+          page
+            .locator("main")
+            .evaluate((el) => el.scrollWidth <= el.clientWidth),
+        )
+        .toBe(true);
+      // Long code lines remain locally scrollable rather than widening the article.
+      await expect(page.locator("article pre")).toBeVisible();
+    }
+  });
+}
+
+// Wave 3 gaps #6: a published page loads its files through the publication's own route.
+test("published pages load note attachments from the publication-scoped route", async ({ page }) => {
+  const requested: string[] = [];
+  page.on("request", (r) => { const u = new URL(r.url()); if (u.hostname === "127.0.0.1" && u.pathname.includes("/attachments/")) requested.push(u.pathname); });
+  // The fixture overrides window.fetch only; <img> requests reach the network — answer them here.
+  await page.route("**/api/p/guide/attachments/*", (route) => route.fulfill({ contentType: "image/png", body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64") }));
+  await page.goto("/e2e-fixtures/publication.html?attachments");
+  const img = page.getByRole("img", { name: "Field photo" });
+  await expect(img).toHaveAttribute("src", "/api/p/guide/attachments/a_fixtureImage0000000000");
+  await expect.poll(() => img.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth)).toBe(1);
+  await expect(page.getByRole("link", { name: "Download the photo" })).toHaveAttribute("href", "/api/p/guide/attachments/a_fixtureImage0000000000");
+  // Only the exact own-attachment shape is rewritten.
+  await expect(page.getByRole("img", { name: "Elsewhere" })).toHaveAttribute("src", "https://example.test/api/attachments/a_other");
+  // The signed-in route is never requested from a public page.
+  expect(requested.filter((p) => p.startsWith("/api/attachments/"))).toEqual([]);
+});
+
+test("a published Markdown page shows `- [x]` items as the to-do list the editor shows, not as bullets with a stray box", async ({ page }) => {
+  await page.goto("/e2e-fixtures/publication.html?todos");
+  const article = page.locator("article.prose-editor");
+  await expect(article.getByText("PRISM_PUBLICATION_guide_first_BODY", { exact: true })).toBeVisible();
+  // The two task items are ONE to-do list: state in data-checked, no bullet, no literal brackets.
+  const todo = article.locator('ul[data-type="taskList"]').first();
+  const items = todo.locator('> li[data-type="taskItem"]');
+  await expect(items).toHaveCount(2);
+  await expect(items.nth(0)).toHaveText("Booked the room");
+  await expect(items.nth(0)).toHaveAttribute("data-checked", "true");
+  await expect(items.nth(1)).toHaveText("Send the agenda");
+  await expect(items.nth(1)).toHaveAttribute("data-checked", "false");
+  await expect(todo.locator("input")).toHaveCount(0);
+  const drawn = (i: number) => items.nth(i).evaluate((li) => ({ box: getComputedStyle(li, "::before").content, bullet: getComputedStyle(li.parentElement!).listStyleType }));
+  expect(await drawn(0)).toEqual({ box: '"☑"', bullet: "none" });
+  expect(await drawn(1)).toEqual({ box: '"☐"', bullet: "none" });
+  // A mixed list stays a bullet list; its box is kept as the Markdown text, so nothing is lost.
+  const mixed = article.locator("ul:not([data-type])").filter({ hasText: "an ordinary point" });
+  await expect(mixed.locator("> li")).toHaveText(["an ordinary point", "[x] done, in a mixed list"]);
+  await expect(mixed.locator("input")).toHaveCount(0);
+  // A to-do list the editor stored is left exactly as it was (its own checkbox, no second drawn box).
+  const stored = article.locator('ul[data-type="taskList"]').filter({ hasText: "Stored task" }).locator("> li");
+  await expect(stored.locator("input[type=checkbox]")).toBeChecked();
+  expect(await stored.evaluate((li) => getComputedStyle(li, "::before").content)).toBe("none");
+});

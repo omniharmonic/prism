@@ -1,0 +1,41 @@
+# TEMPLATE — the App Review demo server's Cloudflare tunnel, run by the DEMO macOS user.
+# Copy to ~/.cloudflared/demo.yml (as the demo user) and replace the <…> values.
+# A tunnel of its own (recommended): its credentials live in the demo user's ~/.cloudflared,
+# and the production tunnel's configuration is never edited.
+#
+#   cloudflared tunnel login                         # once, in a browser; picks the zone
+#   cloudflared tunnel create prism-demo             # prints <TUNNEL_ID>, writes ~/.cloudflared/<TUNNEL_ID>.json
+#   cloudflared tunnel route dns prism-demo <DEMO_HOST>
+#   cloudflared tunnel --config ~/.cloudflared/demo.yml ingress validate
+#   cloudflared tunnel --config ~/.cloudflared/demo.yml run      # or the launchd agent below
+#
+# Only the demo Prism Server's port is published. Never the demo hub/vault ports, and never
+# production's 1939 / 1940 / 8787.
+tunnel: <TUNNEL_ID>
+credentials-file: /Users/<DEMO_USER>/.cloudflared/<TUNNEL_ID>.json
+ingress:
+  - hostname: <DEMO_HOST>
+    service: http://127.0.0.1:<DEMO_SERVER_PORT>
+  - service: http_status:404
+
+# Alternative (NOT recommended — it edits production's tunnel): add ONLY this rule to the
+# production tunnel's ingress list, above its final catch-all, and restart that tunnel:
+#   - hostname: <DEMO_HOST>
+#     service: http://127.0.0.1:<DEMO_SERVER_PORT>
+#
+# launchd agent for the demo user (~/Library/LaunchAgents/local.prism-demo.tunnel.plist), then
+# `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.prism-demo.tunnel.plist`:
+#
+#   <?xml version="1.0" encoding="UTF-8"?>
+#   <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+#   <plist version="1.0"><dict>
+#     <key>Label</key><string>local.prism-demo.tunnel</string>
+#     <key>ProgramArguments</key><array>
+#       <string>/opt/homebrew/bin/cloudflared</string><string>tunnel</string>
+#       <string>--config</string><string>/Users/<DEMO_USER>/.cloudflared/demo.yml</string><string>run</string>
+#     </array>
+#     <key>RunAtLoad</key><true/>
+#     <key>KeepAlive</key><true/>
+#     <key>StandardOutPath</key><string>/Users/<DEMO_USER>/PrismDemo/tunnel.log</string>
+#     <key>StandardErrorPath</key><string>/Users/<DEMO_USER>/PrismDemo/tunnel.log</string>
+#   </dict></plist>

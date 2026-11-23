@@ -1,0 +1,96 @@
+import StarterKit from "@tiptap/starter-kit";
+import Link from "@tiptap/extension-link";
+import Typography from "@tiptap/extension-typography";
+import Highlight from "@tiptap/extension-highlight";
+import TaskList from "@tiptap/extension-task-list";
+import { PrismTaskItem as TaskItem } from "./taskItem";
+import type { Extensions, Mark } from "@tiptap/core";
+import { suggestionMarks } from "./suggestionMarks";
+import { SuggestionNodeAttributes } from "./suggestionNodes";
+import { commentMarks } from "./commentMark";
+import { blockSchemaExtensions, SuggestableCodeBlock } from "./blocks";
+import { mentionExtensions } from "../lib/tiptap/MentionNode";
+
+/**
+ * Version of the shared document schema below, sent by every live editor as the
+ * `schema` query parameter on the collab WebSocket (and as the
+ * `X-Prism-Editor-Schema` header on REST writes). The server refuses a document
+ * socket from an older/unknown version: y-prosemirror DELETES any node or mark
+ * its schema cannot represent, so a stale client would silently destroy newer
+ * content for everyone.
+ *
+ * ANY change to a node, mark or attribute name in `collabExtensions()` MUST bump
+ * this number (apps/server/test/collab-schema-version.test.ts pins the names).
+ *   1 — StarterKit/Link/Highlight/Tasks + suggestion/comment marks (implicit)
+ *   2 — + image, table, callout, toggle, columns, block/text colour
+ *   3 — + mention (person / page / date chips; lib/tiptap/MentionNode.ts)
+ *   4 — + attachment (file/pdf/audio/video), embed, bookmark, tableOfContents,
+ *       databaseView (inline database), image align + caption; codeBlock is now the
+ *       lowlight variant (same name + `language` attr, highlighting is decoration-only)
+ *   5 — + childPage (sub-page row), toggle `level` (toggle headings), column `width`
+ *       and up to 5 columns, table cell `cellColor` (wave 4A)
+ *   6 — + `suggestion` / `suggestionBy` on every text block and on the inline atoms (`hardBreak`,
+ *       `mention`): a paragraph break, a line break or a chip suggested while Suggesting
+ *       (./suggestionNodes); text in inline code and in a code block may carry the
+ *       `insertion` / `deletion` marks (they were excluded there)
+ */
+// The value lives in ./schemaVersion (no imports) so the app shell can read it without the editor.
+export { COLLAB_SCHEMA_VERSION } from "./schemaVersion";
+
+/**
+ * The document schema shared by the collaborative editor (browser) and the
+ * Prism Server's Yjs seeding/persistence (Node). It is the single source of
+ * truth for which nodes/marks a collaborative note can contain, so the
+ * server's HTML↔Yjs conversion is loss-free against what the client produces.
+ *
+ * Only *content* extensions live here — no view-only plugins (Placeholder,
+ * Collaboration, CollaborationCaret, wikilink decoration) which add no stored
+ * schema and don't run in Node. The client appends those; the server doesn't.
+ *
+ * Mirrors the client config: StarterKit history is off (Yjs owns undo/redo),
+ * and StarterKit's bundled Link is disabled in favor of the explicit Link
+ * (a duplicate mark corrupts the schema → silent setContent failures).
+ */
+/**
+ * Inline code excludes every other mark (TipTap's `excludes: "_"`) — which also kept the
+ * SUGGESTION marks out, so a change inside inline code made while Suggesting could not be
+ * recorded. In the live schema it excludes every mark BY NAME except `insertion` / `deletion`
+ * (a new mark must be added here to stay excluded — apps/server/test/collab-schema-gate pins it).
+ */
+export const CODE_EXCLUDES = "code bold italic strike underline link highlight textColor comment";
+const CollabKit = StarterKit.extend({
+  addExtensions() {
+    return (this.parent?.() ?? []).map((extension) => (extension.name === "code" ? (extension as Mark).extend({ excludes: CODE_EXCLUDES }) : extension));
+  },
+});
+
+export function collabExtensions(): Extensions {
+  return [
+    CollabKit.configure({ undoRedo: false, link: false, codeBlock: false }),
+    Link.configure({ openOnClick: false, autolink: true }),
+    // « » are off: `>>` + space is the toggle shortcut (NP-ED-04), and a lone « reads oddly.
+    Typography.configure({ raquo: false, laquo: false }),
+    Highlight.configure({ multicolor: true }),
+    TaskList,
+    TaskItem.configure({ nested: true }),
+    // Images, files, embeds, bookmarks, TOC, highlighted code, tables,
+    // callouts, toggles, columns and block/text colours —
+    // shared with the plain renderer so a note round-trips through either.
+    // (The code block is the variant whose text may carry the suggestion marks.)
+    ...blockSchemaExtensions().map((extension) => (extension.name === "codeBlock" ? SuggestableCodeBlock : extension)),
+    // @-mentions: person / page / date chips (wave 2A).
+    ...mentionExtensions(),
+    // Suggested-edit marks (insertion/deletion). Schema-only here so the server
+    // can round-trip them through HTML; the suggest-mode behavior plugin is
+    // added client-side in CollabEditor.
+    ...suggestionMarks(),
+    // Suggested paragraph breaks / line breaks / chips: two attributes on text blocks, `hardBreak` and `mention`
+    // (marks travel on text only — see ./suggestionNodes).
+    SuggestionNodeAttributes,
+    // Comment anchor mark; thread data lives in a Yjs Map (client-side).
+    ...commentMarks(),
+  ];
+}
+
+// The server resolves suggested breaks in a stored page with the same code the editor uses.
+export { resolveNodeSuggestionsInDoc, nodeSuggestions, SUGGESTION_NODE_TYPES, SUGGESTION_TEXTBLOCKS } from "./suggestionNodes";

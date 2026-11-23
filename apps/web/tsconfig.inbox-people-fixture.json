@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/vite-env.d.ts",
+    "e2e-fixtures/inbox.tsx",
+    "e2e-fixtures/inbox-people-data.ts",
+    "e2e-fixtures/inbox-people.spec.ts",
+    "playwright.inbox-people.config.ts"
+  ]
+}

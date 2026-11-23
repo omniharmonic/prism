@@ -1,0 +1,270 @@
+/* Shared workspace surfaces. Content stays quiet; spectrum belongs to the mark. */
+:root, html.dark {
+  --bg-base: #191a1e;
+  --bg-surface: #202126;
+  --bg-elevated: #292a30;
+  --bg-sidebar: #1c1d21;
+  --material-floating: rgb(41 42 48 / 94%);
+  --material-solid: #292a30;
+  --material-blur: 20px;
+  --bg-document: #191a1e;
+  --text-primary: #edeeef;
+  --text-secondary: #b4b5bd;
+  /* AA (≥4.5:1) on every surface it sits on, hover/active rows included (NP-AX-04). */
+  --text-muted: #a0a2ac;
+  --glass: #222329;
+  --glass-hover: #2b2d34;
+  --glass-active: #323540;
+  --glass-border: #33353d;
+  --glass-border-strong: #454852;
+  --surface-selected: #253449;
+  --color-accent: #77a9f4;
+  --color-accent-hover: #8eb8f7;
+  --focus-ring: #8eb8f7;
+  --action-bg: #316ed6;
+  --action-hover: #295ebb;
+  --action-fg: #ffffff;
+  /* Danger as TEXT on the elevated/menu surfaces is AA (5.1:1 on #292a30); as a FILL under white
+     text it is --danger-bg (5.7:1) — one hue cannot do both in dark (NP-AX-04). */
+  --color-danger: #f56f84;
+  --danger-bg: #c02a45;
+  /* A plain highlight (<mark>, a search match): a tint the text stays AA on, in both themes. */
+  --highlight-bg: color-mix(in srgb, var(--color-warning) 30%, transparent);
+  --workspace-control-height: 34px;
+  --content-measure: 760px;
+  --context-panel-width: 360px;
+}
+html.light {
+  --bg-base: #ffffff;
+  --bg-surface: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-sidebar: #f2f2f5;
+  --material-floating: rgb(255 255 255 / 94%);
+  --material-solid: #ffffff;
+  --bg-document: #ffffff;
+  --text-primary: #292a30;
+  --text-secondary: #565964;
+  /* AA (≥4.5:1) on white, the sidebar and hover rows (NP-AX-04). */
+  --text-muted: #676a76;
+  --glass: #ffffff;
+  --glass-hover: #f2f3f5;
+  --glass-active: #e9edf3;
+  --glass-border: #e7e7e5;
+  --glass-border-strong: #d0d2d6;
+  --surface-hover: #ececea;
+  --surface-active: #e4e5e4;
+  --surface-selected: #e9f0fd;
+  --color-accent: #2a62c4;
+  --color-accent-hover: #2357b8;
+  /* Status colours double as text in light mode: AA on white and on their own 10% tints. */
+  --color-success: #177245;
+  --color-warning: #7a5600;
+  --color-danger: #c02a45;
+  --danger-bg: #c02a45;
+  /* Accent as text on its own pale tint (selection bars) is AA. */
+  --text-accent: #2a62c4;
+  --focus-ring: #2f6bd4;
+  --action-bg: #2f6bd4;
+  --action-hover: #2357b8;
+  --action-fg: #ffffff;
+  --highlight-bg: #fdecb0;
+}
+
+.workspace-auth-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 10px 50px rgb(0 0 0 / 5%);
+}
+
+.workspace-progress {
+  display: block;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 99px;
+  background: var(--glass-active);
+}
+.workspace-progress::-webkit-progress-bar { background: var(--glass-active); border-radius: 99px; }
+.workspace-progress::-webkit-progress-value { background: var(--color-accent); border-radius: 99px; }
+.workspace-progress::-moz-progress-bar { background: var(--color-accent); border-radius: 99px; }
+
+/* In-place controls are flat. Only elevated overlays retain depth. */
+.glass, .glass-interactive {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+}
+button, input, select, textarea { font: inherit; }
+/* ── Drop-down selects: ONE rule for every native <select> ──
+   Desktop Safari draws a select as a macOS pop-up button, 20–23 px tall whatever `height` /
+   `min-height` its surface gives it. `appearance: none` hands the box back to CSS — the heights,
+   borders and backgrounds the surfaces already declare now apply in every engine — and the
+   chevron is drawn here. Still a native select: the menu, typing and the keyboard are the
+   browser's. The chevron and its room are `!important` because surfaces set `background:` /
+   `padding:` shorthands (and inline styles) that would otherwise erase them; everything else
+   stays the surface's. List boxes (`multiple`, `size`) keep their native look. */
+select:not([multiple]):not([size]) {
+  -webkit-appearance: none;
+  appearance: none;
+  /* The chevron: two small gradient halves in the select's OWN text colour (`currentColor`, softened),
+     so it follows every theme and surface without a fixed colour. */
+  --select-chevron: color-mix(in srgb, currentColor 62%, transparent);
+  padding-inline-end: 26px !important;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--select-chevron) 50%),
+    linear-gradient(135deg, var(--select-chevron) 50%, transparent 50%) !important;
+  background-repeat: no-repeat !important;
+  background-position: right 13px top 50%, right 8px top 50% !important;
+  background-size: 5px 5px, 5px 5px !important;
+  text-overflow: ellipsis;
+}
+/* Right-to-left: the chevron sits at the inline end (`:dir()` where the engine has it; the attribute otherwise). */
+[dir="rtl"] select:not([multiple]):not([size]) { background-position: left 8px top 50%, left 13px top 50% !important; }
+select:not([multiple]):not([size]):dir(rtl) { background-position: left 8px top 50%, left 13px top 50% !important; }
+:where(select):disabled { opacity: .5; cursor: not-allowed; }
+/* Forced colours: the system draws the control and its arrow (a background image may not show). */
+@media (forced-colors: active) {
+  select:not([multiple]):not([size]) {
+    -webkit-appearance: auto;
+    appearance: auto;
+    padding-inline-end: 4px !important;
+    background-image: none !important;
+  }
+}
+button:not(:disabled), [role="button"] { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+:where(button, a, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+:where(button, [role="button"]):disabled { opacity: .5; }
+:where(input, textarea)::placeholder { color: var(--text-muted); opacity: 1; }
+
+.workspace-navigation .workspace-nav-row {
+  min-height: var(--workspace-control-height);
+  border-radius: 6px;
+  transition: background-color 100ms ease;
+}
+.workspace-navigation .workspace-nav-row[data-active="true"] {
+  background: var(--surface-selected);
+  color: var(--text-primary);
+  font-weight: 550;
+}
+.workspace-navigation .workspace-row-action { opacity: 0; }
+.workspace-navigation .workspace-nav-row:hover .workspace-row-action,
+.workspace-navigation .workspace-nav-row:focus-within .workspace-row-action { opacity: 1; }
+
+.workspace-context-header { min-height: 52px; }
+.workspace-context-tabs { border-bottom: 1px solid var(--glass-border); }
+.workspace-panel-scroll { min-height: 0; overscroll-behavior: contain; }
+.workspace-skip-link {
+  position: fixed; left: 12px; top: -100px; z-index: 1000;
+  background: var(--bg-elevated); border: 1px solid var(--glass-border-strong);
+  border-radius: 6px; padding: 8px 12px;
+}
+.workspace-skip-link:focus { top: 12px; }
+
+@media (pointer: coarse) {
+  :root { --workspace-control-height: 44px; }
+  .workspace-navigation .workspace-row-action { opacity: 1; }
+}
+@media (max-width: 767px) {
+  .workspace-context-header { min-height: 48px; }
+  .workspace-context-tabs button { min-height: 44px; }
+}
+
+.workspace-mobile-drawer {
+  position: fixed; top: 0; bottom: 0; margin: 0; padding: 0;
+  height: 100dvh; max-height: 100dvh; max-width: 100vw; border: 0;
+  color: var(--text-primary); background: var(--bg-surface);
+  padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom);
+  box-sizing: border-box;
+}
+.workspace-mobile-drawer::backdrop { background: rgb(20 22 28 / 35%); }
+
+/* The sidebar follows the approved writing mockup: identity, everyday work,
+   pages, optional tools, and one clear creation action. */
+.workspace-vault-heading { padding: 0 12px 14px; }
+.workspace-vault-heading:empty { display: none; }
+.workspace-navigation .workspace-nav-row:hover { background: var(--glass-hover); }
+.workspace-navigation .workspace-nav-row[data-active="true"] { color: var(--text-accent, var(--color-accent)); }
+.workspace-navigation .workspace-section-actions { display: flex; opacity: 0; transition: opacity 100ms ease; }
+.workspace-navigation section:hover .workspace-section-actions,
+.workspace-navigation section:focus-within .workspace-section-actions { opacity: 1; }
+.workspace-new-page {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: var(--control-h-lg);
+  border-radius: 7px; padding: 6px 12px; background: var(--action-bg);
+  color: var(--action-fg); font-size: 14px; font-weight: 550; border: 0;
+}
+.workspace-new-page:hover { background: var(--action-hover); }
+@media (pointer: coarse) {
+  .workspace-navigation .workspace-section-actions { opacity: 1; }
+  .workspace-navigation button { min-height: 44px; }
+}
+
+.workspace-navigation[data-density="comfortable"] { --workspace-control-height: 38px; }
+.workspace-navigation[data-density="compact"] { --workspace-control-height: 30px; }
+.workspace-navigation-preferences {
+  width: min(460px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); overflow: auto;
+  margin: auto; padding: 24px; border: 1px solid var(--glass-border); border-radius: 12px;
+  background: var(--bg-elevated); color: var(--text-primary); box-shadow: 0 16px 64px rgb(0 0 0 / 15%);
+}
+.workspace-navigation-preferences::backdrop { background: rgb(20 22 28 / 30%); }
+@media (pointer: coarse) { .workspace-navigation[data-density] { --workspace-control-height: 44px; } }
+@media (max-width: 480px) { .workspace-navigation-preferences { padding: 18px; } }
+
+/* NP-AX-04: muted text is AA on the page, the sidebar and hover fills. On the stronger selected /
+   active fills (the active slash or search row, the open agent session) it steps up to secondary. */
+.slash-menu-option[data-active],
+.prism-search-result[aria-selected="true"],
+.prism-agent-session-row[data-active] { --text-muted: var(--text-secondary); }
+
+/* A highlight with no colour of its own (stored `<mark>`, Markdown `==x==`) is NOT the browser's
+   #ff0: near-white text on it was unreadable in dark. Zero specificity: a coloured mark's inline
+   background and every component's own mark rule still win. */
+:where(mark) { background-color: var(--highlight-bg); color: inherit; }
+
+/* ── Tabs: ONE style (w14 visual, defects 15 / 21) ──
+   Text tabs on a hairline; the selected one is primary text, semibold, with a 2 px underline in the
+   text colour. Share, History, Inbox, database views, workspace settings, the ⌘K kinds, Comments
+   and the version viewer all use it — there were four styles (underline, filled pill, solid
+   segmented, text segmented). `.prism-tabs` is the strip, `.prism-tab` a tab; selected =
+   `aria-selected="true"` (tabs) or `aria-pressed="true"` (a filter that is not a tablist). */
+.prism-tabs {
+  display: flex; align-items: stretch; gap: 18px; min-width: 0;
+  overflow-x: auto; scrollbar-width: none; box-shadow: inset 0 -1px 0 var(--glass-border);
+}
+.prism-tabs::-webkit-scrollbar { display: none; }
+.prism-tabs[data-inline] { display: inline-flex; gap: 14px; box-shadow: none; }
+.prism-tab {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex: none;
+  min-height: 36px; padding: 0 2px; border: 0; border-bottom: 2px solid transparent; border-radius: 0;
+  background: none; color: var(--text-secondary); font-size: 13px; font-weight: 500; white-space: nowrap;
+}
+.prism-tab:hover:not(:disabled) { color: var(--text-primary); }
+.prism-tab:disabled { opacity: .5; }
+.prism-tab[aria-selected="true"], .prism-tab[aria-pressed="true"] { color: var(--text-primary); border-bottom-color: var(--text-primary); font-weight: 600; }
+.prism-tab:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; border-radius: 4px; }
+@media (max-width: 767px), (pointer: coarse) { .prism-tab { min-height: 44px; min-width: 44px; } }
+/* Where the strip sits in a header that already draws the line. */
+.document-companion-tabs.prism-tabs, .workspace-context-tabs .prism-tabs { box-shadow: none; }
+
+/* `--border-subtle` was used in 16 places and defined nowhere: those borders fell back to the TEXT
+   colour (the heavy outline on "Retry document", the account menu, the offline line). */
+:root, html.dark, html.light { --border-subtle: var(--glass-border); }
+
+/* ── Overflow (ui-tokens) ──
+   A long word (URL, address, id, token) breaks instead of pushing its box wider than the screen.
+   `break-word` (not `anywhere`) changes nothing until a word would overflow its line, and does not
+   shrink min-content, so table columns and flex rows size exactly as before. Inherited: one rule. */
+:where(body) { overflow-wrap: break-word; }
+/* No global `min-width: 0` on flex children: tried, and it squeezed rows inside fixed-height dialogs
+   (the version viewer clipped at 200 % zoom). Rows that must shrink say so (`min-w-0`, .u-truncate). */
+/* Opt-in helpers for labels: one line with an ellipsis / at most two lines. Give the element a
+   `title` (or an accessible name) when the cut text matters. */
+.u-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.u-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-width: 0; }
+/* `ui/Button`: a label never wraps inside the pill; a string child truncates (Button.tsx). */
+.ui-button { white-space: nowrap; }
